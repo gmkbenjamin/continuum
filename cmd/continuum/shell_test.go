@@ -1,0 +1,75 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestShellBlockRoundTrip(t *testing.T) {
+	block, err := shellBlock("zsh", "/opt/it's/continuum")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(block, `'/opt/it'\''s/continuum'`) {
+		t.Fatalf("path not quoted:\n%s", block)
+	}
+	for _, orig := range []string{"", "export A=1\n", "export A=1", "a\n\nb\n"} {
+		once := replaceBlock(orig, block)
+		twice := replaceBlock(once, block)
+		if once != twice {
+			t.Fatalf("not idempotent for %q", orig)
+		}
+		back := replaceBlock(once, "")
+		if strings.TrimRight(back, "\n") != strings.TrimRight(orig, "\n") {
+			t.Fatalf("remove: %q -> %q", orig, back)
+		}
+	}
+	// A block in the middle of a file is replaced in place.
+	mid := "a\n" + block + "b\n"
+	if got := replaceBlock(mid, block); got != mid {
+		t.Fatalf("middle:\n%s", got)
+	}
+}
+
+func TestInstallShellFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ZDOTDIR", "")
+	t.Setenv("SHELL", "/bin/zsh")
+	rc := filepath.Join(home, ".zshrc")
+	os.WriteFile(rc, []byte("alias ll='ls -l'\n"), 0o600)
+	installShell("/x/continuum", false)
+	installShell("/x/continuum", false)
+	data, _ := os.ReadFile(rc)
+	if strings.Count(string(data), blockStart) != 1 || !strings.HasPrefix(string(data), "alias ll='ls -l'\n") {
+		t.Fatalf("zshrc:\n%s", data)
+	}
+	if st, _ := os.Stat(rc); st.Mode().Perm() != 0o600 {
+		t.Fatalf("permissions changed: %v", st.Mode())
+	}
+	if _, err := os.Stat(filepath.Join(home, ".bashrc")); err == nil {
+		t.Fatal("created a .bashrc that did not exist")
+	}
+	uninstallShell(false)
+	data, _ = os.ReadFile(rc)
+	if string(data) != "alias ll='ls -l'\n" {
+		t.Fatalf("after uninstall: %q", data)
+	}
+}
+
+func TestShellFunctions(t *testing.T) {
+	out, err := shellFunctions("zsh", "/x/continuum", []hookAgent{{"claude", "claude"}, {"cursor", "cursor-agent"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"function claude { __continuum_run claude claude", "function cursor-agent { __continuum_run cursor cursor-agent"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in\n%s", want, out)
+		}
+	}
+	if _, err := shellFunctions("fish", "/x", []hookAgent{{"gemini", "gemini"}}); err != nil {
+		t.Fatal(err)
+	}
+}

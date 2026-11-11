@@ -1,0 +1,594 @@
+{
+  "version": 1,
+  "_comment": "Continuum detection and delivery rules. Everything an agent update could change lives here, not in code. Override or extend any part in ~/.continuum/rules.json; entries are merged by name.",
+
+  "defaults": {
+    "resume_prompt": "Your usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work that is already complete.",
+    "delay_after_reset_seconds": 60,
+    "native_grace_seconds": 0,
+    "transient_backoff_seconds": [120, 300, 900, 1800, 3600],
+    "unknown_reset_backoff_seconds": [900, 1800, 3600, 3600, 7200],
+    "max_attempts": 8,
+    "enter_delay_ms": 400,
+    "tail_lines": 40,
+    "common_patterns": [
+      {"kind": "usage_limit", "regex": "(?i)(?:usage|rate|quota|request|token)\\s+limit\\s+(?:has\\s+been\\s+|was\\s+)?(?:reached|exceeded|hit)"},
+      {"kind": "usage_limit", "regex": "(?i)\\bquota\\s+(?:has\\s+been\\s+)?(?:exceeded|exhausted)"},
+      {"kind": "usage_limit", "regex": "(?i)exhausted\\s+(?:your|the)\\s+(?:daily\\s+|monthly\\s+|weekly\\s+)?(?:quota|limit|usage)"},
+      {"kind": "usage_limit", "regex": "(?i)\\bRESOURCE_EXHAUSTED\\b"},
+      {"kind": "usage_limit", "regex": "(?i)you[’']?ve\\s+(?:hit|reached|used\\s+up)\\s+(?:your|the)\\s+(?:[a-z0-9 -]{0,30}\\s+)?(?:limit|quota|allowance)"},
+      {"kind": "usage_limit", "regex": "(?i)you\\s+have\\s+(?:hit|reached|exceeded)\\s+(?:your|the)\\s+(?:[a-z0-9 -]{0,30}\\s+)?(?:limit|quota)"},
+      {"kind": "usage_limit", "regex": "(?i)(?:limit|quota|usage)\\s+(?:will\\s+)?resets?\\s+(?:at|in|on)\\b"},
+      {"kind": "usage_limit", "regex": "(?i)try\\s+again\\s+(?:at|in|after)\\s+\\d"},
+      {"kind": "transient", "regex": "(?i)\\b(?:429|529)\\b.{0,40}(?:too\\s+many\\s+requests|overloaded|rate)"},
+      {"kind": "transient", "regex": "(?i)\\b(?:overloaded_error|server\\s+is\\s+overloaded|service\\s+unavailable)\\b"},
+      {"kind": "transient", "regex": "(?i)\\b50[0234]\\b\\s+(?:internal\\s+server\\s+error|bad\\s+gateway|service\\s+unavailable|gateway\\s+time-?out)"}
+    ],
+    "_common_patterns": "Wording most agents use. Harnesses with use_common_patterns add these to their own patterns. Only the bottom of the screen is checked, so an agent merely talking about rate limits higher up is not mistaken for a stall.",
+    "common_never_resume_patterns": [
+      "(?i)out\\s+of\\s+(?:free\\s+|usage\\s+|account\\s+)?credits?",
+      "(?i)insufficient[_ ](?:quota|credits?|balance|funds)",
+      "(?i)credit\\s+balance\\s+is\\s+too\\s+low",
+      "(?i)(?:spend(?:ing)?|budget)\\s+(?:limit|cap)",
+      "(?i)billing",
+      "(?i)payment\\s+required",
+      "(?i)add\\s+(?:funds|credits|a\\s+payment)",
+      "(?i)upgrade\\s+your\\s+plan\\s+to\\s+continue",
+      "(?i)(?:invalid|expired|missing)\\s+api[\\s_-]?key",
+      "(?i)please\\s+(?:log\\s*in|sign\\s*in|re-?authenticate)",
+      "(?i)\\b401\\b.{0,30}unauthori[sz]ed"
+    ],
+    "interpreters": ["node", "nodejs", "bun", "deno", "python", "pypy", "ruby", "java", "uv", "npx", "bunx"],
+    "blocking_patterns": [
+      "(?im)^\\s*[❯›>▶➜]\\s*1\\.\\s",
+      "(?i)enter\\s+(?:to\\s+)?(?:continue|confirm|select)\\s*·\\s*esc",
+      "(?i)do\\s+you\\s+(?:want|trust)",
+      "(?i)\\ballow\\s+(?:this|command|codex|claude|edit|the)\\b.{0,60}\\?",
+      "(?i)\\b(?:approve|deny)\\b.{0,40}\\?",
+      "(?i)press\\s+enter\\s+to",
+      "(?i)\\(y/n\\)|\\[y/N\\]|\\[Y/n\\]",
+      "(?im)^\\s*[❯›>▶➜]?\\s*(?:\\d+[.)]\\s*)?(?:yes|no)\\b[^\\n]{0,60}\\n(?:[^\\n]*\\n)?\\s*[❯›>▶➜]?\\s*(?:\\d+[.)]\\s*)?(?:yes|no)\\b",
+      "(?im)^\\s*[❯›>▶➜]?\\s*(?:yes|no|allow|deny|proceed|cancel|quit)\\b[^\\n]{0,60}\\s[\\[(]?[yn][\\])]?\\s*$",
+      "(?i)\\b(?:trust|allow)\\s+(?:this|the)\\s+(?:folder|directory|workspace|project)\\b"
+    ],
+    "_blocking_patterns": "If any of these shows in the bottom of the pane, a menu or approval prompt is open. Continuum never types into it (Enter could pick an option); it uses another route or tries again later."
+  },
+
+  "harnesses": {
+    "claude": {
+      "display_name": "Claude Code",
+      "homepage": "https://claude.com/product/claude-code",
+      "binary": "claude",
+      "process_names": ["claude", "Claude"],
+      "process_name_patterns": ["^\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.]+)?$"],
+      "_process_name_patterns": "The native installer runs Claude Code from a binary named after its version (e.g. 2.1.322), which is what tmux reports.",
+      "native_grace_seconds": 300,
+      "_native_grace": "Claude Code tries to resume by itself after a reset while its process is alive. Continuum gives it this long past the reset first, so the two don't both continue the session, then acts only if the session shows no new activity. Change it with `continuum grace claude <minutes|off>`.",
+      "live_sessions": {
+        "command": ["{bin}", "agents", "--json"],
+        "requires_help": ["agents"],
+        "registry_dir": "{claude_home}/sessions",
+        "busy_states": ["busy", "working", "running", "active", "streaming"],
+        "background_kinds": ["background", "bg"]
+      },
+      "wrap": {
+        "passthrough_flags": ["-p", "--print", "-v", "--version", "-h", "--help", "--bg", "--background", "--cloud", "--desktop", "--teleport"],
+        "passthrough_subcommands": ["agents", "attach", "auth", "auto-mode", "config", "doctor", "gateway", "import", "install", "logs", "mcp", "migrate-installer", "plugin", "plugins", "purge", "respawn", "rm", "setup-token", "stop", "kill", "ultrareview", "update", "upgrade"]
+      },
+      "stop_failure_kinds": {
+        "rate_limit": "usage_limit",
+        "overloaded": "transient",
+        "server_error": "transient",
+        "unknown": "transient"
+      },
+      "patterns": [
+        {"kind": "usage_limit", "regex": "(?i)you[’']?ve\\s+hit\\s+your\\s+(?:[a-z0-9 ]{0,30}\\s+)?limit"},
+        {"kind": "usage_limit", "regex": "(?i)(?:claude\\s+)?usage\\s+limit\\s+reached"},
+        {"kind": "usage_limit", "regex": "(?i)your\\s+limit\\s+will\\s+reset"},
+        {"kind": "usage_limit", "regex": "(?i)you[’']?re\\s+out\\s+of\\s+(?:extra\\s+)?usage"},
+        {"kind": "transient", "regex": "(?i)API\\s+Error:\\s*(?:529|500|502|503|504)\\b"},
+        {"kind": "transient", "regex": "(?i)\\boverloaded_error\\b"},
+        {"kind": "transient", "regex": "(?i)API\\s+Error:\\s*429\\b"}
+      ],
+      "native_wait_patterns": ["(?i)continuing\\s+automatically"],
+      "native_gave_up_patterns": ["(?i)will\\s+not\\s+resume\\s+on\\s+its\\s+own", "(?i)did\\s+not\\s+resume\\s+on\\s+its\\s+own", "(?i)continue\\s+cancelled"],
+      "never_resume_patterns": ["(?i)credit\\s+balance\\s+is\\s+too\\s+low", "(?i)out\\s+of\\s+usage\\s+credits", "(?i)spend\\s+limit", "(?i)add\\s+funds", "(?i)authentication_failed", "(?i)billing_error", "(?i)please\\s+run\\s+/login"],
+      "ui_markers": ["(?i)esc to (?:cancel|interrupt)", "(?i)\\? for shortcuts", "(?i)/rate-limit-options", "(?i)resets\\s", "╭", "❯"],
+      "native_commands": [
+        {"name": "claude-attach", "when": "background", "pty": true, "requires_help": ["attach"], "args": ["{bin}", "attach", "{short_id}"], "cwd": "{cwd}"},
+        {"name": "claude-bg-resume", "when": "stopped", "requires_help": ["--bg", "--resume"], "args": ["{bin}", "--bg", "--resume", "{session}", "{prompt}"], "cwd": "{cwd}"},
+        {"name": "claude-print-resume", "when": "stopped", "requires_help": ["--resume", "--print"], "args": ["{bin}", "--print", "--resume", "{session}", "{prompt}"], "cwd": "{cwd}", "detach": true}
+      ],
+      "_native_commands": "Used in order. claude-attach types into a Claude background session through `claude attach` in a hidden terminal; the session keeps running when that terminal closes. The other two continue a session under its own id, and are only used once the session is no longer open anywhere, so they never start a copy."
+    },
+
+    "codex": {
+      "display_name": "Codex",
+      "homepage": "https://github.com/openai/codex",
+      "binary": "codex",
+      "process_names": ["codex", "Codex"],
+      "native_grace_seconds": 30,
+      "live_sessions": {
+        "scan_processes": true,
+        "process_exclude_args": ["app-server", "exec", "queue", "mcp", "mcp-server", "login", "logout", "completion", "apply", "sandbox", "debug", "cloud", "features", "--version", "--help", "codex-code-mode-host"]
+      },
+      "wrap": {
+        "passthrough_flags": ["-V", "--version", "-h", "--help"],
+        "passthrough_subcommands": ["exec", "e", "login", "logout", "mcp", "mcp-server", "app-server", "app", "completion", "apply", "a", "sandbox", "debug", "queue", "cloud", "features", "help", "generate-ts", "proto"]
+      },
+      "patterns": [
+        {"kind": "usage_limit", "regex": "(?i)you[’']?ve\\s+hit\\s+your\\s+usage\\s+limit"},
+        {"kind": "usage_limit", "regex": "(?i)usage_limit_(?:exceeded|reached)"},
+        {"kind": "usage_limit", "regex": "(?i)usage\\s+limit\\s+reached"},
+        {"kind": "transient", "regex": "(?i)stream\\s+disconnected\\s+before\\s+completion"},
+        {"kind": "transient", "regex": "(?i)exceeded\\s+retry\\s+limit"},
+        {"kind": "transient", "regex": "(?i)\\b(?:500|502|503|529)\\s+(?:Internal Server Error|Bad Gateway|Service Unavailable)"}
+      ],
+      "native_wait_patterns": [],
+      "native_gave_up_patterns": [],
+      "never_resume_patterns": ["(?i)credit\\s+balance\\s+is\\s+too\\s+low", "(?i)out\\s+of\\s+credits", "(?i)spend\\s+cap", "(?i)request\\s+a\\s+limit\\s+increase", "(?i)send\\s+a\\s+request\\s+to\\s+your\\s+admin"],
+      "ui_markers": ["(?i)esc to interrupt", "(?i)context left", "(?i)try again at", "›", "▌"],
+      "native_commands": [
+        {"name": "codex-queue", "when": "stopped", "requires_help": ["queue"], "requires_subcommand_help": {"queue": ["--thread", "--message", "--resume"]}, "args": ["{bin}", "queue", "--thread", "{session}", "--message", "{prompt}", "--resume"], "cwd": "{cwd}"},
+        {"name": "codex-exec-resume", "when": "stopped", "requires_help": ["exec"], "requires_subcommand_help": {"exec": ["resume"]}, "args": ["{bin}", "exec", "resume", "{session}", "{prompt}"], "cwd": "{cwd}", "detach": true}
+      ]
+    },
+
+    "gemini": {
+      "display_name": "Gemini CLI",
+      "homepage": "https://github.com/google-gemini/gemini-cli",
+      "binary": "gemini",
+      "process_names": ["gemini"],
+      "process_arg_patterns": ["@google/gemini-cli", "[/\\\\]gemini-cli[/\\\\]", "(?:^|[/\\\\])gemini(?:\\.js)?(?:\\s|$)"],
+      "use_common_patterns": true,
+      "patterns": [{"kind": "usage_limit", "regex": "(?i)quota\\s+exceeded\\s+for\\s+quota\\s+metric"}, {"kind": "usage_limit", "regex": "(?i)reached\\s+your\\s+daily\\s+(?:\\S+\\s+)?(?:request\\s+)?(?:limit|quota)"}, {"kind": "usage_limit", "regex": "(?i)usage\\s+limit\\s+reached\\s+for"}],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)type\\s+your\\s+message", "(?i)esc\\s+to\\s+cancel", "(?i)context\\s+left", "(?i)gemini-\\d"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--prompt", "--version"], "passthrough_subcommands": ["mcp", "extensions", "hooks"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": ["mcp", "extensions"]},
+      "native_commands": []
+    },
+
+    "qwen": {
+      "display_name": "Qwen Code",
+      "homepage": "https://github.com/QwenLM/qwen-code",
+      "binary": "qwen",
+      "process_names": ["qwen"],
+      "process_arg_patterns": ["@qwen-code/qwen-code", "[/\\\\]qwen-code[/\\\\]"],
+      "use_common_patterns": true,
+      "patterns": [{"kind": "usage_limit", "regex": "(?i)free\\s+(?:tier|quota).{0,60}(?:reached|exceeded|exhausted|limit)"}],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)type\\s+your\\s+message", "(?i)esc\\s+to\\s+cancel", "(?i)context\\s+left"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--prompt", "--version"], "passthrough_subcommands": ["mcp", "extensions"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": ["mcp", "extensions"]},
+      "native_commands": []
+    },
+
+    "aider": {
+      "display_name": "Aider",
+      "homepage": "https://aider.chat",
+      "binary": "aider",
+      "process_names": ["aider"],
+      "process_arg_patterns": ["(?:^|[/\\\\])aider(?:\\s|$)", "aider_chat", "aider-chat"],
+      "use_common_patterns": true,
+      "patterns": [{"kind": "transient", "regex": "(?i)litellm\\.(?:RateLimitError|ServiceUnavailableError|InternalServerError|APIConnectionError)"}],
+      "never_resume_patterns": ["(?i)AuthenticationError"],
+      "ui_markers": ["(?im)^(?:architect|ask|code|diff|multi|context|help)?>\\s*$", "(?i)tokens:\\s+\\S+\\s+sent"],
+      "wrap": {"passthrough_flags": ["-V", "-f", "-h", "-m", "-v", "--exit", "--help", "--lint", "--test", "--apply", "--commit", "--models", "--message", "--version", "--list-models", "--message-file", "--show-prompts", "--show-repo-map"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": []},
+      "native_commands": []
+    },
+
+    "opencode": {
+      "display_name": "opencode",
+      "homepage": "https://opencode.ai",
+      "binary": "opencode",
+      "process_names": ["opencode"],
+      "process_arg_patterns": ["(?:^|[/\\\\])opencode(?:\\s|$)", "opencode-ai"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)ctrl\\+p\\s+commands", "(?i)esc\\s+interrupt", "(?i)\\btab\\s+(?:agents?|switch)", "(?i)opencode\\s+v?\\d"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-v", "--help", "--version", "--completions"], "passthrough_subcommands": ["upgrade", "update", "uninstall", "acp", "api", "debug", "auth", "mcp", "plugin", "models", "stats", "run", "session", "service", "reload", "pair", "serve"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": ["serve", "service", "acp", "api", "run", "mcp", "debug", "models"]},
+      "native_commands": []
+    },
+
+    "grok": {
+      "display_name": "Grok CLI",
+      "homepage": "https://x.ai",
+      "binary": "grok",
+      "process_names": ["grok"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)esc\\s+to\\s+(?:interrupt|cancel)", "(?i)shift\\+tab", "(?i)grok\\s+build"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--single", "--version", "--prompt-file", "--prompt-json", "--output-format"], "passthrough_subcommands": ["agent", "clone", "completions", "doctor", "du", "disk-usage", "export", "help", "inspect", "leader", "login", "logout", "mcp", "memory", "models", "plugin", "sessions", "setup", "trace", "update", "usage", "version", "v", "worker", "worktree", "wrap"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": ["agent", "leader", "worker", "mcp", "doctor", "sessions", "usage", "update"]},
+      "native_commands": []
+    },
+
+    "amp": {
+      "display_name": "Amp",
+      "homepage": "https://ampcode.com",
+      "binary": "amp",
+      "shell_hook": false,
+      "process_names": ["amp"],
+      "process_arg_patterns": ["@sourcegraph/amp", "[/\\\\]amp-cli[/\\\\]"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)ctrl\\+o", "(?i)esc\\s+to\\s+(?:cancel|interrupt)"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-v", "-x", "--help", "--execute", "--version", "--stream-json"], "passthrough_subcommands": ["login", "logout", "tools", "mcp", "update", "doctor", "permissions", "config", "usage"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": ["mcp", "login"]},
+      "native_commands": []
+    },
+
+    "goose": {
+      "display_name": "Goose",
+      "homepage": "https://block.github.io/goose",
+      "binary": "goose",
+      "shell_hook": false,
+      "process_names": ["goose"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)\\(\\s*O\\s*\\)>", "(?i)goose\\s+is\\s+running", "(?i)ctrl\\+c\\s+to\\s+interrupt"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-v", "--help", "--version"], "only_subcommands": ["session", "s"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": ["run", "mcp", "web", "schedule", "configure", "info", "update"]},
+      "native_commands": []
+    },
+
+    "cursor": {
+      "display_name": "Cursor CLI",
+      "homepage": "https://cursor.com/cli",
+      "binary": "cursor-agent",
+      "process_names": ["cursor-agent"],
+      "process_arg_patterns": ["cursor-agent", "[/\\\\]\\.cursor[/\\\\]agent"],
+      "use_common_patterns": true,
+      "patterns": [{"kind": "usage_limit", "regex": "(?i)you[’']?ve\\s+(?:hit|reached)\\s+your\\s+usage\\s+limit"}],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)ctrl\\+c\\s+to\\s+stop", "(?i)/\\s*for\\s+commands", "(?i)cursor\\s+agent"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--print", "--version", "--output-format"], "passthrough_subcommands": ["login", "logout", "status", "whoami", "mcp", "update", "upgrade", "ls", "install-shell-integration", "uninstall-shell-integration", "generate-rule", "create-chat", "about", "help"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": ["mcp", "login", "status", "update"]},
+      "native_commands": []
+    },
+
+    "copilot": {
+      "display_name": "GitHub Copilot CLI",
+      "homepage": "https://github.com/features/copilot/cli",
+      "binary": "copilot",
+      "process_names": ["copilot"],
+      "process_arg_patterns": ["@github/copilot", "[/\\\\]copilot-cli[/\\\\]"],
+      "use_common_patterns": true,
+      "patterns": [{"kind": "usage_limit", "regex": "(?i)(?:quota|limit|allowance)\\s+(?:of|for)\\s+premium\\s+requests"}, {"kind": "usage_limit", "regex": "(?i)rate[\\s-]?limit(?:ed)?.{0,80}try\\s+again"}],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)esc\\s+to\\s+(?:cancel|interrupt)", "(?i)ctrl\\+c\\s+exit", "(?i)@\\s+to\\s+mention"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--prompt", "--version"], "passthrough_subcommands": ["help", "login", "logout", "plugin", "mcp", "update", "version"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": ["mcp", "login"]},
+      "native_commands": []
+    },
+
+    "droid": {
+      "display_name": "Factory Droid",
+      "homepage": "https://factory.ai",
+      "binary": "droid",
+      "shell_hook": false,
+      "process_names": ["droid"],
+      "process_arg_patterns": ["@factory/cli", "[/\\\\]\\.factory[/\\\\]bin[/\\\\]droid"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)esc\\s+to\\s+(?:stop|cancel|interrupt)", "(?i)shift\\+tab"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-v", "--help", "--version"], "passthrough_subcommands": ["exec", "mcp", "login", "logout", "update", "plugin", "daemon", "computer"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": ["exec", "mcp", "daemon"]},
+      "native_commands": []
+    },
+
+    "kiro": {
+      "display_name": "Kiro CLI",
+      "homepage": "https://kiro.dev/cli",
+      "binary": "kiro-cli",
+      "process_names": ["kiro-cli", "kiro-cli-chat", "qchat"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?im)^\\s*>\\s*$", "(?i)/help", "(?i)ctrl\\+c"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-v", "--help", "--version"], "only_subcommands": ["chat"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": ["login", "logout", "settings", "doctor", "mcp", "update", "translate", "diagnostic", "integrations"]},
+      "native_commands": []
+    },
+
+    "auggie": {
+      "display_name": "Augment (auggie)",
+      "homepage": "https://augmentcode.com",
+      "binary": "auggie",
+      "process_names": ["auggie"],
+      "process_arg_patterns": ["@augmentcode/auggie"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)esc\\s+to\\s+(?:cancel|interrupt)", "(?i)ctrl\\+c"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--print", "--quiet", "--version"], "passthrough_subcommands": ["login", "logout", "mcp", "tokens", "token", "session"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": ["mcp", "login"]},
+      "native_commands": []
+    },
+
+    "cline": {
+      "display_name": "Cline CLI",
+      "homepage": "https://cline.bot",
+      "binary": "cline",
+      "process_names": ["cline"],
+      "process_arg_patterns": ["(?:^|[/\\\\])cline(?:\\.js)?(?:\\s|$)", "[/\\\\]cline[/\\\\]cli"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)esc\\s+to\\s+(?:cancel|interrupt)", "(?i)ctrl\\+c"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-o", "-v", "-y", "--help", "--yolo", "--oneshot", "--version"], "passthrough_subcommands": ["auth", "config", "version", "instance", "update", "mcp", "history", "help"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": ["instance", "mcp", "auth"]},
+      "native_commands": []
+    },
+
+    "continue": {
+      "display_name": "Continue CLI",
+      "homepage": "https://continue.dev",
+      "binary": "cn",
+      "shell_hook": false,
+      "process_names": ["cn"],
+      "process_arg_patterns": ["@continuedev/cli"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)esc\\s+to\\s+(?:cancel|interrupt)", "(?i)ctrl\\+c"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--print", "--version"], "passthrough_subcommands": ["login", "logout", "serve", "remote", "ls"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": ["serve", "login"]},
+      "native_commands": []
+    },
+
+    "crush": {
+      "display_name": "Crush",
+      "homepage": "https://github.com/charmbracelet/crush",
+      "binary": "crush",
+      "shell_hook": false,
+      "process_names": ["crush"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)ctrl\\+[cp]", "(?i)crush"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-v", "--help", "--version"], "passthrough_subcommands": ["run", "logs", "update-providers", "schema", "completion", "help", "dirs"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": ["run", "logs"]},
+      "native_commands": []
+    },
+
+    "kimi": {
+      "display_name": "Kimi CLI",
+      "homepage": "https://github.com/MoonshotAI/kimi-cli",
+      "binary": "kimi",
+      "process_names": ["kimi"],
+      "process_arg_patterns": ["kimi[-_]cli"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)ctrl\\+[cdj]", "(?i)kimi"],
+      "wrap": {"passthrough_flags": ["-V", "-c", "-h", "-v", "--acp", "--help", "--print", "--command", "--version"], "passthrough_subcommands": ["info", "mcp", "acp", "login", "logout"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": ["acp", "mcp"]},
+      "native_commands": []
+    },
+
+    "openhands": {
+      "display_name": "OpenHands CLI",
+      "homepage": "https://openhands.dev",
+      "binary": "openhands",
+      "process_names": ["openhands"],
+      "process_arg_patterns": ["openhands[-_.]cli", "openhands\\.cli"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)ctrl\\+[cpq]", "(?i)openhands"],
+      "wrap": {"passthrough_flags": ["-V", "-f", "-h", "-t", "-v", "--file", "--help", "--task", "--version", "--headless"], "passthrough_subcommands": ["serve", "mcp", "login", "logout", "cloud", "acp"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": ["serve", "acp", "mcp"]},
+      "native_commands": []
+    },
+
+    "vibe": {
+      "display_name": "Mistral Vibe",
+      "homepage": "https://mistral.ai",
+      "binary": "vibe",
+      "shell_hook": false,
+      "process_names": ["vibe"],
+      "process_arg_patterns": ["mistral[-_]vibe"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)ctrl\\+[cj]", "(?i)vibe"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--prompt", "--version"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": []},
+      "native_commands": []
+    },
+
+    "kilocode": {
+      "display_name": "Kilo Code CLI",
+      "homepage": "https://kilocode.ai",
+      "binary": "kilocode",
+      "process_names": ["kilocode", "kilo"],
+      "process_arg_patterns": ["@kilocode/cli"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)esc\\s+to\\s+(?:cancel|interrupt)", "(?i)ctrl\\+c"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-v", "--auto", "--help", "--json", "--version"], "passthrough_subcommands": ["auth", "config", "models", "mcp", "update"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": ["mcp"]},
+      "native_commands": []
+    },
+
+    "letta": {
+      "display_name": "Letta Code",
+      "homepage": "https://letta.com",
+      "binary": "letta",
+      "process_names": ["letta"],
+      "process_arg_patterns": ["@letta-ai/letta-code"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)esc\\s+to\\s+(?:cancel|interrupt)", "(?i)ctrl\\+c"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--prompt", "--version"], "passthrough_subcommands": ["login", "logout", "server", "update"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": ["server"]},
+      "native_commands": []
+    },
+
+    "plandex": {
+      "display_name": "Plandex",
+      "homepage": "https://plandex.ai",
+      "binary": "plandex",
+      "process_names": ["plandex", "pdx"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)plandex", "(?i)\\\\\\w+\\s+for\\s+commands", "(?i)ctrl\\+[cd]"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-v", "--help", "--version"], "only_subcommands": ["repl"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": []},
+      "native_commands": []
+    },
+
+    "codebuff": {
+      "display_name": "Codebuff",
+      "homepage": "https://codebuff.com",
+      "binary": "codebuff",
+      "process_names": ["codebuff"],
+      "process_arg_patterns": ["(?:^|[/\\\\])codebuff(?:\\.js)?(?:\\s|$)"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)esc\\s+to\\s+(?:cancel|interrupt)", "(?i)ctrl\\+c", "(?i)codebuff"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--print", "--version"], "passthrough_subcommands": ["login", "logout", "update"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": []},
+      "native_commands": []
+    },
+
+    "junie": {
+      "display_name": "Junie CLI",
+      "homepage": "https://www.jetbrains.com/junie",
+      "binary": "junie",
+      "process_names": ["junie"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)esc\\s+to\\s+(?:cancel|interrupt)", "(?i)ctrl\\+c", "(?i)junie"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--task", "--print", "--version"], "passthrough_subcommands": ["login", "logout", "update"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": []},
+      "native_commands": []
+    },
+
+    "pi": {
+      "display_name": "Pi coding agent",
+      "homepage": "https://github.com/badlogic/pi-mono",
+      "binary": "pi",
+      "shell_hook": false,
+      "process_names": [],
+      "process_arg_patterns": ["@mariozechner/pi-coding-agent", "pi-coding-agent"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)esc\\s+to\\s+(?:abort|cancel|interrupt)", "(?i)ctrl\\+[cl]"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--mode", "--print", "--version"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": []},
+      "native_commands": []
+    },
+
+    "rovodev": {
+      "display_name": "Rovo Dev CLI",
+      "homepage": "https://www.atlassian.com/rovo",
+      "binary": "acli",
+      "shell_hook": false,
+      "process_names": [],
+      "process_arg_patterns": ["acli\\s+rovodev\\s+run", "rovodev"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": ["(?i)ctrl\\+c", "(?i)rovo\\s+dev"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "-v", "--help", "--version"], "only_subcommands": ["rovodev"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": []},
+      "native_commands": []
+    },
+
+    "generic": {
+      "display_name": "Agent",
+      "binary": "",
+      "_generic": "Agents without their own entry. Panes running these programs are scanned with the common patterns. Add an entry (see the others) for better recognition and the shell hook.",
+      "process_names": ["agent", "forge", "q", "ra-aid", "gptme", "mentat", "sweep", "devin", "warp-agent"],
+      "use_common_patterns": true,
+      "patterns": [],
+      "never_resume_patterns": [],
+      "ui_markers": [],
+      "native_commands": []
+    }
+  },
+
+  "multiplexers": {
+    "_order": "Checked in this order when an agent's environment names more than one. Inner multiplexers come first.",
+    "tmux": {
+      "priority": 10,
+      "env_target": "TMUX_PANE",
+      "env_socket": "TMUX",
+      "socket_transform": "first_csv_field",
+      "send_text": ["tmux", ["-S", "{socket}"], "send-keys", "-t", "{target}", "-l", "--", "{text}"],
+      "send_enter": ["tmux", ["-S", "{socket}"], "send-keys", "-t", "{target}", "Enter"],
+      "capture": ["tmux", ["-S", "{socket}"], "capture-pane", "-p", "-J", "-t", "{target}", "-S", "-120"],
+      "process": ["tmux", ["-S", "{socket}"], "display-message", "-p", "-t", "{target}", "#{pane_current_command}"],
+      "list": ["tmux", ["-S", "{socket}"], "list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_command}"]
+    },
+    "screen": {
+      "priority": 20,
+      "env_target": "WINDOW",
+      "env_socket": "STY",
+      "require_env": ["STY"],
+      "send_text": ["screen", "-S", "{socket}", "-p", "{target}", "-X", "stuff", "{text_screen}"],
+      "send_enter": ["screen", "-S", "{socket}", "-p", "{target}", "-X", "stuff", "\r"],
+      "capture": ["screen", "-S", "{socket}", "-p", "{target}", "-X", "hardcopy", "-h", "{tmpfile}"],
+      "capture_from": "tmpfile"
+    },
+    "zellij": {
+      "priority": 30,
+      "env_target": "ZELLIJ_PANE_ID",
+      "env_socket": "ZELLIJ_SESSION_NAME",
+      "target_format": "terminal_%s",
+      "send_text": ["zellij", "--session", "{socket}", "action", "write-chars", "--pane-id", "{target}", "{text}"],
+      "send_enter": ["zellij", "--session", "{socket}", "action", "write", "--pane-id", "{target}", "13"],
+      "capture": ["zellij", "--session", "{socket}", "action", "dump-screen", "--pane-id", "{target}"]
+    },
+    "herdr": {
+      "priority": 40,
+      "env_target": "HERDR_PANE_ID",
+      "env_socket": "HERDR_SESSION",
+      "send_text": ["herdr", ["--session", "{socket}"], "pane", "send-text", "{target}", "{text}"],
+      "send_enter": ["herdr", ["--session", "{socket}"], "pane", "send-keys", "{target}", "enter"],
+      "capture": ["herdr", ["--session", "{socket}"], "pane", "read", "{target}", "--source", "recent-unwrapped", "--lines", "120"]
+    },
+    "rex": {
+      "priority": 50,
+      "env_target": "REX_BLOCK",
+      "env_socket": "REX_SERVER",
+      "send_text": ["rex", ["-S", "{socket}"], "--autostart=false", "send", "-b", "{target}", "{text}"],
+      "send_enter": ["rex", ["-S", "{socket}"], "--autostart=false", "send-key", "-b", "{target}", "enter"],
+      "capture": ["rex", ["-S", "{socket}"], "--autostart=false", "capture", "-b", "{target}", "--trim", "--unwrap"]
+    },
+    "wezterm": {
+      "priority": 60,
+      "env_target": "WEZTERM_PANE",
+      "send_text": ["wezterm", "cli", "send-text", "--pane-id", "{target}", "--no-paste", "{text}"],
+      "send_enter": ["wezterm", "cli", "send-text", "--pane-id", "{target}", "--no-paste", "\r"],
+      "capture": ["wezterm", "cli", "get-text", "--pane-id", "{target}"]
+    },
+    "kitty": {
+      "priority": 70,
+      "env_target": "KITTY_WINDOW_ID",
+      "env_socket": "KITTY_LISTEN_ON",
+      "require_env": ["KITTY_LISTEN_ON"],
+      "send_text": ["kitty", "@", "--to", "{socket}", "send-text", "--match", "id:{target}", "--stdin"],
+      "send_text_stdin": "{text}",
+      "send_enter": ["kitty", "@", "--to", "{socket}", "send-text", "--match", "id:{target}", "--stdin"],
+      "send_enter_stdin": "\r",
+      "capture": ["kitty", "@", "--to", "{socket}", "get-text", "--match", "id:{target}"]
+    }
+  }
+}
