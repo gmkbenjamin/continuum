@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/continuum-dev/continuum/internal/core"
+	"github.com/continuum-dev/continuum/internal/daemon"
 	"github.com/continuum-dev/continuum/internal/deliver"
 	"github.com/continuum-dev/continuum/internal/hooks"
 	"github.com/continuum-dev/continuum/internal/live"
@@ -133,6 +134,59 @@ func cmdDoctor() int {
 				ok("  watching %s", dir)
 			} else {
 				warn("  %s does not exist yet", dir)
+			}
+		}
+	}
+
+	fmt.Println("\nDesktop apps")
+	compat := daemon.LoadCompat(p)
+	procs, _ := proc.List()
+	homes := map[string]string{"claude_home": cfg.ClaudeDir(), "codex_home": cfg.CodexDir(), "app_support": daemon.AppSupport()}
+	for _, name := range r.HarnessNames() {
+		h := r.Harness(name)
+		for _, a := range h.DesktopApps {
+			running := false
+			for _, pr := range procs {
+				if a.MatchesProcess(pr.Line) {
+					running = true
+				}
+			}
+			state := "not running"
+			if running {
+				state = "running"
+			}
+			ver := daemon.BundledVersion(a, homes)
+			if ver != "" {
+				state += ", bundled " + h.DisplayName + " " + ver
+			}
+			ok("%s (%s): its sessions are detected through %s's own files", a.Name, state, h.DisplayName)
+			hasReach := false
+			for _, nc := range h.NativeCommands {
+				if nc.ReachesDesktop {
+					hasReach = true
+				}
+			}
+			switch {
+			case hasReach:
+				ok("  continued inside the app, through %s's local server", h.DisplayName)
+			default:
+				dc := compat.Desktop[a.Name]
+				if dc != nil && dc.CoveredVersion != "" && (ver == "" || ver == dc.CoveredVersion) {
+					ok("  continued automatically as soon as the app lets go of a session (%s's session list covers it; confirmed for %s)", h.DisplayName, dc.CoveredVersion)
+				} else {
+					ok("  continued automatically once the app is closed; never copied while it may hold the session")
+					fmt.Printf("    · Continuum learns when %s lists Desktop sessions itself (after you use one), and then continues without waiting for the app to close\n", h.DisplayName)
+				}
+			}
+		}
+	}
+	if len(compat.Agents) > 0 {
+		fmt.Println("\nAgent updates")
+		for name, ac := range compat.Agents {
+			if len(ac.Problems) > 0 {
+				warn("%s %s: %s", name, ac.Version, strings.Join(ac.Problems, "; "))
+			} else {
+				ok("%s %s: checked %s ago, all Continuum relies on still works", name, ac.Version, time.Since(ac.CheckedAt).Round(time.Minute))
 			}
 		}
 	}

@@ -134,3 +134,38 @@ func TestCodexProcessScan(t *testing.T) {
 		}
 	}
 }
+
+func TestDesktopAppHoldsSessions(t *testing.T) {
+	h := claudeRules(t)
+	app := proc.Process{PID: 9, Args: []string{"/Applications/Claude.app/Contents/MacOS/Claude"}, Line: "/Applications/Claude.app/Contents/MacOS/Claude"}
+	f := finder(t, nil, `[]`, nil) // Claude's own list: nothing open
+	f.Procs = func() ([]proc.Process, error) { return []proc.Process{app}, nil }
+	q := Query{SessionID: "d1", Bin: "claude", Entrypoint: "claude-desktop", Homes: map[string]string{"claude_home": t.TempDir()}}
+
+	st := f.Lookup(h, q)
+	if !st.Open || !st.OnlyDesktop || st.DesktopApp != "Claude Desktop" {
+		t.Fatalf("desktop session with the app running: %+v", st)
+	}
+	// Once Claude's own list is known to cover Desktop sessions, trust it.
+	q.TrustRegistry = map[string]bool{"Claude Desktop": true}
+	if st := f.Lookup(h, q); st.Open {
+		t.Fatalf("trusted list says closed: %+v", st)
+	}
+	q.TrustRegistry = nil
+	// Unknown origin (an update dropped the field): still guarded.
+	q.Entrypoint = ""
+	if st := f.Lookup(h, q); !st.Open {
+		t.Fatal("unknown-origin session not guarded while the app runs")
+	}
+	// A CLI session is not affected by the app running.
+	q.Entrypoint = "cli"
+	if st := f.Lookup(h, q); st.Open {
+		t.Fatal("CLI session treated as held by the desktop app")
+	}
+	// App not running: closed.
+	f.Procs = func() ([]proc.Process, error) { return nil, nil }
+	q.Entrypoint = "claude-desktop"
+	if st := f.Lookup(h, q); st.Open {
+		t.Fatal("desktop session open with the app closed")
+	}
+}

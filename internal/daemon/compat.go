@@ -1,0 +1,334 @@
+package daemon
+
+// Staying compatible while vendors ship updates.
+//
+// Agents and their desktop apps update themselves, often weekly, and an update
+// can change what Continuum relies on: a hook removed from settings, a CLI flag
+// renamed, a session list that no longer includes desktop sessions. The daemon
+// notices an update (the agent's executable changes), re-checks everything it
+// relies on, repairs what it can (re-adds its own hooks), falls back to the
+// safe behaviour for the rest, and tells the user once, in plain words.
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/continuum-dev/continuum/internal/core"
+	"github.com/continuum-dev/continuum/internal/deliver"
+	"github.com/continuum-dev/continuum/internal/hooks"
+	"github.com/continuum-dev/continuum/internal/live"
+	"github.com/continuum-dev/continuum/internal/rules"
+	"github.com/continuum-dev/continuum/internal/store"
+)
+
+// Compat is ~/.continuum/compat.json: what Continuum learned about the agents
+// installed here, and what it last checked.
+type Compat struct {
+	// Agents: last seen executable fingerprint and check result per agent.
+	Agents map[string]*AgentCompat `json:"agents"`
+	// Desktop: per desktop app, the bundled agent version for which the
+	// agent's own session list was seen to include the app's sessions.
+	Desktop map[string]*DesktopCompat `json:"desktop"`
+}
+
+type AgentCompat struct {
+	Fingerprint string    `json:"fingerprint"`
+	Version     string    `json:"version,omitempty"`
+	CheckedAt   time.Time `json:"checked_at"`
+	Problems    []string  `json:"problems,omitempty"`
+	Repaired    []string  `json:"repaired,omitempty"`
+}
+
+type DesktopCompat struct {
+	CoveredVersion string    `json:"covered_version,omitempty"`
+	SeenAt         time.Time `json:"seen_at,omitempty"`
+}
+
+// Install is ~/.continuum/install.json, written by `continuum install`: what
+// the user set up, so the daemon can restore it after an agent update.
+type Install struct {
+	Bin   string    `json:"bin"`
+	Hooks []string  `json:"hooks"`
+	At    time.Time `json:"at"`
+}
+
+func compatPath(p core.Paths) string  { return filepath.Join(p.Home, "compat.json") }
+func InstallPath(p core.Paths) string { return filepath.Join(p.Home, "install.json") }
+
+func LoadCompat(p core.Paths) *Compat {
+	c := &Compat{}
+	_ = store.LoadJSON(compatPath(p), c)
+	if c.Agents == nil {
+		c.Agents = map[string]*AgentCompat{}
+	}
+	if c.Desktop == nil {
+		c.Desktop = map[string]*DesktopCompat{}
+	}
+	return c
+}
+
+func LoadInstall(p core.Paths) (*Install, bool) {
+	data, err := os.ReadFile(InstallPath(p))
+	if err != nil {
+		return nil, false
+	}
+	var in Install
+	if json.Unmarshal(data, &in) != nil {
+		return nil, false
+	}
+	return &in, true
+}
+
+// appSupport is where desktop apps keep their data on this OS.
+func appSupport() string {
+	home, _ := os.UserHomeDir()
+	switch runtime.GOOS {
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support")
+	case "windows":
+		if v := os.Getenv("APPDATA"); v != "" {
+			return v
+		}
+	}
+	return filepath.Join(home, ".config")
+}
+
+func (d *Daemon) homes() map[string]string {
+	return map[string]string{"claude_home": d.Config.ClaudeDir(), "codex_home": d.Config.CodexDir(), "app_support": appSupport()}
+}
+
+// bundledVersion returns the newest version folder of a desktop app's
+// bundled agent ("" if unknown).
+func bundledVersion(app *rules.DesktopApp, homes map[string]string) string {
+	if app.VersionDir == "" {
+		return ""
+	}
+	dir := app.VersionDir
+	for k, v := range homes {
+		dir = strings.ReplaceAll(dir, "{"+k+"}", v)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Slice(names, func(i, j int) bool { return versionLess(names[i], names[j]) })
+	if len(names) == 0 {
+		return ""
+	}
+	return names[len(names)-1]
+}
+
+func versionLess(a, b string) bool {
+	pa, pb := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(pa) && i < len(pb); i++ {
+		var x, y int
+		fmt.Sscan(pa[i], &x)
+		fmt.Sscan(pb[i], &y)
+		if x != y {
+			return x < y
+		}
+	}
+	return len(pa) < len(pb)
+}
+
+// trustRegistry reports, per desktop app of h, whether the agent's own
+// session list is known to include that app's sessions for the app's current
+// version. Learned by observeDesktop; reset when the app updates.
+func (d *Daemon) trustRegistry(h *rules.Harness) map[string]bool {
+	out := map[string]bool{}
+	if d.Compat == nil {
+		return out
+	}
+	for _, a := range h.DesktopApps {
+		dc := d.Compat.Desktop[a.Name]
+		if dc == nil || dc.CoveredVersion == "" {
+			continue
+		}
+		cur := bundledVersion(a, d.homes())
+		switch {
+		case cur != "" && cur == dc.CoveredVersion:
+			out[a.Name] = true
+		case cur == "" && d.Now().Sub(dc.SeenAt) < 14*24*time.Hour:
+			out[a.Name] = true
+		}
+	}
+	return out
+}
+
+// observeDesktop learns whether the agent's own session list includes desktop
+// sessions: when a running desktop session shows up in it, the list is
+// trusted for that app version (so a session missing from it is closed, and
+// can be continued without waiting for the app to quit).
+func (d *Daemon) observeDesktop() {
+	if d.Compat == nil {
+		return
+	}
+	f := live.Default()
+	for _, name := range d.Rules.HarnessNames() {
+		h := d.Rules.Harness(name)
+		for _, a := range h.DesktopApps {
+			entries := f.DesktopEntries(h, live.Query{Homes: d.homes()}, a)
+			if len(entries) == 0 {
+				continue
+			}
+			ver := entries[0].Version
+			if b := bundledVersion(a, d.homes()); b != "" {
+				ver = b
+			}
+			dc := d.Compat.Desktop[a.Name]
+			if dc == nil {
+				dc = &DesktopCompat{}
+				d.Compat.Desktop[a.Name] = dc
+			}
+			if dc.CoveredVersion != ver {
+				d.logf("%s %s: its sessions appear in %s's own session list; trusting that list for it", a.Name, ver, h.DisplayName)
+			}
+			dc.CoveredVersion, dc.SeenAt = ver, d.Now()
+			d.compatDirty = true
+		}
+	}
+}
+
+// fingerprint identifies an installed agent build: its resolved executable
+// path, size and modification time. Updating the agent changes it.
+func fingerprint(bin string) string {
+	real, err := filepath.EvalSymlinks(bin)
+	if err != nil {
+		real = bin
+	}
+	st, err := os.Stat(real)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%s|%d|%d", real, st.Size(), st.ModTime().Unix())
+}
+
+// checkCompat runs when an agent was installed or updated (and once a day):
+// it re-checks hooks, resume commands and session listing, restores hooks an
+// update removed, and tells the user what changed.
+func (d *Daemon) checkCompat(force bool) {
+	if d.Compat == nil {
+		return
+	}
+	inst, installed := LoadInstall(d.Paths)
+	for _, t := range hooks.Targets(d.Config) {
+		h := d.Rules.Harness(t.Harness)
+		bin, err := deliver.Binary(d.Config, h)
+		if err != nil {
+			continue
+		}
+		fp := fingerprint(bin)
+		ac := d.Compat.Agents[t.Harness]
+		if ac == nil {
+			ac = &AgentCompat{}
+			d.Compat.Agents[t.Harness] = ac
+		}
+		first := ac.Fingerprint == ""
+		if !force && ac.Fingerprint == fp && d.Now().Sub(ac.CheckedAt) < 24*time.Hour {
+			continue
+		}
+		updated := !first && ac.Fingerprint != fp
+		ac.Fingerprint, ac.CheckedAt = fp, d.Now()
+		ac.Version = versionFromPath(fp)
+		before := strings.Join(ac.Problems, "; ")
+		ac.Problems, ac.Repaired = nil, nil
+
+		// Hooks: restore Continuum's own hooks if an update removed them.
+		if installed && containsStr(inst.Hooks, t.Harness) {
+			if ok, _ := hooks.Installed(t); !ok {
+				if changed, err := hooks.Install(t, inst.Bin, false); err == nil && changed {
+					ac.Repaired = append(ac.Repaired, "re-added its hooks to "+t.Path)
+				} else if err != nil {
+					ac.Problems = append(ac.Problems, "hooks missing and could not be restored: "+err.Error())
+				}
+			}
+		}
+		// Resume commands: probe the installed agent's --help again.
+		usable := 0
+		for _, nc := range h.NativeCommands {
+			if ok, _ := deliver.Supported(bin, nc); ok {
+				usable++
+			}
+		}
+		if len(h.NativeCommands) > 0 && usable == 0 {
+			ac.Problems = append(ac.Problems, "none of its resume commands are available any more; only sessions in a terminal or pane can be continued")
+		}
+		// Session listing: the source of the never-a-copy guarantee.
+		if ls := h.LiveSessions; ls != nil && len(ls.Command) > 0 {
+			if _, ok := live.Default().List(h, live.Query{Bin: bin, Homes: d.homes()}); !ok {
+				ac.Problems = append(ac.Problems, "it no longer reports its open sessions; Continuum now assumes sessions are open and only types into terminals")
+			}
+		}
+		d.compatDirty = true
+		now := strings.Join(ac.Problems, "; ")
+		name := h.DisplayName
+		switch {
+		case len(ac.Repaired) > 0:
+			d.logf("%s updated: %s", name, strings.Join(ac.Repaired, "; "))
+			d.notifyText(name+" updated", "Continuum "+strings.Join(ac.Repaired, "; ")+". All set.")
+		}
+		if now != "" && now != before {
+			d.logf("%s compatibility: %s", name, now)
+			d.notifyText(name+" changed", "Continuum adjusted: "+now+". Run `continuum doctor` for details.")
+		} else if now == "" && before != "" {
+			d.logf("%s compatibility restored", name)
+		}
+		if updated && now == "" && len(ac.Repaired) == 0 {
+			d.logf("%s updated (%s): everything Continuum relies on still works", name, ac.Version)
+		}
+	}
+}
+
+func versionFromPath(fp string) string {
+	path := strings.SplitN(fp, "|", 2)[0]
+	base := filepath.Base(path)
+	if len(base) > 0 && base[0] >= '0' && base[0] <= '9' {
+		return base
+	}
+	return ""
+}
+
+func containsStr(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *Daemon) notifyText(title, body string) {
+	if !d.Config.NotifyEnabled() || d.NotifyFn == nil {
+		return
+	}
+	d.NotifyFn("Continuum · "+title, body)
+}
+
+func (d *Daemon) saveCompat() {
+	if d.Compat == nil || !d.compatDirty {
+		return
+	}
+	if err := store.SaveJSON(compatPath(d.Paths), d.Compat); err != nil {
+		d.logf("save compat: %v", err)
+	}
+	d.compatDirty = false
+}
+
+// AppSupport and BundledVersion are exported for `continuum doctor`.
+func AppSupport() string { return appSupport() }
+
+func BundledVersion(a *rules.DesktopApp, homes map[string]string) string {
+	return bundledVersion(a, homes)
+}

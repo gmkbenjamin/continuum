@@ -101,6 +101,8 @@ upstream.
 
 Agents that live inside an editor or desktop app window (Cursor and Windsurf editors,
 VS Code Copilot Chat, Cline and Roo in VS Code, Zed's agent, Claude and ChatGPT desktop
-chats) have no terminal Continuum can type into. Claude Code and Codex sessions started
-from their desktop apps are the exception: they're continued through their CLIs once
-closed.
+chats) have no terminal Continuum can type into. Claude Code and Codex sessions in their
+desktop apps are the exception. Codex app sessions are continued inside the app,
+through its local server. Claude Desktop sessions are continued by themselves as soon
+as Desktop lets go of them, never copied while it may still hold them. See "Desktop
+apps" in the README.

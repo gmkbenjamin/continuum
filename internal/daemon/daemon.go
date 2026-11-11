@@ -54,9 +54,14 @@ type Daemon struct {
 	LiveFn func(*core.Job) *live.State
 	// Awake keeps the computer from idle-sleeping while work is pending.
 	Awake *awake.Keeper
+	// Compat, when set, enables the update watch (see compat.go).
+	Compat *Compat
 
 	baseline     bool
 	timingSig    string
+	compatDirty  bool
+	lastCompat   time.Time
+	lastDesktop  time.Time
 	paneSeen     map[string]string
 	lastScan     time.Time
 	lastPaneScan time.Time
@@ -197,9 +202,20 @@ func (d *Daemon) Tick() {
 	}
 	d.applyScope()
 	d.applyTiming()
+	if d.Compat != nil {
+		if now.Sub(d.lastDesktop) >= time.Minute {
+			d.lastDesktop = now
+			d.observeDesktop()
+		}
+		if now.Sub(d.lastCompat) >= 10*time.Minute {
+			d.lastCompat = now
+			d.checkCompat(false)
+		}
+	}
 	d.runDue()
 	d.prune()
 	d.keepAwake()
+	d.saveCompat()
 	if d.dirty {
 		d.save()
 	}
@@ -786,12 +802,34 @@ func (d *Daemon) runJob(j *core.Job) {
 	res, err := d.DeliverFn(opts, j)
 	now := d.Now()
 	j.UpdatedAt = now
+	if err != nil && errors.Is(err, deliver.ErrStillOpen) {
+		// Open somewhere Continuum can't type (a desktop app, a terminal
+		// started before the shell hook). Never start a copy: keep checking,
+		// and continue as soon as it is reachable or closed. This doesn't
+		// use up attempts; it is bounded by time instead.
+		j.Result = err.Error()
+		if !j.WaitingOpen {
+			j.WaitingOpen = true
+			d.history("waiting_open", j, map[string]any{"error": err.Error()})
+			msg := h.DisplayName + " is open in a window Continuum can't type into, so it won't start a copy. Continue it there yourself, or leave it: Continuum continues it automatically once it's closed."
+			if st != nil && st.DesktopApp != "" {
+				msg = "This session is open in " + st.DesktopApp + ", where Continuum can't type. Send any message there to continue now, or leave it: Continuum continues it by itself once " + st.DesktopApp + " lets go of it."
+			}
+			d.notify(j, "Limit reset", msg)
+		}
+		if now.Sub(j.LimitAt) > 24*time.Hour {
+			j.State = core.StateNeedsUser
+			j.Result = "still open somewhere Continuum can't type after 24 hours: " + err.Error()
+			d.history("needs_user", j, nil)
+			return
+		}
+		j.DueAt = now.Add(2 * time.Minute)
+		d.logf("%s: %v; checking again at %s", j.Key, err, j.DueAt.Format("15:04"))
+		return
+	}
 	if err != nil {
 		j.Attempts++
 		j.Result = err.Error()
-		if errors.Is(err, deliver.ErrStillOpen) && j.Attempts == 1 {
-			d.notify(j, "Waiting for you", h.DisplayName+" is still open in a window Continuum can't type into, so it won't start a copy. Continue it there, or start agents with `continuum run` (installed as a shell hook) or in tmux.")
-		}
 		if j.Attempts >= d.Rules.Defaults.MaxAttempts {
 			j.State = core.StateFailed
 			d.history("failed", j, map[string]any{"error": err.Error()})
@@ -1013,13 +1051,13 @@ func (d *Daemon) skip(j *core.Job, why string) {
 // is open right now.
 func (d *Daemon) liveState(j *core.Job) *live.State {
 	h := d.Rules.Harness(j.Harness)
-	if h.LiveSessions == nil || j.SessionID == "" {
+	if (h.LiveSessions == nil && len(h.DesktopApps) == 0) || j.SessionID == "" {
 		return nil
 	}
 	bin, _ := deliver.Binary(d.Config, h)
 	st := live.Default().Lookup(h, live.Query{
-		SessionID: j.SessionID, Cwd: j.Cwd, PID: j.PID, Bin: bin,
-		Homes: map[string]string{"claude_home": d.Config.ClaudeDir(), "codex_home": d.Config.CodexDir()},
+		SessionID: j.SessionID, Cwd: j.Cwd, PID: j.PID, Bin: bin, Homes: d.homes(),
+		Entrypoint: j.Entrypoint, TrustRegistry: d.trustRegistry(h),
 	})
 	return &st
 }

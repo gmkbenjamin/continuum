@@ -33,6 +33,7 @@ type Session struct {
 	Entrypoint string `json:"entrypoint,omitempty"`
 	Name       string `json:"name,omitempty"`
 	WaitingFor string `json:"waiting_for,omitempty"` // e.g. "dialog open"
+	Version    string `json:"version,omitempty"`
 	// StatusSince is when Status last changed, when the source says.
 	StatusSince time.Time `json:"status_since,omitempty"`
 }
@@ -56,6 +57,11 @@ type State struct {
 	MovedOn bool     `json:"moved_on,omitempty"`
 	Session *Session `json:"session,omitempty"`
 	Source  string   `json:"source,omitempty"`
+	// DesktopApp names the desktop app that holds (or may hold) the session.
+	DesktopApp string `json:"desktop_app,omitempty"`
+	// OnlyDesktop: open only in the sense that the desktop app may hold it;
+	// no process of the agent is known to.
+	OnlyDesktop bool `json:"only_desktop,omitempty"`
 }
 
 // Query identifies the session to look up.
@@ -65,6 +71,12 @@ type Query struct {
 	PID       int    // pid recorded by a hook, if any
 	Bin       string // the agent's executable
 	Homes     map[string]string
+	// Entrypoint is where the session was started (cli, claude-desktop, ...).
+	Entrypoint string
+	// TrustRegistry lists desktop apps whose sessions the agent's own session
+	// list is known to include (learned for the app's current version). For
+	// those, "not listed" means closed; for others, a running app may hold it.
+	TrustRegistry map[string]bool
 }
 
 // Finder looks sessions up. Its functions can be replaced in tests.
@@ -178,6 +190,7 @@ func (f *Finder) Lookup(h *rules.Harness, q Query) State {
 			st.Checked, st.Source = true, "pid"
 		}
 	}
+	f.applyDesktop(h, q, &st)
 	if st.Session != nil && ls != nil {
 		st.Busy = contains(ls.BusyStates, st.Session.Status)
 		st.Background = contains(ls.BackgroundKinds, st.Session.Kind)
@@ -337,6 +350,7 @@ func fromMap(m map[string]any) Session {
 		Entrypoint: str("entrypoint"),
 		Name:       str("name"),
 		WaitingFor: str("waitingFor", "waiting_for"),
+		Version:    str("version"),
 	}
 	for _, k := range []string{"statusUpdatedAt", "status_updated_at", "stateUpdatedAt"} {
 		if v, ok := m[k].(float64); ok && v > 0 {
@@ -417,4 +431,68 @@ func TmuxPane(s string) string {
 		return s[i:]
 	}
 	return ""
+}
+
+// applyDesktop accounts for desktop apps, which run sessions without a
+// terminal. A session from a desktop app that no source shows as open is
+// still treated as open while the app runs, unless the agent's own session
+// list is known to include that app's sessions.
+func (f *Finder) applyDesktop(h *rules.Harness, q Query, st *State) {
+	if len(h.DesktopApps) == 0 {
+		return
+	}
+	if st.Open && st.Session != nil {
+		for _, a := range h.DesktopApps {
+			if a.IsEntrypoint(st.Session.Entrypoint) {
+				st.DesktopApp = a.Name
+			}
+		}
+		return
+	}
+	if st.Open || q.SessionID == "" {
+		return
+	}
+	var procs []proc.Process
+	listed := false
+	for _, a := range h.DesktopApps {
+		fromApp := a.IsEntrypoint(q.Entrypoint) || (q.Entrypoint == "" && a.GuardUnknown)
+		if !fromApp {
+			continue
+		}
+		if q.TrustRegistry[a.Name] && st.Checked && (st.Source == "command" || st.Source == "registry") {
+			continue // the agent's own list covers this app: not listed = closed
+		}
+		if !listed && f.Procs != nil {
+			procs, _ = f.Procs()
+			listed = true
+		}
+		for _, p := range procs {
+			if a.MatchesProcess(p.Line) {
+				st.Open, st.OnlyDesktop, st.Checked, st.DesktopApp = true, true, true, a.Name
+				st.Session = &Session{SessionID: q.SessionID, Cwd: q.Cwd, Entrypoint: q.Entrypoint, Kind: "desktop"}
+				if st.Source == "" {
+					st.Source = "desktop"
+				} else {
+					st.Source += "+desktop"
+				}
+				return
+			}
+		}
+	}
+}
+
+// DesktopEntries returns the registry entries started from a desktop app, so
+// the daemon can learn that the agent's own session list covers it.
+func (f *Finder) DesktopEntries(h *rules.Harness, q Query, app *rules.DesktopApp) []Session {
+	if h.LiveSessions == nil || h.LiveSessions.RegistryDir == "" {
+		return nil
+	}
+	list, _ := f.fromRegistry(expand(h.LiveSessions.RegistryDir, q))
+	var out []Session
+	for _, s := range list {
+		if app.IsEntrypoint(s.Entrypoint) {
+			out = append(out, s)
+		}
+	}
+	return out
 }

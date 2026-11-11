@@ -175,7 +175,7 @@ func TestLiveTmuxPaneIsUsed(t *testing.T) {
 	}
 }
 
-func TestStillOpenRetriesAndNotifiesOnce(t *testing.T) {
+func TestStillOpenWaitsWithoutUsingAttempts(t *testing.T) {
 	h := setup(t)
 	var notes []string
 	cfg := `{"claude_home": "` + h.claude + `", "codex_home": "` + h.codex + `", "scan_panes": false, "poll_seconds": 1}`
@@ -183,21 +183,40 @@ func TestStillOpenRetriesAndNotifiesOnce(t *testing.T) {
 	h.d.reload()
 	h.d.NotifyFn = func(title, body string) { notes = append(notes, body) }
 	h.d.Handle(limitEvent(h, "s1", 30*time.Minute))
+	h.live = &live.State{Checked: true, Open: true, OnlyDesktop: true, DesktopApp: "Claude Desktop", Session: &live.Session{SessionID: "s1"}}
 	h.fail = fmt.Errorf("%w; %w", deliver.ErrNoRoute, deliver.ErrStillOpen)
 	h.advance(32 * time.Minute)
-	h.advance(5 * time.Minute)
+	h.advance(30 * time.Minute) // many checks, every 2 minutes
 	j := h.d.Jobs["claude:s1"]
-	if j.State != core.StatePending || j.Attempts < 2 {
-		t.Fatalf("state %s attempts %d", j.State, j.Attempts)
+	if j.State != core.StatePending || j.Attempts != 0 || !j.WaitingOpen {
+		t.Fatalf("state %s attempts %d waiting %v", j.State, j.Attempts, j.WaitingOpen)
 	}
 	n := 0
-	for _, t := range notes {
-		if strings.HasPrefix(t, "Waiting for you") {
+	for _, b := range notes {
+		if strings.Contains(b, "open in Claude Desktop") {
 			n++
 		}
 	}
 	if n != 1 {
 		t.Fatalf("notes %v", notes)
+	}
+	// The app lets go: the next check continues it.
+	h.fail = nil
+	h.advance(3 * time.Minute)
+	if j.State != core.StateDelivered || len(h.delivered) != 1 {
+		t.Fatalf("not continued once free: %s", j.State)
+	}
+}
+
+func TestStillOpenGivesUpAfterADay(t *testing.T) {
+	h := setup(t)
+	h.d.Handle(limitEvent(h, "s1", 30*time.Minute))
+	h.fail = fmt.Errorf("%w; %w", deliver.ErrNoRoute, deliver.ErrStillOpen)
+	h.advance(32 * time.Minute)
+	h.now = h.now.Add(25 * time.Hour)
+	h.advance(5 * time.Second)
+	if j := h.d.Jobs["claude:s1"]; j.State != core.StateNeedsUser {
+		t.Fatalf("state %s", j.State)
 	}
 }
 

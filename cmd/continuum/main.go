@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -189,6 +190,7 @@ func cmdDaemon(args []string) error {
 	if err != nil {
 		return err
 	}
+	d.Compat = daemon.LoadCompat(p) // watch for agent updates
 	if *once {
 		d.Tick()
 		return nil
@@ -532,6 +534,7 @@ func cmdInstall(args []string) error {
 		}
 	}
 	r, _ := rules.Cached(p.Rules)
+	var hooked []string
 	for _, t := range hooks.Targets(cfg) {
 		if len(want) > 0 && !want[t.Harness] {
 			continue
@@ -547,6 +550,7 @@ func cmdInstall(args []string) error {
 			fmt.Printf("%-9s %v\n", t.Harness+":", err)
 			continue
 		}
+		hooked = append(hooked, t.Harness)
 		verb := "hooks already up to date in"
 		if changed {
 			verb = "hooks added to"
@@ -555,6 +559,12 @@ func cmdInstall(args []string) error {
 			}
 		}
 		fmt.Printf("%-9s %s %s\n", t.Harness+":", verb, t.Path)
+	}
+	if !*dry {
+		// Remember what was set up, so the daemon can restore it if an agent
+		// update removes Continuum's hooks.
+		rec, _ := json.MarshalIndent(daemon.Install{Bin: bin, Hooks: hooked, At: time.Now()}, "", "  ")
+		_ = core.WriteFileAtomic(daemon.InstallPath(p), append(rec, '\n'), 0o600)
 	}
 	if !*noShell && runtime.GOOS != "windows" {
 		for _, line := range installShell(bin, *dry) {
@@ -588,9 +598,15 @@ func cmdInstall(args []string) error {
 		return nil
 	}
 	fmt.Println()
-	fmt.Println("Done. Agents started from now on are covered, in any terminal (open a new")
-	fmt.Println("terminal tab for the shell hook). Already-running sessions are watched through")
-	fmt.Println("their transcripts. Check with `continuum doctor`.")
+	fmt.Println("✅ Continuum is on. Covered from now on:")
+	for _, line := range coverageSummary(r) {
+		fmt.Println("   • " + line)
+	}
+	fmt.Println()
+	fmt.Println("Nothing else to do. When a limit resets, the session continues by itself, in")
+	fmt.Println("place. Open a new terminal tab to load the shell hook. Useful later:")
+	fmt.Println("   continuum status      what's waiting      continuum doctor   full check")
+	fmt.Println("   continuum scope       all or chosen        continuum -h       every command")
 	return nil
 }
 
@@ -647,6 +663,9 @@ func cmdUninstall(args []string) error {
 	}
 	for _, line := range uninstallShell(*dry) {
 		fmt.Println(line)
+	}
+	if !*dry {
+		os.Remove(daemon.InstallPath(p))
 	}
 	if *dry {
 		return nil
@@ -824,4 +843,59 @@ func printAgentTable(r *rules.Rules) {
 	}
 	g := r.Harness("generic")
 	fmt.Printf("\nAny other program in a tmux pane named %s is watched with the common patterns.\n", "`"+strings.Join(g.ProcessNames, "`, `")+"`")
+}
+
+// coverageSummary describes, in plain words, what is covered on this machine.
+func coverageSummary(r *rules.Rules) []string {
+	var out []string
+	procs, _ := proc.List()
+	for _, name := range []string{"claude", "codex"} {
+		h := r.Harness(name)
+		if _, err := proc.LookPath(h.Binary); err != nil {
+			continue
+		}
+		line := h.DisplayName + " in any terminal"
+		for _, a := range h.DesktopApps {
+			installed := false
+			for _, pr := range procs {
+				if a.MatchesProcess(pr.Line) {
+					installed = true
+				}
+			}
+			if installed || appInstalled(a) {
+				line += ", and in " + a.Name
+			}
+		}
+		out = append(out, line)
+	}
+	var others []string
+	for _, a := range shellHookAgents() {
+		if a.Harness != "claude" && a.Harness != "codex" {
+			others = append(others, r.Harness(a.Harness).DisplayName)
+		}
+	}
+	if len(others) > 0 {
+		out = append(out, strings.Join(others, ", ")+" in any terminal")
+	}
+	out = append(out, "tmux, screen, zellij, herdr, Rex and plain terminals; minimised, unfocused or locked")
+	return out
+}
+
+// appInstalled reports whether a desktop app is installed (macOS): any app
+// bundle its process patterns name, e.g. "/Claude\\.app/" or "/ChatGPT\\.app/".
+func appInstalled(a *rules.DesktopApp) bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	re := regexp.MustCompile(`/([A-Za-z0-9 ]+)\\\\?\.app/`)
+	for _, p := range a.ProcessPatterns {
+		for _, m := range re.FindAllStringSubmatch(p, -1) {
+			for _, dir := range []string{"/Applications", filepath.Join(os.Getenv("HOME"), "Applications")} {
+				if _, err := os.Stat(filepath.Join(dir, m[1]+".app")); err == nil {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

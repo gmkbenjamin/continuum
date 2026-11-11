@@ -62,7 +62,43 @@ type NativeCommand struct {
 	// PTY runs the command in a terminal Continuum owns and types the prompt
 	// into it, for commands that open the session interactively (attach).
 	PTY bool `json:"pty"`
+	// ReachesDesktop: the command delivers through the desktop app's own
+	// backend (e.g. codex queue → the local Codex app server), so it reaches
+	// a session the desktop app has open instead of starting a copy.
+	ReachesDesktop bool `json:"reaches_desktop"`
 }
+
+// DesktopApp describes an agent's desktop app, which can hold a session open
+// without a terminal Continuum can type into.
+type DesktopApp struct {
+	Name string `json:"name"`
+	// Entrypoints name sessions started from the app (transcript
+	// "entrypoint", hook CLAUDE_CODE_ENTRYPOINT, rollout "originator").
+	Entrypoints []string `json:"entrypoints"`
+	// ProcessPatterns match the app's running process (full command line).
+	ProcessPatterns []string `json:"process_patterns"`
+	// VersionDir holds one folder per bundled agent version; a new folder
+	// means the app updated, and what was learned about it is re-checked.
+	VersionDir string `json:"version_dir"`
+	// GuardUnknown: treat sessions of unknown origin as possibly open in the
+	// app while it runs (safe default if an update drops the entrypoint).
+	GuardUnknown bool `json:"guard_unknown"`
+
+	procRes []*regexp.Regexp
+}
+
+// IsEntrypoint reports whether ep names a session started from the app.
+func (a *DesktopApp) IsEntrypoint(ep string) bool {
+	for _, e := range a.Entrypoints {
+		if strings.EqualFold(e, ep) {
+			return true
+		}
+	}
+	return false
+}
+
+// MatchesProcess reports whether a command line is the app.
+func (a *DesktopApp) MatchesProcess(line string) bool { return anyMatch(a.procRes, line) }
 
 // UsedWhen returns the command's When, defaulting to "stopped".
 func (n NativeCommand) UsedWhen() string {
@@ -160,6 +196,8 @@ type Harness struct {
 	// those on with config "shell_hook_agents".
 	ShellHook *bool  `json:"shell_hook"`
 	Homepage  string `json:"homepage"`
+	// DesktopApps that can hold this agent's sessions.
+	DesktopApps []*DesktopApp `json:"desktop_apps"`
 
 	nativeWait, nativeGaveUp, neverResume, uiMarkers, processRes, argRes []*regexp.Regexp
 	commonMerged                                                         bool
@@ -367,6 +405,11 @@ func (r *Rules) compile() error {
 		}
 		if h.argRes, err = compileAll(h.ProcessArgPatterns); err != nil {
 			return fmt.Errorf("harness %s: %w", name, err)
+		}
+		for _, a := range h.DesktopApps {
+			if a.procRes, err = compileAll(a.ProcessPatterns); err != nil {
+				return fmt.Errorf("harness %s desktop app %s: %w", name, a.Name, err)
+			}
 		}
 	}
 	if r.Defaults.MaxAttempts <= 0 {

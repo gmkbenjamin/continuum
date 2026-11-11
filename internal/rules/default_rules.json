@@ -64,6 +64,12 @@
       "_process_name_patterns": "The native installer runs Claude Code from a binary named after its version (e.g. 2.1.322), which is what tmux reports.",
       "native_grace_seconds": 300,
       "_native_grace": "Claude Code tries to resume by itself after a reset while its process is alive. Continuum gives it this long past the reset first, so the two don't both continue the session, then acts only if the session shows no new activity. Change it with `continuum grace claude <minutes|off>`.",
+      "desktop_apps": [
+        {"name": "Claude Desktop", "entrypoints": ["claude-desktop", "desktop"],
+         "process_patterns": ["(?i)/Claude\\.app/Contents/MacOS/Claude(?:\\s|$)", "(?i)\\\\Claude\\\\Claude\\.exe", "(?i)(?:^|/)claude-desktop(?:\\s|$)"],
+         "version_dir": "{app_support}/Claude/claude-code", "guard_unknown": true}
+      ],
+      "_desktop_apps": "Claude Desktop runs Claude Code sessions without a terminal. While the app runs, a session it may hold is treated as open (Continuum never starts a copy of it) unless Claude's own session list, already seen to include Desktop sessions for this app version, says it is closed.",
       "live_sessions": {
         "command": ["{bin}", "agents", "--json"],
         "requires_help": ["agents"],
@@ -108,6 +114,12 @@
       "binary": "codex",
       "process_names": ["codex", "Codex"],
       "native_grace_seconds": 30,
+      "desktop_apps": [
+        {"name": "Codex Desktop", "entrypoints": ["Codex Desktop", "codex-desktop", "desktop"],
+         "process_patterns": ["(?i)/Codex\\.app/Contents/MacOS/", "(?i)/ChatGPT\\.app/Contents/MacOS/ChatGPT(?:\\s|$)", "(?i)\\\\Codex\\.exe"],
+         "guard_unknown": false}
+      ],
+      "_desktop_apps": "The Codex app runs threads on the local Codex app server. codex queue delivers to that same server, so it reaches a thread the app has open (reaches_desktop).",
       "live_sessions": {
         "scan_processes": true,
         "process_exclude_args": ["app-server", "exec", "queue", "mcp", "mcp-server", "login", "logout", "completion", "apply", "sandbox", "debug", "cloud", "features", "--version", "--help", "codex-code-mode-host"]
@@ -129,7 +141,7 @@
       "never_resume_patterns": ["(?i)credit\\s+balance\\s+is\\s+too\\s+low", "(?i)out\\s+of\\s+credits", "(?i)spend\\s+cap", "(?i)request\\s+a\\s+limit\\s+increase", "(?i)send\\s+a\\s+request\\s+to\\s+your\\s+admin"],
       "ui_markers": ["(?i)esc to interrupt", "(?i)context left", "(?i)try again at", "›", "▌"],
       "native_commands": [
-        {"name": "codex-queue", "when": "stopped", "requires_help": ["queue"], "requires_subcommand_help": {"queue": ["--thread", "--message", "--resume"]}, "args": ["{bin}", "queue", "--thread", "{session}", "--message", "{prompt}", "--resume"], "cwd": "{cwd}"},
+        {"name": "codex-queue", "when": "stopped", "reaches_desktop": true, "requires_help": ["queue"], "requires_subcommand_help": {"queue": ["--thread", "--message", "--resume"]}, "args": ["{bin}", "queue", "--thread", "{session}", "--message", "{prompt}", "--resume"], "cwd": "{cwd}"},
         {"name": "codex-exec-resume", "when": "stopped", "requires_help": ["exec"], "requires_subcommand_help": {"exec": ["resume"]}, "args": ["{bin}", "exec", "resume", "{session}", "{prompt}"], "cwd": "{cwd}", "detach": true}
       ]
     },

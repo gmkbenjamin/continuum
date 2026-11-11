@@ -235,3 +235,33 @@ func TestBackgroundSessionWithAMenuIsLeftAlone(t *testing.T) {
 		t.Fatalf("typed into a menu: %q", data)
 	}
 }
+
+func TestDesktopSessions(t *testing.T) {
+	t.Setenv("CONTINUUM_HOME", t.TempDir())
+	r, _ := rules.Load("")
+	dir := t.TempDir()
+	claude, claudeCalls := fakeAgent(t, dir, "claude", "--bg --resume --print attach")
+	codex, codexCalls := fakeAgent(t, dir, "codex", "queue exec --thread --message --resume")
+	cfg := core.Config{Binaries: map[string]string{"claude": claude, "codex": codex}}
+	held := func(app string) *live.State {
+		return &live.State{Checked: true, Open: true, OnlyDesktop: true, DesktopApp: app, Session: &live.Session{SessionID: "s1", Kind: "desktop"}}
+	}
+	// Claude Desktop holds it: no CLI route may run (it would start a copy).
+	o := Options{Rules: r, Config: cfg, Prompt: "go on", Strategies: []string{"wrapper", "multiplexer", "native"}, Live: held("Claude Desktop")}
+	if _, err := Deliver(o, &core.Job{Harness: "claude", SessionID: "s1", Cwd: dir}); !errors.Is(err, ErrStillOpen) || !strings.Contains(err.Error(), "Claude Desktop") {
+		t.Fatalf("claude desktop: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if _, err := os.Stat(claudeCalls); err == nil {
+		t.Fatal("started claude for a session Claude Desktop holds")
+	}
+	// Codex Desktop: codex queue goes through the app's own server.
+	o.Live = held("Codex Desktop")
+	res, err := Deliver(o, &core.Job{Harness: "codex", SessionID: "t1", Cwd: dir})
+	if err != nil || res.Via != "codex-queue" {
+		t.Fatalf("codex desktop: %+v %v", res, err)
+	}
+	if got := waitFile(codexCalls); !strings.Contains(got, "queue\n--thread\nt1") {
+		t.Fatalf("codex called with %q", got)
+	}
+}

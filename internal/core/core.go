@@ -101,6 +101,9 @@ type Job struct {
 	Sources        []string  `json:"sources,omitempty"`
 	DeliveredAt    time.Time `json:"delivered_at,omitempty"`
 	DeliveredVia   string    `json:"delivered_via,omitempty"`
+	// WaitingOpen: the session is open somewhere Continuum can't type; it is
+	// re-checked every couple of minutes (the user was told once).
+	WaitingOpen bool `json:"waiting_open,omitempty"`
 }
 
 // Paths are Continuum's files under its home directory.

@@ -26,7 +26,8 @@ type claudeLine struct {
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
-	IsMeta bool `json:"isMeta"`
+	IsMeta     bool   `json:"isMeta"`
+	Entrypoint string `json:"entrypoint"` // cli, claude-desktop, sdk-*, ...
 }
 
 // ContentText flattens a message content field (string or blocks).
@@ -91,7 +92,7 @@ func ParseClaude(r *rules.Rules, path string, lines []Line, local *time.Location
 		}
 		base := core.Event{
 			Harness: "claude", SessionID: sid, Cwd: cl.Cwd, TranscriptPath: path,
-			At: at, Source: "transcript", TranscriptSize: ln.EndPos,
+			At: at, Source: "transcript", TranscriptSize: ln.EndPos, Entrypoint: cl.Entrypoint,
 		}
 		text := ""
 		if cl.Message != nil {

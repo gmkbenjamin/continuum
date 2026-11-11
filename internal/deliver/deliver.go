@@ -258,7 +258,9 @@ func sessionStopped(o Options, job *core.Job) (bool, string) {
 	if o.Live != nil && o.Live.Checked {
 		if o.Live.Open {
 			where := "open"
-			if s := o.Live.Session; s != nil && s.PID > 0 {
+			if o.Live.DesktopApp != "" {
+				where = "open in " + o.Live.DesktopApp
+			} else if s := o.Live.Session; s != nil && s.PID > 0 {
 				where = fmt.Sprintf("open in process %d", s.PID)
 			}
 			return false, "the session is still " + where
@@ -292,7 +294,10 @@ func viaNative(o Options, h *rules.Harness, job *core.Job) (Result, error) {
 	for _, nc := range h.NativeCommands {
 		switch nc.UsedWhen() {
 		case "stopped":
-			if !stopped && !o.Config.CopiesAllowed() {
+			// A command that delivers through the desktop app's own backend
+			// reaches the session the app holds: that is not a copy.
+			viaApp := nc.ReachesDesktop && o.Live != nil && o.Live.DesktopApp != ""
+			if !stopped && !viaApp && !o.Config.CopiesAllowed() {
 				reasons = append(reasons, nc.Name+": "+openWhy)
 				blockedByOpen = true
 				continue

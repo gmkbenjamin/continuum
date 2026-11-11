@@ -33,6 +33,7 @@ You've hit your session limit · resets 10am (Australia/Sydney)
 - [All sessions, or only chosen ones](#all-sessions-or-only-chosen-ones)
 - [How it works](#how-it-works)
 - [Never a copy, never a new session](#never-a-copy-never-a-new-session)
+- [Desktop apps](#desktop-apps)
 - [Waiting for the agent's own resume](#waiting-for-the-agents-own-resume)
 - [Locked screen, sleep and power](#locked-screen-sleep-and-power)
 - [Safety](#safety)
@@ -96,8 +97,8 @@ these off with `"notify": false`. Every command explains itself with `-h`, for e
 
 | | Detects stalls from | Resumes |
 |---|---|---|
-| **Claude Code** (CLI, IDE, Desktop) | hooks, transcripts, its session list, the screen | in place; a closed session by its id |
-| **Codex** (CLI, app) | hooks, rollout files (exact reset time), the screen | in place; a closed session by its id |
+| **Claude Code** (CLI, IDE, Desktop) | hooks, transcripts, its session list, the screen | in place; a Desktop session once Desktop lets go of it; a closed session by its id |
+| **Codex** (CLI, app) | hooks, rollout files (exact reset time), the screen | in place; inside the Codex app through its local server; a closed session by its id |
 | **About 25 others** | the screen, through the wrapper or a tmux pane | in place |
 
 [docs/agents.md](docs/agents.md) lists every agent, how each is recognised, and how to
@@ -224,6 +225,33 @@ the hook, and a process scan for the other agents. If none of these can answer,
 Continuum assumes the session is open. Set `"allow_copies": true` to allow the CLI route
 anyway.
 
+## Desktop apps
+
+**Claude Desktop.** Claude Desktop runs Claude Code itself (it bundles its own copy).
+Desktop sessions write the same transcripts, and load the same user hooks and plugins
+from `~/.claude`, so `continuum install` covers them with nothing extra. That was
+checked on a real machine: Desktop transcripts record Stop hooks from user-installed
+plugins.
+
+Continuum can't type into an app window, so it handles a stalled Desktop session like
+this:
+
+- **While Desktop may still hold the session,** Continuum never starts a copy. It
+  notifies you once ("send any message there to continue now, or leave it"), then
+  checks again every couple of minutes.
+- **Once Desktop lets go,** Continuum continues the session by itself under its own id.
+  You'll see the continued conversation when you next open it.
+- **Knowing when Desktop has let go.** The safe default treats a Desktop session as held
+  while the app is running. Continuum also watches Claude's own session list. Once that
+  list has shown a Desktop session, Continuum trusts it for that version of Desktop's
+  bundled Claude Code, and continues as soon as the session is no longer listed, with no
+  need to quit the app. When Desktop updates its bundled Claude Code, Continuum goes
+  back to the safe default until it sees a Desktop session in the list again.
+
+**Codex app.** `codex queue` sends the resume prompt to the local Codex app server,
+which the Codex app itself uses. So the session continues inside the app, with no copy
+and no need to close it.
+
 ## Waiting for the agent's own resume
 
 Claude Code tries to resume by itself after a reset while it's running, so Continuum
@@ -294,9 +322,21 @@ built so most changes are absorbed, and the rest are visible and quick to fix:
   the next command instead of failing.
 - **Lenient parsing.** Unknown fields in hooks, transcripts and session lists are
   ignored, and missing ones are tolerated.
+- **Updates are noticed and handled automatically.** When an agent updates (its
+  executable changes), the daemon re-checks everything it relies on. That covers its
+  hooks, its resume commands, and whether it still reports its open sessions. If an
+  update removed Continuum's hooks, the daemon re-adds them, keeping every other
+  setting, and tells you. If something can't be repaired, it switches to the safe
+  behaviour (only typing into terminals, never starting a copy) and tells you once,
+  in plain words.
+- **Desktop app updates too.** What Continuum learns about a desktop app is tied to the
+  app's version, and re-checked when the app updates.
+- **Unknown means careful.** When an update removes a field Continuum reads (for example
+  where a session was started), Continuum assumes the cautious answer rather than the
+  convenient one.
 - **Drift shows up.** `continuum doctor` re-checks real limit messages against the
-  rules, checks which resume commands the installed agents still support, and checks
-  the hooks.
+  rules, checks which resume commands the installed agents still support, the hooks,
+  the desktop apps, and the result of the last update check.
 
 ## Configuration
 
@@ -359,6 +399,8 @@ Everything is in `~/.continuum`; set `CONTINUUM_HOME` to move it.
 | `history.jsonl` | Every scheduled, delivered, skipped and failed resume |
 | `daemon.log` | Daemon log |
 | `wrappers/` | One folder per running `continuum run` |
+| `install.json` | What `install` set up, so hooks an agent update removed can be restored |
+| `compat.json` | Results of the last update check, and what was learned about desktop apps |
 | `bin/continuum` | The installed binary |
 
 ## Limitations
@@ -366,9 +408,11 @@ Everything is in `~/.continuum`; set `CONTINUUM_HOME` to move it.
 - **Sleep.** A sleeping computer runs nothing. Continuum keeps it awake while a resume
   is close, but a closed lid on battery still sleeps. Overdue resumes run when it
   wakes.
-- **Sessions Continuum can't reach in place.** It can't type into a session already
-  running in a plain terminal before the shell hook was installed, or one open in the
-  Claude Desktop or Codex app window. It notifies you instead of starting a copy.
+- **Sessions Continuum can't reach in place.** It can't type into a session that was
+  already running in a plain terminal before the shell hook was installed. A Claude
+  Desktop session is continued once Desktop lets go of it, not while it's on screen,
+  because there's no supported way to type into the app window. In both cases you get
+  one notification, and Continuum continues by itself as soon as it safely can.
 - **Editor-based agents.** Agents inside an editor (Cursor or Windsurf editors, VS Code
   Copilot Chat, Cline or Roo in VS Code, Zed) have no terminal to type into.
 - **Confirmation menus.** If an agent shows one (for example Claude's "Resume this
