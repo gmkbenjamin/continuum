@@ -1,11 +1,17 @@
-VERSION ?= 0.1.0
+VERSION ?= 0.4.0
 LDFLAGS := -s -w -X github.com/continuum-dev/continuum/internal/core.Version=$(VERSION)
 PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64 windows/arm64
 
 .PHONY: build test integration real-agents dist vet docs clean
 
+HOST := $(shell go env GOOS)-$(shell go env GOARCH)
+
+# Builds dist/continuum-<os>-<arch> for this computer and points the
+# ./continuum link at it.
 build:
-	go build -ldflags '$(LDFLAGS)' -o continuum ./cmd/continuum
+	@mkdir -p dist
+	go build -ldflags '$(LDFLAGS)' -o dist/continuum-$(HOST) ./cmd/continuum
+	@ln -sfn dist/continuum-$(HOST) continuum
 
 test:
 	go test ./...
@@ -26,6 +32,7 @@ real-agents:
 
 dist:
 	@mkdir -p dist
+	@[ -e continuum ] || ln -sfn dist/continuum-$(HOST) continuum
 	@for p in $(PLATFORMS); do \
 		os=$${p%/*}; arch=$${p#*/}; ext=; [ $$os = windows ] && ext=.exe; \
 		echo "dist/continuum-$$os-$$arch$$ext"; \

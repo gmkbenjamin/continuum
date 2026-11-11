@@ -706,7 +706,7 @@ func (d *Daemon) reschedule(j *core.Job) {
 	}
 }
 
-// resetHint asks an external command when the
+// resetHint asks an external command (for example a quota tracker) when the
 // harness's limit resets. Expected output: {"claude": "<RFC3339 or epoch>", ...}.
 func (d *Daemon) resetHint(harness string) (time.Time, bool) {
 	if len(d.Config.ResetHintsCommand) == 0 {

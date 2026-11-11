@@ -1,541 +1,160 @@
 # Continuum
 
-**Work never loses its momentum.**
+**Your AI coding agent hit its usage limit? Continuum picks the work back up the moment the limit resets.**
 
-Continuum keeps AI coding agents working through usage limits and API outages. When
-Claude Code, Codex, Gemini CLI or another agent stalls on a limit, Continuum notes when
-the limit resets, waits, checks the session is still stalled, and continues it.
-
-- **The same session, in place.** It types into the session that stalled. It never
-  starts a new session or a second copy.
-- **Any terminal, any state.** Terminal, iTerm2, Ghostty, VS Code, tmux, screen,
-  zellij, herdr, Rex and more. It works with the window minimised, hidden or unfocused,
-  over SSH, and with the screen locked.
-- **About 25 agents.** Claude Code, Codex, Gemini CLI, Qwen Code, Aider, opencode, Grok,
-  Cursor CLI, GitHub Copilot CLI, Amp, Goose, Factory Droid, Kiro, Auggie, Cline,
-  Continue, Crush, Kimi, OpenHands, Mistral Vibe, Kilo Code, Letta, Plandex, Codebuff,
-  Junie, Pi, Rovo Dev. Each is a few lines of rules, so new ones are easy to add.
-- **Every open session by default:** focused, in the background or minimised,
-  including sessions already waiting on a limit when Continuum starts. You can limit
-  it to the sessions you choose.
-- **macOS, Linux and Windows.** One static binary with no runtime dependencies.
+Continuum watches Claude Code, Codex and other AI coding agents. When one stalls on a
+usage limit or an API outage, it waits for the reset and continues **the same
+session, in place**. It never starts a new session or a second copy, and it doesn't
+need the window to be focused, visible or even unlocked.
 
 ```
-You've hit your session limit · resets 10am (Australia/Sydney)
+You've hit your session limit · resets 10am
                                   ⋮   (Continuum waits)
 10:01  › Your usage limit has reset. Continue the task you were working on…
 ```
 
-## Contents
+## Features
 
-- [Install](#install)
-- [Everyday use](#everyday-use)
-- [Supported agents](#supported-agents)
-- [Terminals and multiplexers](#terminals-and-multiplexers)
-- [All sessions, or only chosen ones](#all-sessions-or-only-chosen-ones)
-- [How it works](#how-it-works)
-- [Never a copy, never a new session](#never-a-copy-never-a-new-session)
-- [Desktop apps](#desktop-apps)
-- [Waiting for the agent's own resume](#waiting-for-the-agents-own-resume)
-- [Locked screen, sleep and power](#locked-screen-sleep-and-power)
-- [Safety](#safety)
-- [Staying compatible with agent updates](#staying-compatible-with-agent-updates)
-- [Configuration](#configuration)
-- [Commands](#commands)
-- [Files](#files)
-- [Limitations](#limitations)
-- [Development](#development)
+- **Same session, in place.** It types into the stalled session itself, and never
+  starts a duplicate.
+- **Works however the session is open:** focused, minimised, hidden, in the
+  background, over SSH, or with the screen locked.
+- **Any terminal:** Terminal, iTerm2, Ghostty, VS Code, tmux, screen, zellij, and more.
+- **About 25 agents:** Claude Code (CLI and Desktop), Codex (CLI and app), Gemini CLI,
+  Aider, opencode, Cursor CLI, GitHub Copilot CLI, and more.
+- **All sessions or only the ones you choose.**
+- **Safe:** it never types into a menu or approval prompt, and never retries billing or
+  sign-in errors.
+- **Local only:** everything runs on your computer and nothing is sent anywhere.
+- **macOS, Linux and Windows.** One small binary.
 
 ## Install
 
-You need Go 1.23 or later to build from source.
+You need [Go](https://go.dev/dl/) 1.23 or later.
 
 ```sh
-git clone <this repo> continuum && cd continuum
-make build                       # or: go build -o continuum ./cmd/continuum
-./continuum install --dry-run    # see what install would change
-./continuum install              # set everything up
-continuum doctor                 # check it
+git clone https://github.com/gmkbenjamin/continuum.git
+cd continuum
+make build
+./continuum install
 ```
 
-Before changing anything, `install` lists every file and item it will create or
-change: where it is, what it's for, and whether it's already up to date. Then it asks
-you to confirm (the default is no). Use `--dry-run` to see the list and stop, or
-`--yes` to skip the question, which is needed when there's no terminal to ask in,
-such as in scripts. For example:
+`install` first lists everything it will create or change, where it is and what it's
+for, and asks before doing anything. Run `continuum doctor` afterwards to check that
+everything works. Open a new terminal tab to start using it.
 
-```
-Continuum will make these changes:
+## Using it
 
- 4. Claude Code hooks: will change
-    where:   ~/.claude/settings.json
-    purpose: lets Claude Code (terminal, IDE and Desktop) tell Continuum when a session
-             stalls on a limit, and where it runs
-             adds a hook to: SessionStart, StopFailure, Stop, SessionEnd; every other
-             setting and hook in it stays as it is
-             a backup is saved first, next to it: settings.json.continuum-backup-<date-time>
- …
-Continuum works entirely on this computer: it sends nothing anywhere.
-Everything above is undone by `continuum uninstall`.
-
-Install Continuum? [y/N]
-```
-
-`install` sets up four things, and running it again updates them in place:
-
-1. **The binary.** It's copied to `~/.continuum/bin/continuum`, and linked into
-   `~/.local/bin` when that folder is on your `PATH`.
-2. **Agent hooks.** They're added to `~/.claude/settings.json` and
-   `~/.codex/hooks.json`, so Claude Code and Codex report stalls and where they run.
-   Every other setting and hook is kept, and a timestamped backup is saved first.
-3. **A shell hook.** A marked block in `~/.zshrc`, `~/.bashrc` or fish's `conf.d` runs
-   interactive agent sessions under Continuum's terminal wrapper, so it can type into
-   them in any terminal. See [Terminals and multiplexers](#terminals-and-multiplexers).
-4. **A login item.** The daemon starts at login: a launchd agent on macOS, a systemd
-   user unit on Linux, a scheduled task on Windows.
-
-Use `--no-shell` or `--no-service` to skip a step, and `--only claude,codex` to choose
-which agents get hooks.
-
-Sessions that are already open when you install are covered straight away. That
-includes any already waiting on a limit, which Continuum picks up and resumes at the
-reset. Limits in sessions that are closed are left alone. Open a new terminal tab so
-the shell hook loads for new sessions.
-
-### Updating
+There's nothing to do: when a limit resets, the session continues by itself, and you
+get a notification. When you want to look:
 
 ```sh
-git pull && make build && ./continuum update
+continuum status            # is it running, and what is waiting
+continuum sessions          # open agent sessions, and whether each is covered
+continuum list              # scheduled and recent resumes
+continuum resume-now <id>   # don't wait for the reset
+continuum cancel <id>       # leave a session stalled
+continuum -h                # every command; `continuum <command> -h` for details
 ```
 
-`update` re-applies your install with the choices you made then. Like `install`, it
-first shows what it will change and asks. It copies the new
-binary into place and rewrites Continuum's hooks in the current format, removing any an
-older version added that this one no longer uses. It also refreshes the shell hook and
-login item, and restarts the daemon on the new binary. Your settings, scope and history
-are kept.
+## Choosing sessions
 
-The daemon also keeps the hooks right by itself. If an agent update or another tool
-removes them, or they point at an old location, it rewrites them within minutes and
-tells you. It leaves the files alone when Continuum is switched off
-(`"enabled": false`).
-
-### Uninstalling
+Every open session is covered by default. To cover only some:
 
 ```sh
-continuum uninstall --dry-run   # see what would be removed
-continuum uninstall             # remove everything; keep ~/.continuum
-continuum uninstall --purge     # also delete ~/.continuum and the settings backups
+continuum scope chosen           # only sessions you choose
+continuum choose <name|id>       # a session (see `continuum sessions`)
+continuum choose ~/work/api      # every session in a folder
+CONTINUUM_CHOOSE=1 claude        # choose a session as you start it
+continuum exclude ~/scratch      # never resume these
+continuum scope all              # back to every session
 ```
 
-`uninstall` first lists everything it will remove, change or keep, and asks you to
-confirm (`--yes` skips the question). It then removes things in this order:
+## Where it works
 
-1. The login item and the running daemon.
-2. Every Continuum hook, in every event, from any version, keeping all of yours. Each
-   settings file goes back to its exact original bytes when nothing else in it has
-   changed, and a file Continuum created is deleted.
-3. The shell hook block from every shell startup file.
-4. The `~/.local/bin` link.
-
-It then checks that nothing is left and says so. Agent sessions running at that moment
-keep working normally.
-
-If Continuum is ever deleted without uninstalling, its hooks stay harmless: they run
-through `/bin/sh … || true`, so they do nothing, silently, and the agents never show
-a hook error.
-
-## Everyday use
-
-```sh
-continuum status              # daemon, hooks, scheduled resumes
-continuum sessions            # open agent sessions, and whether each is covered
-continuum list                # what is waiting, when, and where it will be typed
-continuum resume-now <id>     # don't wait (e.g. you bought extra usage)
-continuum cancel <id|all>     # leave a session stalled
-continuum grace claude off    # don't wait for Claude's own resume (default: 5 min)
-continuum doctor              # after updating an agent
-```
-
-You get a desktop notification when a session is paused, resumed, or needs you. Turn
-these off with `"notify": false`. Every command explains itself with `-h`, for example
-`continuum choose -h`. The full reference is in [docs/cli.md](docs/cli.md).
+- **Any terminal:** a small shell hook runs your agents under Continuum's pass-through
+  wrapper, so it can type into them. Colours, mouse, paste, Ctrl+C and Ctrl+Z all
+  behave as usual. To skip it once, use `CONTINUUM_NO_WRAP=1 claude`.
+- **Multiplexers:** tmux, screen, zellij, herdr, Rex, WezTerm and kitty, including
+  detached sessions.
+- **Ghostty:** agents already open in a plain Ghostty tab, found and typed into without
+  focusing the window.
+- **Claude Desktop:** sessions continue by themselves once Desktop releases them.
+  Continuum never copies a session Desktop may still have open.
+- **Codex app:** sessions continue inside the app.
 
 ## Supported agents
 
-| | Detects stalls from | Resumes |
-|---|---|---|
-| **Claude Code** (CLI, IDE, Desktop) | hooks, transcripts, its session list, the screen | in place; a Desktop session once Desktop lets go of it; a closed session by its id |
-| **Codex** (CLI, app) | hooks, rollout files (exact reset time), the screen | in place; inside the Codex app through its local server; a closed session by its id |
-| **About 25 others** | the screen, through the wrapper or a tmux pane | in place |
+| Agent | Coverage |
+|---|---|
+| Claude Code (CLI, IDE, Desktop), Codex (CLI, app) | Full: hooks, session files and screen |
+| Gemini CLI, Qwen Code, Aider, opencode, Grok CLI, Cursor CLI, GitHub Copilot CLI, Auggie, Cline, Kimi, OpenHands, Kilo Code, Letta, Plandex, Codebuff, Junie, Kiro | Screen: through the wrapper or a tmux pane |
+| Amp, Goose, Factory Droid, Continue, Crush, Mistral Vibe, Pi, Rovo Dev | Screen, with the shell hook opt-in (their command names are shared with other tools) |
 
-[docs/agents.md](docs/agents.md) lists every agent, how each is recognised, and how to
-add one. In short:
+See [docs/agents.md](docs/agents.md) for details, and for how to add an agent or correct
+one's wording without rebuilding.
 
-- **Agent-specific wording.** Each agent's own limit wording is recognised, as is the
-  wording most agents share: "quota exceeded", "rate limit reached", "try again in 2
-  hours", `RESOURCE_EXHAUSTED`, and so on.
-- **Agents under an interpreter.** Agents that run under Node, Bun or Python are
-  recognised by their command line, even though tmux only shows `node`.
-- **Agents with common names.** Agents whose command name other tools also use (`amp`,
-  `goose`, `pi`, `cn`, `droid`, `crush`, `vibe`) are opt-in for the shell hook. Add them
-  with `"shell_hook_agents"`.
-- **Everything is data.** Each agent is an entry in
-  [`default_rules.json`](internal/rules/default_rules.json). Fix or add one in
-  `~/.continuum/rules.json`, with no rebuild.
+## Settings
 
-## Terminals and multiplexers
-
-Continuum never sends keystrokes to a window. It types through one of these routes,
-so focus, minimised windows and the lock screen don't matter.
-
-- **The wrapper** (`continuum run`, applied automatically by the shell hook). It works in
-  any terminal emulator: Terminal.app, iTerm2, Ghostty, Alacritty, WezTerm, kitty,
-  Windows Terminal, VS Code, JetBrains, and plain SSH. The agent runs in a terminal
-  Continuum owns, and all input and output pass through unchanged: colours, mouse,
-  resizing, paste, Ctrl+C, and Ctrl+Z with `fg`.
-- **Multiplexer panes:** tmux, GNU screen, zellij, herdr, Rex, WezTerm and kitty (the
-  last two through their CLIs), including detached sessions.
-- **Scriptable terminal apps:** Ghostty (1.4+), through its scripting interface. This
-  covers agents already open in a plain Ghostty tab, without the shell hook. Continuum
-  finds the exact tab by the agent's terminal and types there, even if the window is
-  hidden or minimised. Ghostty can't show Continuum the screen, so Continuum only types
-  there when the tab's foreground process is the agent itself, and the agent reports
-  that nothing is waiting for an answer. Claude Code reports this; Codex doesn't, so a
-  Codex session in a plain Ghostty tab gets a notification instead. macOS asks once
-  whether Continuum may control Ghostty. The daemon asks right after install, while
-  you're there.
-- **The agent's own commands**, for sessions that are closed (see below).
-
-The shell hook only wraps interactive sessions. Print mode (`claude -p`, `gemini -p`),
-`--version`, subcommands such as `codex exec` or `opencode run`, pipes and redirects
-all run untouched. To skip it once, use `CONTINUUM_NO_WRAP=1 claude` or
-`command claude`. The hook picks up agents you install later without re-running
-`install`.
-
-## All sessions, or only chosen ones
-
-By default every session is covered. To cover only some:
+Everything works without configuration. The settings people change most are these:
 
 ```sh
-continuum scope chosen              # only chosen sessions from now on
-continuum sessions                  # open sessions with ids and names
-continuum choose api-refactor 4f2c1d9e  # by session name or id (prefix)
-continuum choose ~/work/api         # every session started in this folder
-CONTINUUM_CHOOSE=1 claude           # choose a session as you start it
-continuum run --choose -- gemini    # same, explicitly
-continuum unchoose api-refactor         # stop choosing it
-continuum exclude ~/scratch         # never resume these, whatever the scope
-continuum scope all                 # back to every session
+continuum grace claude off   # don't wait for Claude's own auto-resume (default: 5 min)
 ```
 
-Changes apply within seconds. Choosing a session that's already waiting on a limit
-schedules its resume, and unchoosing one cancels its pending resume.
-
-## How it works
-
-```
-  observers                                   daemon                     delivery (first that works)
-  ─────────                                   ──────                     ───────────────────────────
-  Claude Code hooks (StopFailure, Stop, …)  ┐                            1. continuum run wrapper → PTY
-  Claude transcripts  ~/.claude/projects    │   one job per stalled      2. multiplexer pane
-  Codex rollouts      ~/.codex/sessions     ├─▶ session: scope, reset ─▶    tmux · screen · zellij · herdr
-  Codex hooks (SessionStart, Stop)          │   time, "is it open?",        Rex · WezTerm · kitty
-  wrapper (screen of any wrapped agent)     │   activity check, retries  3. agent commands, same session:
-  tmux pane scan (any agent)                ┘                               open background session → claude attach
-                                                                            closed session → claude --bg --resume <id>
-                                                                                             codex queue --thread <id> --resume
+```jsonc
+// ~/.continuum/config.json
+{
+  "resume_prompts": { "claude": "Limit reset. Carry on with the plan." },
+  "notify": true,            // desktop notifications
+  "keep_awake_hours": 8,     // keep the computer awake while a resume is near (0 = off)
+  "dry_run": false           // log what would happen, change nothing
+}
 ```
 
-**Detection.** Several independent sources each report a stall on their own, so losing
-one doesn't stop Continuum:
+All settings are in [docs/configuration.md](docs/configuration.md).
 
-- Claude Code writes the error into its transcript (`isApiErrorMessage`,
-  `error: "rate_limit"`) and fires a `StopFailure` hook.
-- Codex records `usage_limit_exceeded`, plus the exact `resets_at` of the exhausted
-  window, in its rollout file.
-- The wrapper and the tmux pane scanner read the bottom of the agent's screen. That's
-  how every other agent is covered.
-- The desktop apps write the same transcript and rollout files, so Claude Desktop and
-  Codex app sessions are seen too.
-
-**Reset times** come from the exact time when the agent gives one (Codex), or from the
-wording: "resets 10am (Australia/Sydney)", "try again at 5:53 PM", "in 2 hours 13
-minutes", "in 30s", "resets Nov 14, 6pm", ISO times and weekdays. If no time can be
-found, Continuum retries with backoff. Transient errors (529 overloaded, 5xx, dropped
-streams) get a short backoff.
-
-**Before typing**, Continuum checks four things:
-
-1. **Nobody has continued yet.** New activity in the transcript means you or the agent
-   resumed it. So does Claude reporting the session busy since after the limit hit.
-2. **It's still the conversation that stalled.** If the agent's window has moved on to
-   another conversation (`/clear`, `/resume`), Continuum leaves the old one alone.
-3. **The pane still shows the agent.** It checks the foreground process, or the agent's
-   own screen markers, so a prompt never lands in a shell.
-4. **No menu or approval prompt is open.** Enter or a typed letter could pick an option.
-   In testing, Codex showed an "Update available" menu where Enter means *Update now*.
-   Grok's folder-trust screen takes a single `y`, and a Claude background session
-   showed "Resume this conversation?". Continuum refuses all of these, then uses another
-   route or retries later.
-
-## Never a copy, never a new session
-
-Continuum only ever continues the original session:
-
-- **The session is open** in a terminal, pane or the wrapper: Continuum types into it
-  there. For a Claude background session (`claude --bg`), it opens the session with
-  `claude attach` in a hidden terminal, types, and closes that terminal. The session
-  keeps running.
-- **The session is closed** (the agent exited, or a background session isn't running):
-  Continuum continues it under its own id with `claude --bg --resume <id>` or
-  `codex queue --thread <id> --resume`. It's the same conversation, and nothing else
-  has it open, so nothing is copied.
-- **It's open somewhere Continuum can't type**, such as an agent started in a plain
-  terminal before the shell hook was installed, or a session open in a desktop app.
-  Continuum doesn't start a copy. It notifies you, and keeps retrying in case the session
-  becomes reachable.
-
-Continuum learns whether a session is open from the agent itself. It uses
-`claude agents --json`, the running-session files Claude keeps, the process recorded by
-the hook, and a process scan for the other agents. If none of these can answer,
-Continuum assumes the session is open. Set `"allow_copies": true` to allow the CLI route
-anyway.
-
-## Desktop apps
-
-**Claude Desktop.** Claude Desktop runs Claude Code itself (it bundles its own copy).
-Desktop sessions write the same transcripts, and load the same user hooks and plugins
-from `~/.claude`, so `continuum install` covers them with nothing extra. That was
-checked on a real machine: Desktop transcripts record Stop hooks from user-installed
-plugins.
-
-Continuum can't type into an app window, so it handles a stalled Desktop session like
-this:
-
-- **While Desktop may still hold the session,** Continuum never starts a copy. It
-  notifies you once ("send any message there to continue now, or leave it"), then
-  checks again every couple of minutes.
-- **Once Desktop lets go,** Continuum continues the session by itself under its own id.
-  You'll see the continued conversation when you next open it.
-- **Knowing when Desktop has let go.** The safe default treats a Desktop session as held
-  while the app is running. Continuum also watches Claude's own session list. Once that
-  list has shown a Desktop session, Continuum trusts it for that version of Desktop's
-  bundled Claude Code, and continues as soon as the session is no longer listed, with no
-  need to quit the app. When Desktop updates its bundled Claude Code, Continuum goes
-  back to the safe default until it sees a Desktop session in the list again.
-
-**Codex app.** `codex queue` sends the resume prompt to the local Codex app server,
-which the Codex app itself uses. So the session continues inside the app, with no copy
-and no need to close it.
-
-## Waiting for the agent's own resume
-
-Claude Code tries to resume by itself after a reset while it's running, so Continuum
-first gives it 5 minutes past the reset. That way the two never both continue the
-session. Codex gets 30 seconds. The wait is skipped when the agent says it *won't*
-resume (for example "Claude Code exited during the wait…"), or its process is gone.
-Change it with one command; sessions already waiting are re-planned straight away:
+## Updating and uninstalling
 
 ```sh
-continuum grace                  # show the current waits
-continuum grace claude 10        # wait 10 minutes
-continuum grace claude off       # continue right after the reset
-continuum grace claude default   # back to 5 minutes
+git pull && make build && ./continuum update   # apply a new version, keeping your choices
+continuum uninstall                            # remove everything; keep your settings
+continuum uninstall --purge                    # remove everything, including settings and backups
 ```
 
-Apart from this wait, Continuum acts `delay_after_reset_seconds` (default 60) after the
-reset. That margin allows for rounded reset times and clock differences. A resume
-that's too early hits the limit again and is retried after 15 minutes.
-
-## Locked screen, sleep and power
-
-Nothing Continuum does needs the display, so a locked screen doesn't stop it. A
-*sleeping* computer runs nothing, though. While a resume is due within
-`keep_awake_hours` (default 8), and while a resumed session is still working, Continuum
-asks the OS not to idle-sleep:
-
-- macOS: `caffeinate -i -s`
-- Linux: `systemd-inhibit --what=idle:sleep`
-- Windows: `SetThreadExecutionState`
-
-It releases that as soon as nothing is pending. The login service runs as a normal,
-unthrottled background process. Closing a laptop lid on battery still sleeps; resumes
-that came due while asleep run as soon as the computer wakes.
-
-## Safety
-
-- **Closed sessions from before installation are never revived.** Sessions that are
-  open and stalled are picked up. After the daemon has been off, at most 12 hours
-  (`catch_up_hours`) are caught up.
-- **No unsafe typing.** It never types into menus, approval prompts or plain shells, and
-  never starts a copy of an open session.
-- **Billing stops for you.** Billing, credit, spend-cap, sign-in and API-key errors are
-  marked **needs you** and never retried.
-- **One stall, one resume,** even when the hook, transcript and screen all report it.
-  It never types twice into the same pane for one stall.
-- **Limits on retries.** It gives up after 8 attempts (`max_attempts`), and doesn't
-  schedule resets further away than `max_wait_hours` (default 8 days).
-- **Dry runs.** `"dry_run": true` logs what would happen without typing or running
-  anything. Everything is recorded in `~/.continuum/history.jsonl`.
-- **Hooks can't break an agent.** They take about 4 ms, print nothing, and always exit
-  0, even on malformed input.
-
-## Staying compatible with agent updates
-
-Nothing can promise that a future agent release won't change something. Continuum is
-built so most changes are absorbed, and the rest are visible and quick to fix:
-
-- **Stable interfaces first.** Documented hooks, documented CLI flags (`--resume`,
-  `--bg`, `claude agents --json`, `codex queue`), and the session files the agents
-  already keep. Screen reading is a fallback for those two, and the main source only
-  for agents that offer nothing else.
-- **Wording, flags and commands are data.** Every message pattern, CLI flag, menu
-  pattern and multiplexer command lives in
-  [`default_rules.json`](internal/rules/default_rules.json). Override any of it in
-  `~/.continuum/rules.json` without rebuilding (`continuum rules --defaults` prints a
-  starting point). A broken override is reported, and the built-in rules keep working.
-- **Capability probing.** Before using an agent command, Continuum checks the installed
-  agent's `--help` for the flags it needs. If a release drops `--bg`, it falls back to
-  the next command instead of failing.
-- **Lenient parsing.** Unknown fields in hooks, transcripts and session lists are
-  ignored, and missing ones are tolerated.
-- **Updates are noticed and handled automatically.** When an agent updates (its
-  executable changes), the daemon re-checks everything it relies on. That covers its
-  hooks, its resume commands, and whether it still reports its open sessions. If an
-  update removed Continuum's hooks, the daemon re-adds them, keeping every other
-  setting, and tells you. If something can't be repaired, it switches to the safe
-  behaviour (only typing into terminals, never starting a copy) and tells you once,
-  in plain words.
-- **Desktop app updates too.** What Continuum learns about a desktop app is tied to the
-  app's version, and re-checked when the app updates.
-- **Unknown means careful.** When an update removes a field Continuum reads (for example
-  where a session was started), Continuum assumes the cautious answer rather than the
-  convenient one.
-- **Drift shows up.** `continuum doctor` re-checks real limit messages against the
-  rules, checks which resume commands the installed agents still support, the hooks,
-  the desktop apps, and the result of the last update check.
-
-## Configuration
-
-`~/.continuum/config.json`. Every key is optional.
-
-| Key | Default | Meaning |
-|---|---|---|
-| `enabled` | `true` | Turn Continuum off without uninstalling. |
-| `dry_run` | `false` | Log what would happen; type and run nothing. |
-| `harnesses` | all on | Turn agents on or off: `{"aider": false}`. |
-| `resume_prompts` | built in | Prompt per agent: `{"claude": "Limit reset. Carry on."}`. Use `"<agent>_transient"` for API-error resumes. |
-| `delay_after_reset_seconds` | `60` | Margin after the reset time. |
-| `native_grace_seconds` | Claude 300, Codex 30 | Wait for the agent's own resume first. Easier to set with `continuum grace`. |
-| `keep_awake_hours` | `8` | Hold off idle sleep while a resume is due this soon; `0` turns it off. |
-| `allow_copies` | `false` | Let the agent CLI continue a session that's still open elsewhere (starts a copy). |
-| `allow_headless` | `true` | `false`: only type into wrappers and panes, never run agent commands. |
-| `strategies` | `["wrapper","multiplexer","terminal-app","native"]` | Delivery routes, in order. |
-| `shell_hook_agents` | installed agents | Commands the shell hook wraps (replaces the default list). |
-| `max_wait_hours` | `192` | Don't schedule resets further away than this. |
-| `catch_up_hours` | `12` | How far back to catch up after the daemon was off. |
-| `notify` | `true` | Desktop notifications. |
-| `watch_transcripts` | `true` | Read Claude transcripts and Codex rollouts. |
-| `scan_panes` | `true` | Scan tmux panes for other agents. |
-| `poll_seconds` | `5` | How often the daemon checks. |
-| `binaries` | from `PATH` | Agent executables: `{"claude": "/opt/claude"}`. |
-| `claude_home`, `codex_home` | `~/.claude`, `~/.codex` | Where the agents keep their files. |
-| `reset_hints_command` | none | A command printing `{"claude": "<RFC3339>"}`, used when a message gives no reset time. |
-| `autostart_daemon` | `true` | Start the daemon from hooks and `run` if it isn't running. |
-
-The scope is in `~/.continuum/scope.json` (use `continuum scope` and `choose`). Rules
-overrides go in `~/.continuum/rules.json` (see [docs/agents.md](docs/agents.md)).
-
-## Commands
-
-| Command | What it does |
-|---|---|
-| `install`, `update`, `uninstall` | Set up, refresh after a new version, or remove everything |
-| `doctor`, `status`, `version` | Check everything, show state |
-| `sessions`, `list` | Open sessions; scheduled and recent resumes |
-| `resume-now`, `cancel` | Resume a stalled session now, or leave it stalled |
-| `scope`, `choose`, `unchoose`, `exclude`, `include` | All or chosen sessions |
-| `grace` | How long to wait for an agent's own resume |
-| `detect`, `rules` | Test a message against the rules; print the rules or the agent list |
-| `run`, `shell-init` | Run an agent under the wrapper; print the shell hook |
-| `start`, `stop`, `daemon` | Control the background daemon |
-
-`continuum -h` lists them, and `continuum <command> -h` explains one with all its
-options and examples. [docs/cli.md](docs/cli.md) has the full reference.
-
-## Files
-
-Everything is in `~/.continuum`; set `CONTINUUM_HOME` to move it.
-
-| File | Contents |
-|---|---|
-| `config.json` | Your settings |
-| `scope.json` | All or chosen sessions, chosen and excluded entries |
-| `rules.json` | Your rules overrides (optional) |
-| `jobs.json`, `sessions.json`, `offsets.json` | Scheduler state |
-| `history.jsonl` | Every scheduled, delivered, skipped and failed resume |
-| `daemon.log` | Daemon log |
-| `wrappers/` | One folder per running `continuum run` |
-| `install.json` | What `install` set up and your choices, for `update` and for restoring hooks |
-| `compat.json` | Results of the last update check, and what was learned about desktop apps |
-| `bin/continuum` | The installed binary |
+Both commands show what they'll change and ask first. Uninstalling puts your agents'
+settings files back exactly as they were. If Continuum is deleted without
+uninstalling, its hooks do nothing and cause no errors.
 
 ## Limitations
 
-- **Sleep.** A sleeping computer runs nothing. Continuum keeps it awake while a resume
-  is close, but a closed lid on battery still sleeps. Overdue resumes run when it
-  wakes.
-- **Sessions Continuum can't reach in place.** It can't type into a session that was
-  already running in a plain terminal before the shell hook was installed. A Claude
-  Desktop session is continued once Desktop lets go of it, not while it's on screen,
-  because there's no supported way to type into the app window. In both cases you get
-  one notification, and Continuum continues by itself as soon as it safely can.
-- **Editor-based agents.** Agents inside an editor (Cursor or Windsurf editors, VS Code
-  Copilot Chat, Cline or Roo in VS Code, Zed) have no terminal to type into.
-- **Confirmation menus.** If an agent shows one (for example Claude's "Resume this
-  conversation?"), Continuum won't press Enter for you. It notifies you and retries.
-- **Untested wording.** For agents other than Claude Code, Codex, opencode and Grok, the
-  limit wording comes from their public messages and hasn't been checked against a real
-  limit. The shared patterns cover most variations. Corrections go in `rules.json`.
-- **Two wrapped sessions in one folder.** If an agent in the wrapper has no hooks, and
-  two sessions of it stall in the same directory within 3 minutes, Continuum may
-  attach a session to the wrong wrapper.
-- **Terminal apps.** The Ghostty route follows Ghostty's documented scripting interface
-  and is unit-tested, but hasn't run against a live Ghostty here. Terminal.app and
-  iTerm2 aren't supported yet: start agents there with the shell hook, which covers
-  them.
-- **Platforms.** The WezTerm and kitty adapters follow their documented CLIs but weren't
-  available to test. The Windows build (ConPTY wrapper, scheduled task, notifications,
-  keep-awake) compiles but hasn't been run on Windows, and has no shell hook: use
-  `continuum run`.
+- **Sleep.** A sleeping computer can't resume anything. Continuum keeps it awake while
+  a resume is near, but closing a laptop lid on battery still sleeps it. Overdue
+  resumes run when it wakes.
+- **Editor-based agents** (Cursor or Windsurf editors, VS Code Copilot Chat, Cline in
+  VS Code) have no terminal Continuum can type into.
+- **Open where Continuum can't type.** If a session is open somewhere Continuum can't
+  type into, such as a plain terminal started before installing, you get a
+  notification instead of a duplicate session.
+- **Untested.** Windows, WezTerm, kitty and Ghostty support are built but not yet
+  tested on real systems. Limit wording for agents other than Claude Code, Codex,
+  opencode and Grok hasn't been seen at a real limit.
 
-## Development
+## Documentation
+
+- [How it works](docs/how-it-works.md): detection, safety checks, desktop apps, sleep,
+  and staying compatible with agent updates
+- [Configuration](docs/configuration.md): every setting and file
+- [Supported agents](docs/agents.md): coverage per agent, and adding your own
+- [Command reference](docs/cli.md): all commands and options
+- [Changelog](CHANGELOG.md)
+
+## Building from source
 
 ```sh
+make build         # build for this computer (./continuum links to it)
 make test          # unit tests
-make vet           # go vet for macOS, Linux and Windows
-make integration   # real tmux, screen, zellij, herdr, Rex, a Node agent and the wrapper, all detached
-make real-agents   # starts the real Claude Code and Codex TUIs in hidden tmux and types
-                   # into them without pressing Enter (uses no model quota)
-make docs          # regenerate docs/cli.md and docs/agents.md from the binary
-make dist          # binaries for macOS, Linux, Windows (amd64 + arm64)
+make integration   # end-to-end tests in real tmux, screen, zellij, herdr, Rex
+make dist          # binaries for macOS, Linux and Windows, in dist/
+make docs          # regenerate docs/cli.md and docs/agents.md
 ```
-
-Layout:
-
-| Folder | Purpose |
-|---|---|
-| `cmd/continuum` | CLI and help |
-| `internal/rules` | data-driven knowledge of agents and multiplexers |
-| `internal/resettime` | reset-time parsing |
-| `internal/sources` | Claude transcripts and Codex rollouts |
-| `internal/hooks` | agent hook handler and installer |
-| `internal/daemon` | scheduler |
-| `internal/deliver` | delivery routes and safety checks |
-| `internal/live` | is a session open? |
-| `internal/scope` | all or chosen sessions |
-| `internal/awake` | keep-awake |
-| `internal/mux` | multiplexer adapters |
-| `internal/wrapper` | PTY / ConPTY wrapper with job control |
-| `internal/service` | login items |

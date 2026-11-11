@@ -104,5 +104,5 @@ VS Code Copilot Chat, Cline and Roo in VS Code, Zed's agent, Claude and ChatGPT 
 chats) have no terminal Continuum can type into. Claude Code and Codex sessions in their
 desktop apps are the exception. Codex app sessions are continued inside the app,
 through its local server. Claude Desktop sessions are continued by themselves as soon
-as Desktop lets go of them, never copied while it may still hold them. See "Desktop
-apps" in the README.
+as Desktop lets go of them, never copied while it may still hold them. See
+[How it works](how-it-works.md#desktop-apps).

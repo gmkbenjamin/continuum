@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-var Version = "0.1.0"
+var Version = "0.4.0"
 
 // Location says where an agent is running so input can be delivered to it
 // without focusing any window.

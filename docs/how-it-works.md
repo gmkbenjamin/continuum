@@ -1,0 +1,188 @@
+# How Continuum works
+
+The details behind the [README](../README.md): how stalls are found, what is checked before anything is typed, and how Continuum stays safe and compatible.
+
+## How it works
+
+```
+  observers                                   daemon                     delivery (first that works)
+  ─────────                                   ──────                     ───────────────────────────
+  Claude Code hooks (StopFailure, Stop, …)  ┐                            1. continuum run wrapper → PTY
+  Claude transcripts  ~/.claude/projects    │   one job per stalled      2. multiplexer pane
+  Codex rollouts      ~/.codex/sessions     ├─▶ session: scope, reset ─▶    tmux · screen · zellij · herdr
+  Codex hooks (SessionStart, Stop)          │   time, "is it open?",        Rex · WezTerm · kitty
+  wrapper (screen of any wrapped agent)     │   activity check, retries  3. agent commands, same session:
+  tmux pane scan (any agent)                ┘                               open background session → claude attach
+                                                                            closed session → claude --bg --resume <id>
+                                                                                             codex queue --thread <id> --resume
+```
+
+**Detection.** Several independent sources each report a stall on their own, so losing
+one doesn't stop Continuum:
+
+- Claude Code writes the error into its transcript (`isApiErrorMessage`,
+  `error: "rate_limit"`) and fires a `StopFailure` hook.
+- Codex records `usage_limit_exceeded`, plus the exact `resets_at` of the exhausted
+  window, in its rollout file.
+- The wrapper and the tmux pane scanner read the bottom of the agent's screen. That's
+  how every other agent is covered.
+- The desktop apps write the same transcript and rollout files, so Claude Desktop and
+  Codex app sessions are seen too.
+
+**Reset times** come from the exact time when the agent gives one (Codex), or from the
+wording: "resets 10am (Australia/Sydney)", "try again at 5:53 PM", "in 2 hours 13
+minutes", "in 30s", "resets Nov 14, 6pm", ISO times and weekdays. If no time can be
+found, Continuum retries with backoff. Transient errors (529 overloaded, 5xx, dropped
+streams) get a short backoff.
+
+**Before typing**, Continuum checks four things:
+
+1. **Nobody has continued yet.** New activity in the transcript means you or the agent
+   resumed it. So does Claude reporting the session busy since after the limit hit.
+2. **It's still the conversation that stalled.** If the agent's window has moved on to
+   another conversation (`/clear`, `/resume`), Continuum leaves the old one alone.
+3. **The pane still shows the agent.** It checks the foreground process, or the agent's
+   own screen markers, so a prompt never lands in a shell.
+4. **No menu or approval prompt is open.** Enter or a typed letter could pick an option.
+   In testing, Codex showed an "Update available" menu where Enter means *Update now*.
+   Grok's folder-trust screen takes a single `y`, and a Claude background session
+   showed "Resume this conversation?". Continuum refuses all of these, then uses another
+   route or retries later.
+
+## Never a copy, never a new session
+
+Continuum only ever continues the original session:
+
+- **The session is open** in a terminal, pane or the wrapper: Continuum types into it
+  there. For a Claude background session (`claude --bg`), it opens the session with
+  `claude attach` in a hidden terminal, types, and closes that terminal. The session
+  keeps running.
+- **The session is closed** (the agent exited, or a background session isn't running):
+  Continuum continues it under its own id with `claude --bg --resume <id>` or
+  `codex queue --thread <id> --resume`. It's the same conversation, and nothing else
+  has it open, so nothing is copied.
+- **It's open somewhere Continuum can't type**, such as an agent started in a plain
+  terminal before the shell hook was installed, or a session open in a desktop app.
+  Continuum doesn't start a copy. It notifies you, and keeps retrying in case the session
+  becomes reachable.
+
+Continuum learns whether a session is open from the agent itself. It uses
+`claude agents --json`, the running-session files Claude keeps, the process recorded by
+the hook, and a process scan for the other agents. If none of these can answer,
+Continuum assumes the session is open. Set `"allow_copies": true` to allow the CLI route
+anyway.
+
+## Desktop apps
+
+**Claude Desktop.** Claude Desktop runs Claude Code itself (it bundles its own copy).
+Desktop sessions write the same transcripts, and load the same user hooks and plugins
+from `~/.claude`, so `continuum install` covers them with nothing extra. That was
+checked on a real machine: Desktop transcripts record Stop hooks from user-installed
+plugins.
+
+Continuum can't type into an app window, so it handles a stalled Desktop session like
+this:
+
+- **While Desktop may still hold the session,** Continuum never starts a copy. It
+  notifies you once ("send any message there to continue now, or leave it"), then
+  checks again every couple of minutes.
+- **Once Desktop lets go,** Continuum continues the session by itself under its own id.
+  You'll see the continued conversation when you next open it.
+- **Knowing when Desktop has let go.** The safe default treats a Desktop session as held
+  while the app is running. Continuum also watches Claude's own session list. Once that
+  list has shown a Desktop session, Continuum trusts it for that version of Desktop's
+  bundled Claude Code, and continues as soon as the session is no longer listed, with no
+  need to quit the app. When Desktop updates its bundled Claude Code, Continuum goes
+  back to the safe default until it sees a Desktop session in the list again.
+
+**Codex app.** `codex queue` sends the resume prompt to the local Codex app server,
+which the Codex app itself uses. So the session continues inside the app, with no copy
+and no need to close it.
+
+## Waiting for the agent's own resume
+
+Claude Code tries to resume by itself after a reset while it's running, so Continuum
+first gives it 5 minutes past the reset. That way the two never both continue the
+session. Codex gets 30 seconds. The wait is skipped when the agent says it *won't*
+resume (for example "Claude Code exited during the wait…"), or its process is gone.
+Change it with one command; sessions already waiting are re-planned straight away:
+
+```sh
+continuum grace                  # show the current waits
+continuum grace claude 10        # wait 10 minutes
+continuum grace claude off       # continue right after the reset
+continuum grace claude default   # back to 5 minutes
+```
+
+Apart from this wait, Continuum acts `delay_after_reset_seconds` (default 60) after the
+reset. That margin allows for rounded reset times and clock differences. A resume
+that's too early hits the limit again and is retried after 15 minutes.
+
+## Locked screen, sleep and power
+
+Nothing Continuum does needs the display, so a locked screen doesn't stop it. A
+*sleeping* computer runs nothing, though. While a resume is due within
+`keep_awake_hours` (default 8), and while a resumed session is still working, Continuum
+asks the OS not to idle-sleep:
+
+- macOS: `caffeinate -i -s`
+- Linux: `systemd-inhibit --what=idle:sleep`
+- Windows: `SetThreadExecutionState`
+
+It releases that as soon as nothing is pending. The login service runs as a normal,
+unthrottled background process. Closing a laptop lid on battery still sleeps; resumes
+that came due while asleep run as soon as the computer wakes.
+
+## Safety
+
+- **Closed sessions from before installation are never revived.** Sessions that are
+  open and stalled are picked up. After the daemon has been off, at most 12 hours
+  (`catch_up_hours`) are caught up.
+- **No unsafe typing.** It never types into menus, approval prompts or plain shells, and
+  never starts a copy of an open session.
+- **Billing stops for you.** Billing, credit, spend-cap, sign-in and API-key errors are
+  marked **needs you** and never retried.
+- **One stall, one resume,** even when the hook, transcript and screen all report it.
+  It never types twice into the same pane for one stall.
+- **Limits on retries.** It gives up after 8 attempts (`max_attempts`), and doesn't
+  schedule resets further away than `max_wait_hours` (default 8 days).
+- **Dry runs.** `"dry_run": true` logs what would happen without typing or running
+  anything. Everything is recorded in `~/.continuum/history.jsonl`.
+- **Hooks can't break an agent.** They take about 4 ms, print nothing, and always exit
+  0, even on malformed input.
+
+## Staying compatible with agent updates
+
+Nothing can promise that a future agent release won't change something. Continuum is
+built so most changes are absorbed, and the rest are visible and quick to fix:
+
+- **Stable interfaces first.** Documented hooks, documented CLI flags (`--resume`,
+  `--bg`, `claude agents --json`, `codex queue`), and the session files the agents
+  already keep. Screen reading is a fallback for those two, and the main source only
+  for agents that offer nothing else.
+- **Wording, flags and commands are data.** Every message pattern, CLI flag, menu
+  pattern and multiplexer command lives in
+  [`default_rules.json`](../internal/rules/default_rules.json). Override any of it in
+  `~/.continuum/rules.json` without rebuilding (`continuum rules --defaults` prints a
+  starting point). A broken override is reported, and the built-in rules keep working.
+- **Capability probing.** Before using an agent command, Continuum checks the installed
+  agent's `--help` for the flags it needs. If a release drops `--bg`, it falls back to
+  the next command instead of failing.
+- **Lenient parsing.** Unknown fields in hooks, transcripts and session lists are
+  ignored, and missing ones are tolerated.
+- **Updates are noticed and handled automatically.** When an agent updates (its
+  executable changes), the daemon re-checks everything it relies on. That covers its
+  hooks, its resume commands, and whether it still reports its open sessions. If an
+  update removed Continuum's hooks, the daemon re-adds them, keeping every other
+  setting, and tells you. If something can't be repaired, it switches to the safe
+  behaviour (only typing into terminals, never starting a copy) and tells you once,
+  in plain words.
+- **Desktop app updates too.** What Continuum learns about a desktop app is tied to the
+  app's version, and re-checked when the app updates.
+- **Unknown means careful.** When an update removes a field Continuum reads (for example
+  where a session was started), Continuum assumes the cautious answer rather than the
+  convenient one.
+- **Drift shows up.** `continuum doctor` re-checks real limit messages against the
+  rules, checks which resume commands the installed agents still support, the hooks,
+  the desktop apps, and the result of the last update check.
+
