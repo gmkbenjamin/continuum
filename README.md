@@ -40,8 +40,81 @@ make build
 ```
 
 `install` first lists everything it will create or change, where it is and what it's
-for, and asks before doing anything. Run `continuum doctor` afterwards to check that
-everything works. Open a new terminal tab to start using it.
+for, and asks before doing anything (see [What it installs](#what-it-installs)). Run
+`continuum doctor` afterwards to check that everything works. Open a new terminal tab
+to start using it.
+
+## How it works
+
+1. **Notice the stall.** When an agent hits a limit, Continuum learns about it from up
+   to three places:
+   - the agent's hook (Claude Code and Codex call `continuum hook` on session events);
+   - the session files the agent already writes (`~/.claude/projects`,
+     `~/.codex/sessions`);
+   - the bottom of the agent's screen, for every other agent.
+
+   It reads the reset time from the message, for example "resets 10am" or "try again
+   in 2h".
+2. **Wait.** It schedules a resume one minute after the reset. For Claude Code it waits
+   5 minutes after the reset instead, in case Claude resumes on its own. Change this
+   with `continuum grace`.
+3. **Check.** Just before acting, it checks four things:
+   - the session hasn't already continued;
+   - the agent is still the program in that window;
+   - no menu or approval prompt is open;
+   - the session is in scope.
+
+   If any check fails, it waits and tries again later.
+4. **Continue.** It types a short "your limit has reset, continue" message into the
+   same session. It does this through its own terminal wrapper or the multiplexer pane
+   (tmux and others), so the window doesn't need focus. A session that has been closed
+   is continued under its own id with the agent's own command, for example
+   `claude --bg --resume <id>`.
+
+More detail is in [docs/how-it-works.md](docs/how-it-works.md).
+
+## What it installs
+
+Everything is under your user account. Nothing needs admin rights, and nothing is sent
+over the network.
+
+| What | Where | Why |
+|---|---|---|
+| The program | `~/.continuum/bin/continuum` | Run by everything below. |
+| Command link | `~/.local/bin/continuum` (only if that folder is on your `PATH`) | So `continuum` works in any terminal. |
+| Data folder | `~/.continuum/` | Settings (`config.json`, `scope.json`), scheduled resumes, `history.jsonl`, `daemon.log`, and a record of what was installed. |
+| Claude Code hooks | `~/.claude/settings.json`: `SessionStart`, `StopFailure`, `Stop`, `SessionEnd` | Claude Code reports stalls and where each session runs. This also covers Claude Desktop. |
+| Codex hooks | `~/.codex/hooks.json`: `SessionStart`, `Stop` | Codex reports where each session runs. |
+| Shell hook | A marked block in `~/.zshrc`, `~/.bashrc` or fish's `conf.d/continuum.fish` | Runs interactive `claude`, `codex` and other installed agents under the wrapper, so Continuum can type into them. |
+| Login item | macOS: `~/Library/LaunchAgents/dev.continuum.daemon.plist`. Linux: `~/.config/systemd/user/continuum.service`. Windows: scheduled task "Continuum". | Starts the background daemon when you log in. |
+| Backups | `<file>.continuum-backup-<date-time>` next to each file it changes | Your file as it was before Continuum touched it. |
+
+Each hook is one line, `/bin/sh -c '"~/.continuum/bin/continuum" hook claude 2>/dev/null
+|| true'`. Your other settings and hooks are left alone. `continuum uninstall` removes
+all of this, and `--purge` also removes the data folder and the backups.
+
+## What runs in the background
+
+- **One daemon**, `continuum daemon`, started at login. It uses about 25 MB of memory
+  and well under 1% of one CPU core. It:
+  - collects events from hooks every 5 seconds;
+  - reads new lines of the agents' session files every 10 seconds;
+  - looks at tmux panes running other agents every 15 seconds;
+  - checks the hooks are intact, and whether an agent was updated, every 10 minutes.
+
+  It types or runs anything only when a resume is due.
+- **Hooks**, run by Claude Code and Codex on session events. Each takes a few
+  milliseconds, drops a small event file in `~/.continuum/spool/`, and starts the
+  daemon if it isn't running.
+- **The wrapper**, around each agent started from your shell: two small processes,
+  `continuum run` and `continuum __pty-helper`, which pass everything through. They
+  exit when the agent does.
+- **Keep-awake**, only while a resume is less than 8 hours away or a resumed session is
+  still working. On macOS it's a `caffeinate` process, on Linux `systemd-inhibit`, and
+  on Windows a system flag. It's released as soon as nothing is pending.
+
+To check what it's doing, run `continuum status` and `continuum list`, or look at
+`~/.continuum/daemon.log`. `continuum stop` stops the daemon until the next login.
 
 ## Using it
 
