@@ -69,6 +69,11 @@ continuum install - Hook Continuum into your agents, shell and login items
 Usage:
   continuum install [options]
 
+  First shows every file and item it will create or change, where it is and
+  what it is for, and asks you to confirm (default: no). --dry-run shows the
+  list and stops; --yes skips the question (needed when there is no terminal to
+  ask in, e.g. in scripts).
+
   Sets Continuum up so it works on its own from now on:
 
     1. Copies this binary to ~/.continuum/bin/continuum (and links it into
@@ -97,12 +102,16 @@ Options:
   --only AGENTS          Comma-separated AGENTS to add hooks for, e.g.
                          claude,codex (default: every installed agent that has
                          hooks).
+  -y                     Same as --yes.
+  --yes                  Don't ask for confirmation; go ahead (for scripts).
+                         Also -y.
   -h, --help             Show this help.
 
 Examples:
   continuum install --dry-run
   continuum install
   continuum install --no-shell --only claude
+  continuum install --yes
 ```
 
 ## update
@@ -114,7 +123,8 @@ Usage:
   continuum update [options]
 
   Re-applies your install with the choices you made then (shell hook, login
-  item, which agents), using the binary you run it from. Use it after building
+  item, which agents), using the binary you run it from. Like install, it first
+  lists everything it will change and asks you to confirm (--yes to skip). Use it after building
   or downloading a new version:
 
     git pull && make build && ./continuum update
@@ -131,11 +141,15 @@ Usage:
 
 Options:
   --dry-run              Show what would change, and change nothing.
+  -y                     Same as --yes.
+  --yes                  Don't ask for confirmation; go ahead (for scripts).
+                         Also -y.
   -h, --help             Show this help.
 
 Examples:
   ./continuum update --dry-run
   ./continuum update
+  ./continuum update --yes
 ```
 
 ## uninstall
@@ -145,6 +159,9 @@ continuum uninstall - Remove everything Continuum added
 
 Usage:
   continuum uninstall [options]
+
+  First lists everything it will remove, change or keep, where it is and
+  what it was for, and asks you to confirm (default: no; --yes to skip).
 
   Removes, in this order: the login item and the running daemon; Continuum's
   hooks from every event in the agents' settings files (any version's, keeping
@@ -166,12 +183,16 @@ Options:
                          history, logs) and the backups Continuum saved of your
                          settings files. Without it, those are kept so a later
                          install picks up where you left off.
+  -y                     Same as --yes.
+  --yes                  Don't ask for confirmation; go ahead (for scripts).
+                         Also -y.
   -h, --help             Show this help.
 
 Examples:
   continuum uninstall --dry-run
   continuum uninstall
   continuum uninstall --purge
+  continuum uninstall --purge --yes
 ```
 
 ## doctor

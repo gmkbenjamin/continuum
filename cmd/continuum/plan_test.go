@@ -1,0 +1,150 @@
+package main
+
+import (
+	"bytes"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/continuum-dev/continuum/internal/core"
+	"github.com/continuum-dev/continuum/internal/hooks"
+	"github.com/continuum-dev/continuum/internal/rules"
+)
+
+func TestConfirm(t *testing.T) {
+	old := stdinIsTerminal
+	t.Cleanup(func() { stdinIsTerminal = old })
+
+	stdinIsTerminal = func() bool { return false }
+	if err := confirm("go?", false, strings.NewReader("y\n")); err == nil || !strings.Contains(err.Error(), "--yes") {
+		t.Fatalf("no terminal: %v", err)
+	}
+	if err := confirm("go?", true, nil); err != nil {
+		t.Fatalf("--yes: %v", err)
+	}
+	stdinIsTerminal = func() bool { return true }
+	for in, want := range map[string]error{"y\n": nil, "YES\n": nil, "\n": errDeclined, "n\n": errDeclined, "maybe\n": errDeclined, "": errDeclined} {
+		if err := confirm("go?", false, strings.NewReader(in)); !errors.Is(err, want) && !(err == nil && want == nil) {
+			t.Errorf("%q: got %v want %v", in, err, want)
+		}
+	}
+}
+
+func sandboxHome(t *testing.T) string {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ZDOTDIR", "")
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("CONTINUUM_HOME", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CODEX_HOME", "")
+	os.MkdirAll(filepath.Join(home, ".claude"), 0o700)
+	os.MkdirAll(filepath.Join(home, ".codex"), 0o700)
+	os.MkdirAll(filepath.Join(home, ".local", "bin"), 0o700)
+	t.Setenv("PATH", filepath.Join(home, ".local", "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+	os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte("{\n  \"model\": \"opus\"\n}\n"), 0o600)
+	os.WriteFile(filepath.Join(home, ".zshrc"), []byte("export EDITOR=vim\n"), 0o600)
+	return home
+}
+
+func whats(items []planItem) map[string]planItem {
+	m := map[string]planItem{}
+	for _, it := range items {
+		m[it.What+"|"+tildePath(it.Path)] = it
+	}
+	return m
+}
+
+func TestInstallPlanListsEverything(t *testing.T) {
+	home := sandboxHome(t)
+	p := core.GetPaths()
+	cfg, _ := core.LoadConfig(p.Config)
+	r, _ := rules.Load("")
+	items := installPlanItems(installOptions{Copy: true, Shell: true, Service: true}, p, cfg, r)
+	m := whats(items)
+	for _, key := range []string{
+		"Continuum program|~/.continuum/bin/continuum",
+		"command link|~/.local/bin/continuum",
+		"Continuum folder|~/.continuum",
+		"Claude Code hooks|~/.claude/settings.json",
+		"Codex hooks|~/.codex/hooks.json",
+		"zsh shell hook|~/.zshrc",
+	} {
+		it, ok := m[key]
+		if !ok {
+			t.Errorf("plan is missing %s; has %v", key, keys(m))
+			continue
+		}
+		if it.Purpose == "" {
+			t.Errorf("%s has no purpose", key)
+		}
+	}
+	if m["Claude Code hooks|~/.claude/settings.json"].Action != "change" || m["Codex hooks|~/.codex/hooks.json"].Action != "create" {
+		t.Errorf("actions: %+v", items)
+	}
+	var out bytes.Buffer
+	printPlan(&out, "Continuum will make these changes:", items, installFooter)
+	if !strings.Contains(out.String(), "login item") || !strings.Contains(out.String(), "sends nothing anywhere") {
+		t.Errorf("printed plan:\n%s", out.String())
+	}
+	_ = home
+}
+
+func TestUninstallPlan(t *testing.T) {
+	home := sandboxHome(t)
+	p := core.GetPaths()
+	cfg, _ := core.LoadConfig(p.Config)
+	if items := uninstallPlanItems(p, cfg, false); len(items) != 0 {
+		t.Fatalf("nothing installed, but plan: %+v", items)
+	}
+	// Install the parts that need no running processes.
+	for _, tg := range hooks.Targets(cfg) {
+		hooks.Install(tg, "/x/.continuum/bin/continuum", false)
+	}
+	installShell("/x/.continuum/bin/continuum", false)
+	os.MkdirAll(p.Home, 0o700)
+	os.WriteFile(filepath.Join(p.Home, "jobs.json"), []byte("{}"), 0o600)
+
+	m := whats(uninstallPlanItems(p, cfg, false))
+	for _, key := range []string{"Claude Code hooks|~/.claude/settings.json", "Codex hooks|~/.codex/hooks.json", "zsh shell hook|~/.zshrc"} {
+		if _, ok := m[key]; !ok {
+			t.Errorf("uninstall plan is missing %s; has %v", key, keys(m))
+		}
+	}
+	if m["Continuum folder|~/.continuum"].Action != "keep" {
+		t.Errorf("folder should be kept without --purge")
+	}
+	n := 0
+	for k := range m {
+		if strings.HasPrefix(k, "zsh shell hook") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf(".zshrc listed %d times", n)
+	}
+	purge := whats(uninstallPlanItems(p, cfg, true))
+	if purge["Continuum folder|~/.continuum"].Action != "remove" {
+		t.Errorf("--purge should remove the folder")
+	}
+	backups := 0
+	for k := range purge {
+		if strings.HasPrefix(k, "settings backup|") {
+			backups++
+		}
+	}
+	if backups != 2 { // settings.json and .zshrc (hooks.json was created, not changed)
+		t.Errorf("backups listed: %d (%v)", backups, keys(purge))
+	}
+	_ = home
+}
+
+func keys(m map[string]planItem) []string {
+	var out []string
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}

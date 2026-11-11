@@ -524,11 +524,11 @@ func linkIntoPath(bin string, dry bool) {
 		return
 	}
 	if dry {
-		fmt.Println("link:      would link", link)
+		fmt.Println("link:      would link", tildePath(link))
 		return
 	}
 	if err := os.Symlink(bin, link); err == nil {
-		fmt.Println("link:     ", link)
+		fmt.Println("link:     ", tildePath(link))
 	}
 }
 

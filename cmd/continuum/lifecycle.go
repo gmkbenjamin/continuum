@@ -42,15 +42,40 @@ func cmdInstall(args []string) error {
 	dry := fs.Bool("dry-run", false, "Show what would change, and change nothing.")
 	only := fs.String("only", "", "Comma-separated `AGENTS` to add hooks for, e.g. claude,codex (default: every installed agent that has hooks).")
 	noShell := fs.Bool("no-shell", false, "Do not add the shell hook. Without it, agents in plain terminals (no tmux etc.) can only be resumed if started with `continuum run`.")
+	yes := fs.Bool("yes", false, "Don't ask for confirmation; go ahead (for scripts). Also -y.")
+	fs.BoolVar(yes, "y", false, "Same as --yes.")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
-	return doInstall(installOptions{Copy: !*noCopy, Shell: !*noShell, Service: !*noService, Dry: *dry, Only: *only})
+	o := installOptions{Copy: !*noCopy, Shell: !*noShell, Service: !*noService, Only: *only}
+	return planAndInstall(o, *dry, *yes, "Continuum will make these changes:", "Install Continuum?")
+}
+
+// planAndInstall shows what install (or update) will do, asks, and does it.
+func planAndInstall(o installOptions, dry, yes bool, title, question string) error {
+	p := core.GetPaths()
+	cfg, _ := core.LoadConfig(p.Config)
+	r, _ := rules.Cached(p.Rules)
+	printPlan(os.Stdout, title, installPlanItems(o, p, cfg, r), installFooter)
+	if dry {
+		fmt.Println("(dry run: nothing was changed)")
+		return nil
+	}
+	if err := confirm(question, yes, os.Stdin); err != nil {
+		if errors.Is(err, errDeclined) {
+			fmt.Println("Cancelled. Nothing was changed.")
+			return nil
+		}
+		return err
+	}
+	return doInstall(o)
 }
 
 func cmdUpdate(args []string) error {
 	fs := newFlagSet("update")
 	dry := fs.Bool("dry-run", false, "Show what would change, and change nothing.")
+	yes := fs.Bool("yes", false, "Don't ask for confirmation; go ahead (for scripts). Also -y.")
+	fs.BoolVar(yes, "y", false, "Same as --yes.")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
@@ -59,8 +84,9 @@ func cmdUpdate(args []string) error {
 	if !ok {
 		return errors.New("Continuum is not installed here; run `continuum install`")
 	}
-	fmt.Printf("Updating Continuum %s → %s with your previous choices.\n\n", orUnknown(rec.Version), core.Version)
-	return doInstall(installOptions{Copy: rec.Copy || rec.Version == "", Shell: rec.Shell || rec.Version == "", Service: rec.Service || rec.Version == "", Only: rec.Only, Dry: *dry, Update: true})
+	o := installOptions{Copy: rec.Copy || rec.Version == "", Shell: rec.Shell || rec.Version == "", Service: rec.Service || rec.Version == "", Only: rec.Only, Update: true}
+	title := fmt.Sprintf("Updating Continuum %s → %s, with the choices you made at install. These changes will be made:", orUnknown(rec.Version), core.Version)
+	return planAndInstall(o, *dry, *yes, title, "Update Continuum?")
 }
 
 func orUnknown(v string) string {
@@ -90,7 +116,7 @@ func doInstall(o installOptions) error {
 			}
 		}
 		bin = dst
-		fmt.Println("binary:   ", bin)
+		fmt.Println("binary:   ", tildePath(bin))
 		linkIntoPath(bin, o.Dry)
 	}
 
@@ -124,7 +150,7 @@ func doInstall(o installOptions) error {
 		} else if o.Dry {
 			verb = "would have " + verb
 		}
-		fmt.Printf("%-9s %s %s\n", t.Harness+":", verb, t.Path)
+		fmt.Printf("%-9s %s %s\n", t.Harness+":", verb, tildePath(t.Path))
 	}
 
 	if o.Shell && runtime.GOOS != "windows" {
@@ -163,7 +189,7 @@ func doInstall(o installOptions) error {
 			if where == "" {
 				where = "scheduled task Continuum"
 			}
-			fmt.Println("service:   starts at login via", where)
+			fmt.Println("service:   starts at login via", tildePath(where))
 		}
 	} else if !o.Dry {
 		_ = cmdStart()
@@ -214,11 +240,36 @@ func cmdUninstall(args []string) error {
 	fs := newFlagSet("uninstall")
 	dry := fs.Bool("dry-run", false, "Show what would change, and change nothing.")
 	purge := fs.Bool("purge", false, "Also delete ~/.continuum (the binary, settings, scope, history, logs) and the backups Continuum saved of your settings files. Without it, those are kept so a later install picks up where you left off.")
+	yes := fs.Bool("yes", false, "Don't ask for confirmation; go ahead (for scripts). Also -y.")
+	fs.BoolVar(yes, "y", false, "Same as --yes.")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	p := core.GetPaths()
 	cfg, _ := core.LoadConfig(p.Config)
+	items := uninstallPlanItems(p, cfg, *purge)
+	changes := 0
+	for _, it := range items {
+		if it.Action != "keep" && it.Action != "none" {
+			changes++
+		}
+	}
+	if changes == 0 {
+		fmt.Println("Continuum isn't installed here: there is nothing to remove.")
+		return nil
+	}
+	printPlan(os.Stdout, "Continuum will make these changes:", items, []string{"Agent sessions running right now keep working normally; they just won't be resumed after a limit any more."})
+	if *dry {
+		fmt.Println("(dry run: nothing was changed)")
+		return nil
+	}
+	if err := confirm("Uninstall Continuum?", *yes, os.Stdin); err != nil {
+		if errors.Is(err, errDeclined) {
+			fmt.Println("Cancelled. Nothing was changed.")
+			return nil
+		}
+		return err
+	}
 	say := func(what, msg string) { fmt.Printf("%-9s %s\n", what+":", msg) }
 	would := func(s string) string {
 		if *dry {
@@ -230,14 +281,18 @@ func cmdUninstall(args []string) error {
 	// 1. Stop the daemon and remove the login item first, so nothing re-adds
 	// what is removed next.
 	if !*dry {
-		if err := service.Uninstall(p); err != nil {
-			say("service", err.Error())
+		if service.Installed(p) {
+			if err := service.Uninstall(p); err != nil {
+				say("service", err.Error())
+			} else {
+				say("service", "login item removed")
+			}
 		}
 		if daemonRunning(p) {
 			stopDaemon(p)
+			say("daemon", "stopped")
 		}
 	}
-	say("service", would("remove the login item and stop the daemon"))
 
 	// 2. Agent hooks: every Continuum hook, in every event, any version.
 	for _, t := range hooks.Targets(cfg) {
@@ -246,7 +301,7 @@ func cmdUninstall(args []string) error {
 		case err != nil:
 			say(t.Harness, err.Error())
 		case changed:
-			say(t.Harness, would("remove its hooks from ")+t.Path)
+			say(t.Harness, would("remove its hooks from ")+tildePath(t.Path))
 		}
 	}
 	// 3. Shell hook blocks, in every shell's startup file.
@@ -260,7 +315,7 @@ func cmdUninstall(args []string) error {
 		if !*dry {
 			os.Remove(link)
 		}
-		say("link", would("remove ")+link)
+		say("link", would("remove ")+tildePath(link))
 	}
 	if !*dry {
 		os.Remove(daemon.InstallPath(p))
@@ -292,7 +347,7 @@ func cmdUninstall(args []string) error {
 					say("data", err.Error())
 				}
 			}
-			say("data", would("delete ")+p.Home)
+			say("data", would("delete ")+tildePath(p.Home))
 		}
 	}
 	if *dry {

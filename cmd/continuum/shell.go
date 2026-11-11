@@ -209,11 +209,11 @@ func installShell(bin string, dry bool) []string {
 		old, _ := os.ReadFile(rc.Path)
 		next := replaceBlock(string(old), snip)
 		if next == string(old) {
-			out = append(out, fmt.Sprintf("%-9s already set up in %s", "shell:", rc.Path))
+			out = append(out, fmt.Sprintf("%-9s already set up in %s", "shell:", tildePath(rc.Path)))
 			continue
 		}
 		if dry {
-			out = append(out, fmt.Sprintf("%-9s would add the agent hook to %s", "shell:", rc.Path))
+			out = append(out, fmt.Sprintf("%-9s would add the agent hook to %s", "shell:", tildePath(rc.Path)))
 			continue
 		}
 		if len(old) > 0 {
@@ -226,7 +226,7 @@ func installShell(bin string, dry bool) []string {
 			out = append(out, fmt.Sprintf("%-9s %s: %v", "shell:", rc.Path, err))
 			continue
 		}
-		out = append(out, fmt.Sprintf("%-9s agent hook added to %s (new terminals)", "shell:", rc.Path))
+		out = append(out, fmt.Sprintf("%-9s agent hook added to %s (new terminals)", "shell:", tildePath(rc.Path)))
 	}
 	return out
 }
@@ -235,13 +235,21 @@ func installShell(bin string, dry bool) []string {
 // whatever the current login shell.
 func allRCs() []rcFile {
 	home, _ := os.UserHomeDir()
-	return []rcFile{
+	var out []rcFile
+	seen := map[string]bool{}
+	for _, rc := range []rcFile{
 		{"zsh", filepath.Join(zdotdir(home), ".zshrc")},
 		{"zsh", filepath.Join(home, ".zshrc")},
 		{"bash", filepath.Join(home, ".bashrc")},
 		{"bash", filepath.Join(home, ".bash_profile")},
 		{"fish", filepath.Join(home, ".config", "fish", "conf.d", "continuum.fish")},
+	} {
+		if !seen[rc.Path] {
+			seen[rc.Path] = true
+			out = append(out, rc)
+		}
 	}
+	return out
 }
 
 func uninstallShell(dry bool) []string {
@@ -267,7 +275,7 @@ func uninstallShell(dry bool) []string {
 			out = append(out, fmt.Sprintf("%-9s %s: %v", "shell:", rc.Path, err))
 			continue
 		}
-		out = append(out, fmt.Sprintf("%-9s hook removed from %s", "shell:", rc.Path))
+		out = append(out, fmt.Sprintf("%-9s hook removed from %s", "shell:", tildePath(rc.Path)))
 	}
 	return out
 }

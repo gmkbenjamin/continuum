@@ -30,7 +30,12 @@ var helpEntries = []helpEntry{
 	{
 		Name: "install", Group: "Set up", Args: "[options]",
 		Summary: "Hook Continuum into your agents, shell and login items",
-		Detail: `Sets Continuum up so it works on its own from now on:
+		Detail: `First shows every file and item it will create or change, where it is and
+what it is for, and asks you to confirm (default: no). --dry-run shows the
+list and stops; --yes skips the question (needed when there is no terminal to
+ask in, e.g. in scripts).
+
+Sets Continuum up so it works on its own from now on:
 
   1. Copies this binary to ~/.continuum/bin/continuum (and links it into
      ~/.local/bin when that folder is on your PATH).
@@ -45,13 +50,14 @@ var helpEntries = []helpEntry{
 
 Running it again updates everything in place. ` + "`continuum uninstall`" + ` reverses it.
 Limits that happened before installing are never resumed.`,
-		Examples: []string{"continuum install --dry-run", "continuum install", "continuum install --no-shell --only claude"},
+		Examples: []string{"continuum install --dry-run", "continuum install", "continuum install --no-shell --only claude", "continuum install --yes"},
 	},
 	{
 		Name: "update", Group: "Set up", Args: "[options]",
 		Summary: "Apply this version: refresh hooks, shell hook and login item",
 		Detail: `Re-applies your install with the choices you made then (shell hook, login
-item, which agents), using the binary you run it from. Use it after building
+item, which agents), using the binary you run it from. Like install, it first
+lists everything it will change and asks you to confirm (--yes to skip). Use it after building
 or downloading a new version:
 
   git pull && make build && ./continuum update
@@ -65,12 +71,15 @@ are kept.
 The daemon also keeps the hooks current by itself: if an agent update
 removes them, or they point at an old location, it rewrites them and tells
 you.`,
-		Examples: []string{"./continuum update --dry-run", "./continuum update"},
+		Examples: []string{"./continuum update --dry-run", "./continuum update", "./continuum update --yes"},
 	},
 	{
 		Name: "uninstall", Group: "Set up", Args: "[options]",
 		Summary: "Remove everything Continuum added",
-		Detail: `Removes, in this order: the login item and the running daemon; Continuum's
+		Detail: `First lists everything it will remove, change or keep, where it is and
+what it was for, and asks you to confirm (default: no; --yes to skip).
+
+Removes, in this order: the login item and the running daemon; Continuum's
 hooks from every event in the agents' settings files (any version's, keeping
 all of yours; the files go back to their original bytes); the shell hook
 block from every shell startup file; the ~/.local/bin link. Then it checks
@@ -83,7 +92,7 @@ with the backups Continuum saved of your settings files.
 Agent sessions running under Continuum at the time keep working normally.
 And if Continuum is ever deleted without uninstalling, its hooks stay
 harmless: they do nothing, silently, until removed.`,
-		Examples: []string{"continuum uninstall --dry-run", "continuum uninstall", "continuum uninstall --purge"},
+		Examples: []string{"continuum uninstall --dry-run", "continuum uninstall", "continuum uninstall --purge", "continuum uninstall --purge --yes"},
 	},
 	{
 		Name: "doctor", Group: "Set up",
@@ -348,6 +357,9 @@ func printHelp(w io.Writer, name string, fs *flag.FlagSet) {
 		for _, n := range names {
 			f := fs.Lookup(n)
 			left := "--" + f.Name
+			if len(f.Name) == 1 {
+				left = "-" + f.Name
+			}
 			if !isBoolFlag(f) {
 				left += " " + valueName(f)
 			}

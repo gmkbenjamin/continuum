@@ -58,6 +58,29 @@ make build                       # or: go build -o continuum ./cmd/continuum
 continuum doctor                 # check it
 ```
 
+Before changing anything, `install` lists every file and item it will create or
+change: where it is, what it's for, and whether it's already up to date. Then it asks
+you to confirm (the default is no). Use `--dry-run` to see the list and stop, or
+`--yes` to skip the question, which is needed when there's no terminal to ask in,
+such as in scripts. For example:
+
+```
+Continuum will make these changes:
+
+ 4. Claude Code hooks: will change
+    where:   ~/.claude/settings.json
+    purpose: lets Claude Code (terminal, IDE and Desktop) tell Continuum when a session
+             stalls on a limit, and where it runs
+             adds a hook to: SessionStart, StopFailure, Stop, SessionEnd; every other
+             setting and hook in it stays as it is
+             a backup is saved first, next to it: settings.json.continuum-backup-<date-time>
+ …
+Continuum works entirely on this computer: it sends nothing anywhere.
+Everything above is undone by `continuum uninstall`.
+
+Install Continuum? [y/N]
+```
+
 `install` sets up four things, and running it again updates them in place:
 
 1. **The binary.** It's copied to `~/.continuum/bin/continuum`, and linked into
@@ -85,7 +108,8 @@ the shell hook loads for new sessions.
 git pull && make build && ./continuum update
 ```
 
-`update` re-applies your install with the choices you made then. It copies the new
+`update` re-applies your install with the choices you made then. Like `install`, it
+first shows what it will change and asks. It copies the new
 binary into place and rewrites Continuum's hooks in the current format, removing any an
 older version added that this one no longer uses. It also refreshes the shell hook and
 login item, and restarts the daemon on the new binary. Your settings, scope and history
@@ -104,7 +128,8 @@ continuum uninstall             # remove everything; keep ~/.continuum
 continuum uninstall --purge     # also delete ~/.continuum and the settings backups
 ```
 
-`uninstall` removes things in this order:
+`uninstall` first lists everything it will remove, change or keep, and asks you to
+confirm (`--yes` skips the question). It then removes things in this order:
 
 1. The login item and the running daemon.
 2. Every Continuum hook, in every event, from any version, keeping all of yours. Each
