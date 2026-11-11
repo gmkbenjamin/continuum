@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,6 +18,7 @@ import (
 	"github.com/continuum-dev/continuum/internal/core"
 	"github.com/continuum-dev/continuum/internal/deliver"
 	"github.com/continuum-dev/continuum/internal/live"
+	"github.com/continuum-dev/continuum/internal/logx"
 	"github.com/continuum-dev/continuum/internal/mux"
 	"github.com/continuum-dev/continuum/internal/notify"
 	"github.com/continuum-dev/continuum/internal/proc"
@@ -49,7 +49,7 @@ type Daemon struct {
 	Now       func() time.Time
 	DeliverFn func(deliver.Options, *core.Job) (deliver.Result, error)
 	NotifyFn  func(title, body string)
-	Logger    *log.Logger
+	Log       *logx.Logger
 	// LiveFn reports whether a job's session is open right now (nil: unknown).
 	LiveFn func(*core.Job) *live.State
 	// Awake keeps the computer from idle-sleeping while work is pending.
@@ -79,7 +79,7 @@ func New(p core.Paths) (*Daemon, error) {
 		DeliverFn: deliver.Deliver,
 		NotifyFn:  notify.Send,
 		Local:     time.Local,
-		Logger:    log.New(os.Stderr, "", log.LstdFlags),
+		Log:       logx.New(logx.Sink{W: os.Stderr, Level: logx.LevelFromEnv(logx.Info)}),
 		Sessions:  map[string]*store.Session{},
 		paneSeen:  map[string]string{},
 		Awake:     awake.New(),
@@ -88,7 +88,7 @@ func New(p core.Paths) (*Daemon, error) {
 	d.reload()
 	var err error
 	if d.Jobs, err = store.LoadJobs(p.Jobs); err != nil {
-		d.Logger.Printf("jobs file unreadable, starting empty: %v", err)
+		d.Log.Warnf("jobs file unreadable, starting empty: %v", err)
 		d.Jobs = map[string]*core.Job{}
 	}
 	if err := store.LoadJSON(p.Sessions, &d.Sessions); err != nil || d.Sessions == nil {
@@ -122,7 +122,7 @@ func New(p core.Paths) (*Daemon, error) {
 func (d *Daemon) reload() {
 	cfg, err := core.LoadConfig(d.Paths.Config)
 	if err != nil {
-		d.logf("config %s ignored: %v", d.Paths.Config, err)
+		d.warnf("config %s ignored: %v", d.Paths.Config, err)
 	}
 	d.Config = cfg
 	sc, err := scope.Load(d.Paths)
@@ -140,9 +140,7 @@ func (d *Daemon) reload() {
 }
 
 func (d *Daemon) logf(format string, args ...any) {
-	if d.Logger != nil {
-		d.Logger.Printf(format, args...)
-	}
+	d.Log.Infof(format, args...)
 }
 
 func (d *Daemon) history(action string, j *core.Job, extra map[string]any) {
@@ -226,13 +224,13 @@ func (d *Daemon) Tick() {
 
 func (d *Daemon) save() {
 	if err := store.SaveJSON(d.Paths.Jobs, d.Jobs); err != nil {
-		d.logf("save jobs: %v", err)
+		d.warnf("save jobs: %v", err)
 	}
 	if err := store.SaveJSON(d.Paths.Sessions, d.Sessions); err != nil {
-		d.logf("save sessions: %v", err)
+		d.warnf("save sessions: %v", err)
 	}
 	if err := store.SaveJSON(d.Paths.Offsets, d.Offsets); err != nil {
-		d.logf("save offsets: %v", err)
+		d.warnf("save offsets: %v", err)
 	}
 	d.dirty = false
 }
@@ -887,7 +885,7 @@ func (d *Daemon) runJob(j *core.Job) {
 			j.DueAt = now.Add(backoff([]int{60, 180, 600, 1800}, j.Attempts-1))
 			d.history("retry", j, map[string]any{"error": err.Error(), "next": j.DueAt.Format(time.RFC3339)})
 		}
-		d.logf("%s: delivery failed: %v", j.Key, err)
+		d.warnf("%s: delivery failed: %v", j.Key, err)
 		return
 	}
 	j.Attempts++
@@ -1120,7 +1118,7 @@ func (d *Daemon) keepAwake() {
 	on, why := d.wantAwake()
 	changed, err := d.Awake.Set(on, why)
 	if err != nil {
-		d.logf("keep awake: %v", err)
+		d.warnf("keep awake: %v", err)
 	} else if changed && on {
 		d.logf("keeping the computer awake: %s", why)
 	} else if changed {
@@ -1250,3 +1248,6 @@ func (d *Daemon) paneHarness(p mux.Pane) *rules.Harness {
 	}
 	return pick(func(h *rules.Harness) bool { return h.MatchesCommandLine(line) })
 }
+
+func (d *Daemon) debugf(format string, args ...any) { d.Log.Debugf(format, args...) }
+func (d *Daemon) warnf(format string, args ...any)  { d.Log.Warnf(format, args...) }

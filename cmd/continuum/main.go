@@ -224,11 +224,11 @@ func warnCapabilities(d *daemon.Daemon) {
 			if ok, why := deliver.Supported(bin, nc); ok {
 				okAny = true
 			} else {
-				d.Logger.Printf("note: %s: %s", nc.Name, why)
+				d.Log.Infof("note: %s: %s", nc.Name, why)
 			}
 		}
 		if !okAny {
-			d.Logger.Printf("warning: %s has none of the resume commands Continuum knows; it will rely on panes and the wrapper", h.DisplayName)
+			d.Log.Warnf("%s has none of the resume commands Continuum knows; it will rely on panes and the wrapper", h.DisplayName)
 		}
 	}
 }

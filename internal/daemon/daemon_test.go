@@ -47,7 +47,7 @@ func setup(t *testing.T) *harnessT {
 	}
 	d.Now = func() time.Time { return h.now }
 	d.Local = time.UTC
-	d.Logger = nil
+	d.Log = nil
 	d.NotifyFn = nil
 	d.LiveFn = func(j *core.Job) *live.State { return h.live }
 	d.Awake = nil
