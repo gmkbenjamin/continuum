@@ -15,7 +15,9 @@ the limit resets, waits, checks the session is still stalled, and continues it.
   Cursor CLI, GitHub Copilot CLI, Amp, Goose, Factory Droid, Kiro, Auggie, Cline,
   Continue, Crush, Kimi, OpenHands, Mistral Vibe, Kilo Code, Letta, Plandex, Codebuff,
   Junie, Pi, Rovo Dev. Each is a few lines of rules, so new ones are easy to add.
-- **All sessions, or only the ones you choose.**
+- **Every open session by default:** focused, in the background or minimised,
+  including sessions already waiting on a limit when Continuum starts. You can limit
+  it to the sessions you choose.
 - **macOS, Linux and Windows.** One static binary with no runtime dependencies.
 
 ```
@@ -70,12 +72,53 @@ continuum doctor                 # check it
    user unit on Linux, a scheduled task on Windows.
 
 Use `--no-shell` or `--no-service` to skip a step, and `--only claude,codex` to choose
-which agents get hooks. `continuum uninstall` reverses everything and returns the
-agents' settings files to their original bytes.
+which agents get hooks.
 
-Continuum never resumes limits that were hit before it was installed. Agents already
-running when you install are watched through their transcripts. Open a new terminal tab
-so the shell hook loads for new sessions.
+Sessions that are already open when you install are covered straight away. That
+includes any already waiting on a limit, which Continuum picks up and resumes at the
+reset. Limits in sessions that are closed are left alone. Open a new terminal tab so
+the shell hook loads for new sessions.
+
+### Updating
+
+```sh
+git pull && make build && ./continuum update
+```
+
+`update` re-applies your install with the choices you made then. It copies the new
+binary into place and rewrites Continuum's hooks in the current format, removing any an
+older version added that this one no longer uses. It also refreshes the shell hook and
+login item, and restarts the daemon on the new binary. Your settings, scope and history
+are kept.
+
+The daemon also keeps the hooks right by itself. If an agent update or another tool
+removes them, or they point at an old location, it rewrites them within minutes and
+tells you. It leaves the files alone when Continuum is switched off
+(`"enabled": false`).
+
+### Uninstalling
+
+```sh
+continuum uninstall --dry-run   # see what would be removed
+continuum uninstall             # remove everything; keep ~/.continuum
+continuum uninstall --purge     # also delete ~/.continuum and the settings backups
+```
+
+`uninstall` removes things in this order:
+
+1. The login item and the running daemon.
+2. Every Continuum hook, in every event, from any version, keeping all of yours. Each
+   settings file goes back to its exact original bytes when nothing else in it has
+   changed, and a file Continuum created is deleted.
+3. The shell hook block from every shell startup file.
+4. The `~/.local/bin` link.
+
+It then checks that nothing is left and says so. Agent sessions running at that moment
+keep working normally.
+
+If Continuum is ever deleted without uninstalling, its hooks stay harmless: they run
+through `/bin/sh … || true`, so they do nothing, silently, and the agents never show
+a hook error.
 
 ## Everyday use
 
@@ -128,6 +171,15 @@ so focus, minimised windows and the lock screen don't matter.
   resizing, paste, Ctrl+C, and Ctrl+Z with `fg`.
 - **Multiplexer panes:** tmux, GNU screen, zellij, herdr, Rex, WezTerm and kitty (the
   last two through their CLIs), including detached sessions.
+- **Scriptable terminal apps:** Ghostty (1.4+), through its scripting interface. This
+  covers agents already open in a plain Ghostty tab, without the shell hook. Continuum
+  finds the exact tab by the agent's terminal and types there, even if the window is
+  hidden or minimised. Ghostty can't show Continuum the screen, so Continuum only types
+  there when the tab's foreground process is the agent itself, and the agent reports
+  that nothing is waiting for an answer. Claude Code reports this; Codex doesn't, so a
+  Codex session in a plain Ghostty tab gets a notification instead. macOS asks once
+  whether Continuum may control Ghostty. The daemon asks right after install, while
+  you're there.
 - **The agent's own commands**, for sessions that are closed (see below).
 
 The shell hook only wraps interactive sessions. Print mode (`claude -p`, `gemini -p`),
@@ -288,8 +340,9 @@ that came due while asleep run as soon as the computer wakes.
 
 ## Safety
 
-- **Nothing from before installation is revived.** After the daemon has been off, at
-  most 12 hours (`catch_up_hours`) are caught up.
+- **Closed sessions from before installation are never revived.** Sessions that are
+  open and stalled are picked up. After the daemon has been off, at most 12 hours
+  (`catch_up_hours`) are caught up.
 - **No unsafe typing.** It never types into menus, approval prompts or plain shells, and
   never starts a copy of an open session.
 - **Billing stops for you.** Billing, credit, spend-cap, sign-in and API-key errors are
@@ -353,7 +406,7 @@ built so most changes are absorbed, and the rest are visible and quick to fix:
 | `keep_awake_hours` | `8` | Hold off idle sleep while a resume is due this soon; `0` turns it off. |
 | `allow_copies` | `false` | Let the agent CLI continue a session that's still open elsewhere (starts a copy). |
 | `allow_headless` | `true` | `false`: only type into wrappers and panes, never run agent commands. |
-| `strategies` | `["wrapper","multiplexer","native"]` | Delivery routes, in order. |
+| `strategies` | `["wrapper","multiplexer","terminal-app","native"]` | Delivery routes, in order. |
 | `shell_hook_agents` | installed agents | Commands the shell hook wraps (replaces the default list). |
 | `max_wait_hours` | `192` | Don't schedule resets further away than this. |
 | `catch_up_hours` | `12` | How far back to catch up after the daemon was off. |
@@ -373,7 +426,7 @@ overrides go in `~/.continuum/rules.json` (see [docs/agents.md](docs/agents.md))
 
 | Command | What it does |
 |---|---|
-| `install`, `uninstall` | Set up or remove hooks, the shell hook and the login item |
+| `install`, `update`, `uninstall` | Set up, refresh after a new version, or remove everything |
 | `doctor`, `status`, `version` | Check everything, show state |
 | `sessions`, `list` | Open sessions; scheduled and recent resumes |
 | `resume-now`, `cancel` | Resume a stalled session now, or leave it stalled |
@@ -399,7 +452,7 @@ Everything is in `~/.continuum`; set `CONTINUUM_HOME` to move it.
 | `history.jsonl` | Every scheduled, delivered, skipped and failed resume |
 | `daemon.log` | Daemon log |
 | `wrappers/` | One folder per running `continuum run` |
-| `install.json` | What `install` set up, so hooks an agent update removed can be restored |
+| `install.json` | What `install` set up and your choices, for `update` and for restoring hooks |
 | `compat.json` | Results of the last update check, and what was learned about desktop apps |
 | `bin/continuum` | The installed binary |
 
@@ -423,6 +476,10 @@ Everything is in `~/.continuum`; set `CONTINUUM_HOME` to move it.
 - **Two wrapped sessions in one folder.** If an agent in the wrapper has no hooks, and
   two sessions of it stall in the same directory within 3 minutes, Continuum may
   attach a session to the wrong wrapper.
+- **Terminal apps.** The Ghostty route follows Ghostty's documented scripting interface
+  and is unit-tested, but hasn't run against a live Ghostty here. Terminal.app and
+  iTerm2 aren't supported yet: start agents there with the shell hook, which covers
+  them.
 - **Platforms.** The WezTerm and kitty adapters follow their documented CLIs but weren't
   available to test. The Windows build (ConPTY wrapper, scheduled task, notifications,
   keep-awake) compiles but hasn't been run on Windows, and has no shell hook: use

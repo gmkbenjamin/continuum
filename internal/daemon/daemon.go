@@ -208,6 +208,9 @@ func (d *Daemon) Tick() {
 			d.observeDesktop()
 		}
 		if now.Sub(d.lastCompat) >= 10*time.Minute {
+			if d.lastCompat.IsZero() {
+				go d.probeTerminalApps() // may wait for the user's answer
+			}
 			d.lastCompat = now
 			d.checkCompat(false)
 		}
@@ -267,14 +270,22 @@ func (d *Daemon) scanSources() {
 	since := d.Now().Add(-d.Config.CatchUp())
 	baseline := d.baseline
 	d.baseline = false
+	// On the very first scan history is not acted on, with one exception:
+	// a session that is open right now and sitting on a limit is adopted,
+	// so every open session is covered from the moment Continuum starts.
+	var stalled []core.Event
 
 	if d.Config.HarnessEnabled("claude") {
 		root := filepath.Join(d.Config.ClaudeDir(), "projects")
 		for path, lines := range d.Offsets.Claude.Scan(root, since, 3) {
+			evs := sources.ParseClaude(d.Rules, path, lines, d.Local)
 			if baseline {
+				if ev := lastStall(evs, since); ev != nil {
+					stalled = append(stalled, *ev)
+				}
 				continue
 			}
-			for _, ev := range sources.ParseClaude(d.Rules, path, lines, d.Local) {
+			for _, ev := range evs {
 				d.Handle(ev)
 			}
 		}
@@ -289,6 +300,9 @@ func (d *Daemon) scanSources() {
 			}
 			evs := sources.ParseCodex(d.Rules, path, lines, st, d.Local)
 			if baseline {
+				if ev := lastStall(evs, since); ev != nil {
+					stalled = append(stalled, *ev)
+				}
 				continue
 			}
 			for _, ev := range evs {
@@ -301,7 +315,42 @@ func (d *Daemon) scanSources() {
 			}
 		}
 	}
+	for _, ev := range stalled {
+		d.adoptIfOpen(ev)
+	}
 	d.dirty = true
+}
+
+// lastStall returns the transcript's final event if it is a stall (nothing
+// happened in the session after it) recent enough to catch up on.
+func lastStall(evs []core.Event, since time.Time) *core.Event {
+	if len(evs) == 0 {
+		return nil
+	}
+	ev := evs[len(evs)-1]
+	switch ev.Kind {
+	case core.KindUsageLimit, core.KindTransient:
+		if ev.At.After(since) {
+			return &ev
+		}
+	}
+	return nil
+}
+
+// adoptIfOpen schedules a stall found on the first scan, but only if its
+// session is open right now: Continuum never revives closed history.
+func (d *Daemon) adoptIfOpen(ev core.Event) {
+	if d.LiveFn == nil {
+		return
+	}
+	probe := &core.Job{Harness: ev.Harness, SessionID: ev.SessionID, Cwd: ev.Cwd, PID: ev.PID, Entrypoint: ev.Entrypoint}
+	st := d.LiveFn(probe)
+	if st == nil || !st.Open || st.MovedOn {
+		return
+	}
+	d.logf("%s:%s is open and stalled since %s: adopting it", ev.Harness, ev.SessionID, ev.At.Local().Format("15:04"))
+	ev.Source += "+adopted"
+	d.Handle(ev)
 }
 
 // Handle applies one event.

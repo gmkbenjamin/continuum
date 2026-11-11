@@ -639,3 +639,21 @@ func TestGraceChangeAppliesToWaitingSessions(t *testing.T) {
 		t.Fatalf("after turning grace off: due %v want %v", j.DueAt, want)
 	}
 }
+
+func TestOpenStalledSessionIsAdoptedOnFirstRun(t *testing.T) {
+	h := setup(t)
+	path := filepath.Join(h.claude, "projects", "-work-app", "s9.jsonl")
+	at := h.now.Add(-time.Hour)
+	os.WriteFile(path, []byte(`{"type":"assistant","sessionId":"s9","cwd":"/work/app","entrypoint":"claude-desktop","timestamp":"`+at.Format(time.RFC3339)+`","isApiErrorMessage":true,"error":"rate_limit","message":{"content":[{"type":"text","text":"You've hit your session limit · resets 9:30am (UTC)"}]}}`+"\n"), 0o600)
+	// The session is open right now (in Claude Desktop, say).
+	h.live = &live.State{Checked: true, Open: true, Session: &live.Session{SessionID: "s9"}}
+	h.advance(time.Second) // first scan
+	j := h.d.Jobs["claude:s9"]
+	if j == nil || j.State != core.StatePending || j.Entrypoint != "claude-desktop" {
+		t.Fatalf("open stalled session not adopted: %+v", j)
+	}
+	h.advance(40 * time.Minute)
+	if len(h.delivered) != 1 {
+		t.Fatalf("delivered %d", len(h.delivered))
+	}
+}

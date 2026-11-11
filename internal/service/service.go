@@ -86,12 +86,14 @@ WantedBy=default.target
 `, systemdQuote(bin), proc.AugmentedPATH(), p.Home)
 		return Plan{File: file, Content: content, Commands: [][]string{
 			{"systemctl", "--user", "daemon-reload"},
-			{"systemctl", "--user", "enable", "--now", unitName},
+			{"systemctl", "--user", "enable", unitName},
+			{"systemctl", "--user", "restart", unitName}, // picks up a new binary
 		}}, nil
 	case "windows":
 		tr := `"` + bin + `" daemon`
 		return Plan{Commands: [][]string{
 			{"schtasks", "/Create", "/F", "/TN", taskName, "/SC", "ONLOGON", "/RL", "LIMITED", "/TR", tr},
+			{"schtasks", "/End", "/TN", taskName}, // stops an older daemon; may fail if none runs
 			{"schtasks", "/Run", "/TN", taskName},
 		}}, nil
 	}

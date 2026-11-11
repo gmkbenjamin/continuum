@@ -82,6 +82,8 @@ func main() {
 		err = cmdControl("resume-now", args)
 	case "install":
 		err = cmdInstall(args)
+	case "update":
+		err = cmdUpdate(args)
 	case "uninstall":
 		err = cmdUninstall(args)
 	case "doctor":
@@ -496,120 +498,6 @@ func copySelf(dst string) error {
 	return os.Rename(tmp, dst)
 }
 
-func cmdInstall(args []string) error {
-	fs := newFlagSet("install")
-	noService := fs.Bool("no-service", false, "Do not add the login item; the daemon is started now but not at the next login.")
-	noCopy := fs.Bool("no-copy", false, "Use this binary where it is instead of copying it to ~/.continuum/bin.")
-	dry := fs.Bool("dry-run", false, "Show what would change, and change nothing.")
-	only := fs.String("only", "", "Comma-separated `AGENTS` to add hooks for, e.g. claude,codex (default: every installed agent that has hooks).")
-	noShell := fs.Bool("no-shell", false, "Do not add the shell hook. Without it, agents in plain terminals (no tmux etc.) can only be resumed if started with `continuum run`.")
-	if err := parseFlags(fs, args); err != nil {
-		return err
-	}
-	p := core.GetPaths()
-	if err := p.Ensure(); err != nil {
-		return err
-	}
-	cfg, _ := core.LoadConfig(p.Config)
-	bin := self()
-	if !*noCopy {
-		name := "continuum"
-		if runtime.GOOS == "windows" {
-			name += ".exe"
-		}
-		dst := filepath.Join(p.Home, "bin", name)
-		if !*dry {
-			if err := copySelf(dst); err != nil {
-				return fmt.Errorf("copy binary: %w", err)
-			}
-		}
-		bin = dst
-		fmt.Println("binary:   ", bin)
-		linkIntoPath(bin, *dry)
-	}
-	want := map[string]bool{}
-	for _, h := range strings.Split(*only, ",") {
-		if h = strings.TrimSpace(h); h != "" {
-			want[h] = true
-		}
-	}
-	r, _ := rules.Cached(p.Rules)
-	var hooked []string
-	for _, t := range hooks.Targets(cfg) {
-		if len(want) > 0 && !want[t.Harness] {
-			continue
-		}
-		_, binErr := deliver.Binary(cfg, r.Harness(t.Harness))
-		_, dirErr := os.Stat(filepath.Dir(t.Path))
-		if binErr != nil && dirErr != nil && len(want) == 0 {
-			fmt.Printf("%-9s not found, skipped\n", t.Harness+":")
-			continue
-		}
-		changed, err := hooks.Install(t, bin, *dry)
-		if err != nil {
-			fmt.Printf("%-9s %v\n", t.Harness+":", err)
-			continue
-		}
-		hooked = append(hooked, t.Harness)
-		verb := "hooks already up to date in"
-		if changed {
-			verb = "hooks added to"
-			if *dry {
-				verb = "would add hooks to"
-			}
-		}
-		fmt.Printf("%-9s %s %s\n", t.Harness+":", verb, t.Path)
-	}
-	if !*dry {
-		// Remember what was set up, so the daemon can restore it if an agent
-		// update removes Continuum's hooks.
-		rec, _ := json.MarshalIndent(daemon.Install{Bin: bin, Hooks: hooked, At: time.Now()}, "", "  ")
-		_ = core.WriteFileAtomic(daemon.InstallPath(p), append(rec, '\n'), 0o600)
-	}
-	if !*noShell && runtime.GOOS != "windows" {
-		for _, line := range installShell(bin, *dry) {
-			fmt.Println(line)
-		}
-	}
-	if !*noService {
-		if *dry {
-			plan, err := service.MakePlan(bin, p)
-			if err != nil {
-				fmt.Println("service:  ", err)
-			} else if plan.File != "" {
-				fmt.Println("service:   would write", plan.File)
-			} else {
-				fmt.Println("service:   would run", strings.Join(plan.Commands[0], " "))
-			}
-		} else if plan, err := service.Install(bin, p); err != nil {
-			fmt.Println("service:   not installed:", err)
-			_ = cmdStart()
-		} else {
-			where := plan.File
-			if where == "" {
-				where = "scheduled task " + "Continuum"
-			}
-			fmt.Println("service:   starts at login via", where)
-		}
-	} else if !*dry {
-		_ = cmdStart()
-	}
-	if *dry {
-		return nil
-	}
-	fmt.Println()
-	fmt.Println("✅ Continuum is on. Covered from now on:")
-	for _, line := range coverageSummary(r) {
-		fmt.Println("   • " + line)
-	}
-	fmt.Println()
-	fmt.Println("Nothing else to do. When a limit resets, the session continues by itself, in")
-	fmt.Println("place. Open a new terminal tab to load the shell hook. Useful later:")
-	fmt.Println("   continuum status      what's waiting      continuum doctor   full check")
-	fmt.Println("   continuum scope       all or chosen        continuum -h       every command")
-	return nil
-}
-
 // linkIntoPath puts a `continuum` symlink in ~/.local/bin when that directory
 // is on PATH and the name is free.
 func linkIntoPath(bin string, dry bool) {
@@ -642,45 +530,6 @@ func linkIntoPath(bin string, dry bool) {
 	if err := os.Symlink(bin, link); err == nil {
 		fmt.Println("link:     ", link)
 	}
-}
-
-func cmdUninstall(args []string) error {
-	fs := newFlagSet("uninstall")
-	dry := fs.Bool("dry-run", false, "Show what would change, and change nothing.")
-	if err := parseFlags(fs, args); err != nil {
-		return err
-	}
-	p := core.GetPaths()
-	cfg, _ := core.LoadConfig(p.Config)
-	for _, t := range hooks.Targets(cfg) {
-		changed, err := hooks.Uninstall(t, *dry)
-		switch {
-		case err != nil:
-			fmt.Printf("%-9s %v\n", t.Harness+":", err)
-		case changed:
-			fmt.Printf("%-9s hooks removed from %s\n", t.Harness+":", t.Path)
-		}
-	}
-	for _, line := range uninstallShell(*dry) {
-		fmt.Println(line)
-	}
-	if !*dry {
-		os.Remove(daemon.InstallPath(p))
-	}
-	if *dry {
-		return nil
-	}
-	if err := service.Uninstall(p); err != nil {
-		fmt.Println("service:  ", err)
-	}
-	_ = cmdStop()
-	home, _ := os.UserHomeDir()
-	link := filepath.Join(home, ".local", "bin", "continuum")
-	if target, err := os.Readlink(link); err == nil && strings.Contains(target, ".continuum") {
-		os.Remove(link)
-	}
-	fmt.Printf("Continuum is uninstalled. Its data is still in %s; delete that folder to remove everything.\n", p.Home)
-	return nil
 }
 
 // ---- detect / rules --------------------------------------------------------------
@@ -786,6 +635,8 @@ func helpFor(name string) {
 			err = cmdInstall([]string{"-h"})
 		case "uninstall":
 			err = cmdUninstall([]string{"-h"})
+		case "update":
+			err = cmdUpdate([]string{"-h"})
 		case "run":
 			_, err = cmdRun([]string{"-h"})
 		case "list":

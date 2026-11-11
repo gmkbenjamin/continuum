@@ -18,7 +18,8 @@ Usage:
 
 Set up:
   install      Hook Continuum into your agents, shell and login items
-  uninstall    Remove the hooks, shell hook and login item
+  update       Apply this version: refresh hooks, shell hook and login item
+  uninstall    Remove everything Continuum added
   doctor       Check agents, hooks, terminals and rules
   status       Show the daemon, hooks and scheduled resumes
   version      Print the version
@@ -104,26 +105,73 @@ Examples:
   continuum install --no-shell --only claude
 ```
 
-## uninstall
+## update
 
 ```text
-continuum uninstall - Remove the hooks, shell hook and login item
+continuum update - Apply this version: refresh hooks, shell hook and login item
 
 Usage:
-  continuum uninstall [options]
+  continuum update [options]
 
-  Removes everything `install` added: the agent hooks (the settings files go back to
-  their original bytes), the shell hook block, the login item and the
-  ~/.local/bin link, and stops the daemon. Your data in ~/.continuum is kept;
-  delete that folder to remove everything.
+  Re-applies your install with the choices you made then (shell hook, login
+  item, which agents), using the binary you run it from. Use it after building
+  or downloading a new version:
+
+    git pull && make build && ./continuum update
+
+  It copies the new binary into place, rewrites Continuum's hooks in the
+  agents' settings files in the current format (removing any an older version
+  added that this one no longer uses), refreshes the shell hook and login item,
+  and restarts the daemon on the new binary. Your settings, scope and history
+  are kept.
+
+  The daemon also keeps the hooks current by itself: if an agent update
+  removes them, or they point at an old location, it rewrites them and tells
+  you.
 
 Options:
   --dry-run              Show what would change, and change nothing.
   -h, --help             Show this help.
 
 Examples:
+  ./continuum update --dry-run
+  ./continuum update
+```
+
+## uninstall
+
+```text
+continuum uninstall - Remove everything Continuum added
+
+Usage:
+  continuum uninstall [options]
+
+  Removes, in this order: the login item and the running daemon; Continuum's
+  hooks from every event in the agents' settings files (any version's, keeping
+  all of yours; the files go back to their original bytes); the shell hook
+  block from every shell startup file; the ~/.local/bin link. Then it checks
+  that nothing is left and says so.
+
+  Without --purge, ~/.continuum is kept (settings, scope, history), so a later
+  install picks up where you left off. With --purge it is deleted too, along
+  with the backups Continuum saved of your settings files.
+
+  Agent sessions running under Continuum at the time keep working normally.
+  And if Continuum is ever deleted without uninstalling, its hooks stay
+  harmless: they do nothing, silently, until removed.
+
+Options:
+  --dry-run              Show what would change, and change nothing.
+  --purge                Also delete ~/.continuum (the binary, settings, scope,
+                         history, logs) and the backups Continuum saved of your
+                         settings files. Without it, those are kept so a later
+                         install picks up where you left off.
+  -h, --help             Show this help.
+
+Examples:
   continuum uninstall --dry-run
   continuum uninstall
+  continuum uninstall --purge
 ```
 
 ## doctor
@@ -538,7 +586,8 @@ Usage:
 
 Set up:
   install      Hook Continuum into your agents, shell and login items
-  uninstall    Remove the hooks, shell hook and login item
+  update       Apply this version: refresh hooks, shell hook and login item
+  uninstall    Remove everything Continuum added
   doctor       Check agents, hooks, terminals and rules
   status       Show the daemon, hooks and scheduled resumes
   version      Print the version
@@ -599,7 +648,8 @@ Usage:
 
 Set up:
   install      Hook Continuum into your agents, shell and login items
-  uninstall    Remove the hooks, shell hook and login item
+  update       Apply this version: refresh hooks, shell hook and login item
+  uninstall    Remove everything Continuum added
   doctor       Check agents, hooks, terminals and rules
   status       Show the daemon, hooks and scheduled resumes
   version      Print the version
@@ -660,7 +710,8 @@ Usage:
 
 Set up:
   install      Hook Continuum into your agents, shell and login items
-  uninstall    Remove the hooks, shell hook and login item
+  update       Apply this version: refresh hooks, shell hook and login item
+  uninstall    Remove everything Continuum added
   doctor       Check agents, hooks, terminals and rules
   status       Show the daemon, hooks and scheduled resumes
   version      Print the version

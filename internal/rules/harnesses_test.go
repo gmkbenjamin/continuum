@@ -1,6 +1,9 @@
 package rules
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestEveryHarnessIsUsable(t *testing.T) {
 	r, err := Load("")
@@ -158,6 +161,22 @@ func TestMoreMenusAreRefused(t *testing.T) {
 	} {
 		if d := r.BlockingDialog(ok); d != "" {
 			t.Errorf("false menu %q in:\n%s", d, ok)
+		}
+	}
+}
+
+func TestTerminalAppsLoad(t *testing.T) {
+	r, _ := Load("")
+	g := r.TerminalApps["ghostty"]
+	if g == nil || !g.MatchesProcess("/Applications/Ghostty.app/Contents/MacOS/ghostty") || len(g.SendText) == 0 {
+		t.Fatalf("ghostty rules: %+v", g)
+	}
+	// Every top-level section of the rules file must be loaded.
+	var top map[string]any
+	json.Unmarshal(DefaultJSON(), &top)
+	for k := range top {
+		if k != "version" && k != "defaults" && k != "harnesses" && k != "multiplexers" && k != "terminal_apps" && k[0] != '_' {
+			t.Errorf("section %q in default_rules.json is never loaded", k)
 		}
 	}
 }

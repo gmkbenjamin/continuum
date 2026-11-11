@@ -10,6 +10,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -194,12 +197,29 @@ func quote(path string) string {
 	return path
 }
 
-// Command is the hook command line for a harness.
-func Command(bin, harness string) string { return quote(bin) + " hook " + harness }
-
-func isOurs(cmd string) bool {
-	return strings.Contains(cmd, "continuum") && strings.Contains(cmd, " hook ")
+// Command is the hook command line for a harness. On macOS and Linux it runs
+// through /bin/sh with errors silenced and success forced, so that even if
+// Continuum is deleted without `continuum uninstall`, the agent never shows a
+// hook error: the hook just does nothing.
+func Command(bin, harness string) string {
+	if runtime.GOOS == "windows" {
+		return quote(bin) + " hook " + harness
+	}
+	inner := `"` + shDoubleQuoteEscape(bin) + `" hook ` + harness + ` 2>/dev/null || true`
+	return "/bin/sh -c '" + strings.ReplaceAll(inner, "'", `'\''`) + "'"
 }
+
+func shDoubleQuoteEscape(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", `\$`, "`", "\\`")
+	return r.Replace(s)
+}
+
+// ourCommand matches every form of Continuum's hook command, old and new:
+// "/x/continuum hook claude", "\"C:\\x\\continuum.exe\" hook codex",
+// "/bin/sh -c '\"/x/continuum\" hook claude 2>/dev/null || true'".
+var ourCommand = regexp.MustCompile(`(?:^|[\s'"/\\])continuum(?:\.exe)?["']?\s+hook\s+[A-Za-z0-9_-]+`)
+
+func isOurs(cmd string) bool { return ourCommand.MatchString(cmd) }
 
 // Install adds Continuum's hooks to t.Path. It is idempotent and keeps every
 // other setting and hook untouched. It returns whether the file changed.
@@ -218,6 +238,22 @@ func Install(t Target, bin string, dryRun bool) (bool, error) {
 		root.set("hooks", hooksObj)
 	}
 	want := Command(bin, t.Harness)
+	// Drop Continuum hooks from events this version no longer uses.
+	for _, event := range append([]string(nil), hooksObj.keys...) {
+		if containsEvent(t.Events, event) {
+			continue
+		}
+		v, _ := hooksObj.get(event)
+		if list, ok := v.([]any); ok {
+			if kept := removeOurs(list); len(kept) != len(list) || countOurs(list) > 0 {
+				if len(kept) == 0 {
+					hooksObj.del(event)
+				} else {
+					hooksObj.set(event, kept)
+				}
+			}
+		}
+	}
 	for _, event := range t.Events {
 		groups, _ := hooksObj.get(event)
 		list, _ := groups.([]any)
@@ -264,7 +300,140 @@ func Uninstall(t Target, dryRun bool) (bool, error) {
 	if len(hooksObj.keys) == 0 {
 		root.del("hooks")
 	}
-	return write(t.Path, root, original, dryRun)
+	out, err := pretty(root)
+	if err != nil {
+		return false, err
+	}
+	// Give the file back exactly as it was: if what is left matches a
+	// backup Continuum took before changing it, use that backup's bytes
+	// (same formatting, key order and whitespace).
+	if b := matchingBackup(t.Path, out); b != nil {
+		out = b
+	} else if len(root.keys) == 0 && len(Backups(t.Path)) == 0 {
+		// Continuum created this file and nothing else is in it: remove it.
+		if dryRun {
+			return true, nil
+		}
+		return true, os.Remove(t.Path)
+	}
+	if string(out) == string(original) {
+		return false, nil
+	}
+	if dryRun {
+		return true, nil
+	}
+	perm := os.FileMode(0o600)
+	if st, err := os.Stat(t.Path); err == nil {
+		perm = st.Mode().Perm()
+	}
+	return true, core.WriteFileAtomic(t.Path, out, perm)
+}
+
+// matchingBackup returns the bytes of the most recent backup whose content
+// equals want (as JSON), or nil.
+func matchingBackup(path string, want []byte) []byte {
+	var w any
+	d := json.NewDecoder(strings.NewReader(string(want)))
+	d.UseNumber()
+	if d.Decode(&w) != nil {
+		return nil
+	}
+	backups := Backups(path)
+	for i := len(backups) - 1; i >= 0; i-- {
+		data, err := os.ReadFile(backups[i])
+		if err != nil {
+			continue
+		}
+		var b any
+		bd := json.NewDecoder(strings.NewReader(string(data)))
+		bd.UseNumber()
+		if bd.Decode(&b) == nil && reflect.DeepEqual(w, b) {
+			return data
+		}
+	}
+	return nil
+}
+
+func containsEvent(list []string, e string) bool {
+	for _, x := range list {
+		if x == e {
+			return true
+		}
+	}
+	return false
+}
+
+func countOurs(list []any) int {
+	n := 0
+	for _, g := range list {
+		for _, hk := range hooksOf(g) {
+			if c, _ := hk.get("command"); c != nil {
+				if s, _ := c.(string); isOurs(s) {
+					n++
+				}
+			}
+		}
+	}
+	return n
+}
+
+// Hook states.
+const (
+	StateCurrent  = "current"  // exactly the hooks this version installs
+	StateOutdated = "outdated" // ours, but an older form or another binary path
+	StatePartial  = "partial"  // some events missing
+	StateMissing  = "missing"  // none
+)
+
+// Status compares t.Path with what Install(t, bin) would write.
+func Status(t Target, bin string) (string, string) {
+	root, _, err := load(t.Path)
+	if err != nil {
+		return StateMissing, err.Error()
+	}
+	hooksObj, _ := func() (*object, bool) { v, _ := root.get("hooks"); o, ok := v.(*object); return o, ok }()
+	if hooksObj == nil {
+		return StateMissing, "no hooks"
+	}
+	want := Command(bin, t.Harness)
+	found, exact, stray := 0, 0, 0
+	for _, event := range hooksObj.keys {
+		v, _ := hooksObj.get(event)
+		n := 0
+		for _, g := range asList(v) {
+			for _, hk := range hooksOf(g) {
+				c, _ := hk.get("command")
+				s, _ := c.(string)
+				if !isOurs(s) {
+					continue
+				}
+				n++
+				if !containsEvent(t.Events, event) {
+					stray++
+				} else if s == want {
+					exact++
+				}
+			}
+		}
+		if containsEvent(t.Events, event) && n > 0 {
+			found++
+		}
+	}
+	switch {
+	case found == 0 && stray == 0:
+		return StateMissing, "no Continuum hooks"
+	case exact == len(t.Events) && found == len(t.Events) && stray == 0:
+		return StateCurrent, want
+	case found < len(t.Events) && exact == found && stray == 0:
+		return StatePartial, fmt.Sprintf("%d of %d events", found, len(t.Events))
+	}
+	return StateOutdated, "from an older Continuum or another location"
+}
+
+// Backups lists the backups Continuum saved of t.Path before changing it.
+func Backups(path string) []string {
+	m, _ := filepath.Glob(path + ".continuum-backup-*")
+	return m
 }
 
 // Installed reports whether t.Path has Continuum hooks for every event.
@@ -388,9 +557,8 @@ func write(path string, root *object, original []byte, dryRun bool) (bool, error
 		return true, nil
 	}
 	if original != nil {
-		backup := path + ".continuum-backup-" + time.Now().Format("20060102-150405")
-		if err := os.WriteFile(backup, original, 0o600); err != nil {
-			return false, fmt.Errorf("backup %s: %w", backup, err)
+		if err := SaveBackup(path, original); err != nil {
+			return false, err
 		}
 	}
 	perm := os.FileMode(0o600)
@@ -398,4 +566,30 @@ func write(path string, root *object, original []byte, dryRun bool) (bool, error
 		perm = st.Mode().Perm()
 	}
 	return true, core.WriteFileAtomic(path, out, perm)
+}
+
+// saveBackup writes a new backup of path. It never overwrites an existing
+// backup (two changes in the same second get -2, -3, ...), so the copy of the
+// user's original file is never lost.
+func SaveBackup(path string, data []byte) error {
+	base := path + ".continuum-backup-" + time.Now().Format("20060102-150405")
+	name := base
+	for i := 2; i < 1000; i++ {
+		f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			_, werr := f.Write(data)
+			if cerr := f.Close(); werr == nil {
+				werr = cerr
+			}
+			if werr != nil {
+				return fmt.Errorf("backup %s: %w", name, werr)
+			}
+			return nil
+		}
+		if !os.IsExist(err) {
+			return fmt.Errorf("backup %s: %w", name, err)
+		}
+		name = fmt.Sprintf("%s-%d", base, i)
+	}
+	return fmt.Errorf("backup %s: too many backups this second", base)
 }

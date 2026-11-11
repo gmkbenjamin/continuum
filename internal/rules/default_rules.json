@@ -536,6 +536,18 @@
     }
   },
 
+  "terminal_apps": {
+    "ghostty": {
+      "name": "Ghostty",
+      "_why": "Ghostty (1.4+) has a scripting interface: find the terminal whose tty is the agent's, then input text and press Enter, without focusing it. It can't hand over its screen, so Continuum only types there when the agent itself reports that no menu or prompt is open.",
+      "process_patterns": ["(?i)/Ghostty\\.app/Contents/MacOS/ghostty(?:\\s|$)"],
+      "find": ["osascript", "-e", "on run argv", "-e", "set out to \"\"", "-e", "tell application \"Ghostty\"", "-e", "repeat with t in terminals", "-e", "if (tty of t) is (item 1 of argv) then set out to out & (id of t) & tab & (pid of t) & linefeed", "-e", "end repeat", "-e", "end tell", "-e", "return out", "-e", "end run", "{tty}"],
+      "send_text": ["osascript", "-e", "on run argv", "-e", "tell application \"Ghostty\" to input text (item 2 of argv) to (first terminal whose id is (item 1 of argv))", "-e", "end run", "{id}", "{text}"],
+      "send_enter": ["osascript", "-e", "on run argv", "-e", "tell application \"Ghostty\" to send key \"enter\" to (first terminal whose id is (item 1 of argv))", "-e", "end run", "{id}"],
+      "capture": []
+    }
+  },
+
   "multiplexers": {
     "_order": "Checked in this order when an agent's environment names more than one. Inner multiplexers come first.",
     "tmux": {

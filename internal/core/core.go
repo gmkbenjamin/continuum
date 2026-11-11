@@ -174,7 +174,7 @@ type Config struct {
 	NativeGrace       map[string]int    `json:"native_grace_seconds,omitempty"`
 	MaxWaitHours      *int              `json:"max_wait_hours,omitempty"`
 	CatchUpHours      *int              `json:"catch_up_hours,omitempty"`
-	Strategies        []string          `json:"strategies,omitempty"` // order: wrapper, multiplexer, native
+	Strategies        []string          `json:"strategies,omitempty"` // order: wrapper, multiplexer, terminal-app, native
 	AllowHeadless     *bool             `json:"allow_headless,omitempty"`
 	WatchTranscripts  *bool             `json:"watch_transcripts,omitempty"`
 	ScanPanes         *bool             `json:"scan_panes,omitempty"`
@@ -245,7 +245,7 @@ func (c Config) StrategyOrder() []string {
 	if len(c.Strategies) > 0 {
 		return c.Strategies
 	}
-	return []string{"wrapper", "multiplexer", "native"}
+	return []string{"wrapper", "multiplexer", "terminal-app", "native"}
 }
 
 func (c Config) Poll() time.Duration {

@@ -48,13 +48,42 @@ Limits that happened before installing are never resumed.`,
 		Examples: []string{"continuum install --dry-run", "continuum install", "continuum install --no-shell --only claude"},
 	},
 	{
+		Name: "update", Group: "Set up", Args: "[options]",
+		Summary: "Apply this version: refresh hooks, shell hook and login item",
+		Detail: `Re-applies your install with the choices you made then (shell hook, login
+item, which agents), using the binary you run it from. Use it after building
+or downloading a new version:
+
+  git pull && make build && ./continuum update
+
+It copies the new binary into place, rewrites Continuum's hooks in the
+agents' settings files in the current format (removing any an older version
+added that this one no longer uses), refreshes the shell hook and login item,
+and restarts the daemon on the new binary. Your settings, scope and history
+are kept.
+
+The daemon also keeps the hooks current by itself: if an agent update
+removes them, or they point at an old location, it rewrites them and tells
+you.`,
+		Examples: []string{"./continuum update --dry-run", "./continuum update"},
+	},
+	{
 		Name: "uninstall", Group: "Set up", Args: "[options]",
-		Summary: "Remove the hooks, shell hook and login item",
-		Detail: `Removes everything ` + "`install`" + ` added: the agent hooks (the settings files go back to
-their original bytes), the shell hook block, the login item and the
-~/.local/bin link, and stops the daemon. Your data in ~/.continuum is kept;
-delete that folder to remove everything.`,
-		Examples: []string{"continuum uninstall --dry-run", "continuum uninstall"},
+		Summary: "Remove everything Continuum added",
+		Detail: `Removes, in this order: the login item and the running daemon; Continuum's
+hooks from every event in the agents' settings files (any version's, keeping
+all of yours; the files go back to their original bytes); the shell hook
+block from every shell startup file; the ~/.local/bin link. Then it checks
+that nothing is left and says so.
+
+Without --purge, ~/.continuum is kept (settings, scope, history), so a later
+install picks up where you left off. With --purge it is deleted too, along
+with the backups Continuum saved of your settings files.
+
+Agent sessions running under Continuum at the time keep working normally.
+And if Continuum is ever deleted without uninstalling, its hooks stay
+harmless: they do nothing, silently, until removed.`,
+		Examples: []string{"continuum uninstall --dry-run", "continuum uninstall", "continuum uninstall --purge"},
 	},
 	{
 		Name: "doctor", Group: "Set up",
@@ -409,7 +438,7 @@ func parseFlags(fs *flag.FlagSet, args []string) error {
 }
 
 // flagCommands lists the commands that parse options; their help shows them.
-var flagCommands = map[string]bool{"install": true, "uninstall": true, "run": true, "list": true, "detect": true, "rules": true, "daemon": true}
+var flagCommands = map[string]bool{"install": true, "update": true, "uninstall": true, "run": true, "list": true, "detect": true, "rules": true, "daemon": true}
 
 // wantsHelp reports whether args ask for help: -h/--help/help before any
 // "--" (and, for run, before the agent's own command).

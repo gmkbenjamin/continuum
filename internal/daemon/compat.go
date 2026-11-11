@@ -23,6 +23,7 @@ import (
 	"github.com/continuum-dev/continuum/internal/deliver"
 	"github.com/continuum-dev/continuum/internal/hooks"
 	"github.com/continuum-dev/continuum/internal/live"
+	"github.com/continuum-dev/continuum/internal/proc"
 	"github.com/continuum-dev/continuum/internal/rules"
 	"github.com/continuum-dev/continuum/internal/store"
 )
@@ -53,9 +54,15 @@ type DesktopCompat struct {
 // Install is ~/.continuum/install.json, written by `continuum install`: what
 // the user set up, so the daemon can restore it after an agent update.
 type Install struct {
-	Bin   string    `json:"bin"`
-	Hooks []string  `json:"hooks"`
-	At    time.Time `json:"at"`
+	Bin     string    `json:"bin"`
+	Hooks   []string  `json:"hooks"`
+	At      time.Time `json:"at"`
+	Version string    `json:"version,omitempty"`
+	// The user's choices, re-applied by `continuum update`.
+	Shell   bool   `json:"shell"`
+	Service bool   `json:"service"`
+	Copy    bool   `json:"copy"`
+	Only    string `json:"only,omitempty"`
 }
 
 func compatPath(p core.Paths) string  { return filepath.Join(p.Home, "compat.json") }
@@ -201,6 +208,32 @@ func (d *Daemon) observeDesktop() {
 	}
 }
 
+// repairHooks rewrites Continuum's hooks in t.Path when they are missing or
+// outdated, for agents the user installed hooks for (not when Continuum is
+// switched off: then it leaves settings files alone).
+func (d *Daemon) repairHooks(t hooks.Target, inst *Install, installed bool) []string {
+	if !installed || !d.Config.IsEnabled() || !containsStr(inst.Hooks, t.Harness) {
+		return nil
+	}
+	st, _ := hooks.Status(t, inst.Bin)
+	if st == hooks.StateCurrent {
+		return nil
+	}
+	verb := "re-added its hooks to "
+	if st == hooks.StateOutdated {
+		verb = "updated its hooks in "
+	}
+	changed, err := hooks.Install(t, inst.Bin, false)
+	if err != nil {
+		d.logf("hooks in %s need updating but could not be written: %v", t.Path, err)
+		return nil
+	}
+	if !changed {
+		return nil
+	}
+	return []string{verb + t.Path}
+}
+
 // fingerprint identifies an installed agent build: its resolved executable
 // path, size and modification time. Updating the agent changes it.
 func fingerprint(bin string) string {
@@ -236,25 +269,22 @@ func (d *Daemon) checkCompat(force bool) {
 			d.Compat.Agents[t.Harness] = ac
 		}
 		first := ac.Fingerprint == ""
+		// Hooks are cheap to check (one small file): always. Something other
+		// than an agent update may rewrite the settings file too.
+		repaired := d.repairHooks(t, inst, installed)
 		if !force && ac.Fingerprint == fp && d.Now().Sub(ac.CheckedAt) < 24*time.Hour {
+			if len(repaired) > 0 {
+				d.logf("%s: %s", h.DisplayName, strings.Join(repaired, "; "))
+				d.notifyText(h.DisplayName, "Continuum "+strings.Join(repaired, "; ")+". All set.")
+			}
 			continue
 		}
 		updated := !first && ac.Fingerprint != fp
 		ac.Fingerprint, ac.CheckedAt = fp, d.Now()
 		ac.Version = versionFromPath(fp)
 		before := strings.Join(ac.Problems, "; ")
-		ac.Problems, ac.Repaired = nil, nil
+		ac.Problems, ac.Repaired = nil, repaired
 
-		// Hooks: restore Continuum's own hooks if an update removed them.
-		if installed && containsStr(inst.Hooks, t.Harness) {
-			if ok, _ := hooks.Installed(t); !ok {
-				if changed, err := hooks.Install(t, inst.Bin, false); err == nil && changed {
-					ac.Repaired = append(ac.Repaired, "re-added its hooks to "+t.Path)
-				} else if err != nil {
-					ac.Problems = append(ac.Problems, "hooks missing and could not be restored: "+err.Error())
-				}
-			}
-		}
 		// Resume commands: probe the installed agent's --help again.
 		usable := 0
 		for _, nc := range h.NativeCommands {
@@ -331,4 +361,35 @@ func AppSupport() string { return appSupport() }
 
 func BundledVersion(a *rules.DesktopApp, homes map[string]string) string {
 	return bundledVersion(a, homes)
+}
+
+// probeTerminalApps asks each running scriptable terminal app a harmless
+// question once, when the daemon starts (normally right after install, with
+// the user at the computer). macOS asks the user once whether Continuum may
+// control the app; better now than at 3am with the screen locked.
+func (d *Daemon) probeTerminalApps() {
+	if runtime.GOOS != "darwin" || len(d.Rules.TerminalApps) == 0 {
+		return
+	}
+	procs, _ := proc.List()
+	for _, a := range d.Rules.TerminalApps {
+		running := false
+		for _, p := range procs {
+			if a.MatchesProcess(p.Line) {
+				running = true
+			}
+		}
+		if !running || len(a.Find) == 0 {
+			continue
+		}
+		argv := make([]string, len(a.Find))
+		for i, x := range a.Find {
+			argv[i] = strings.ReplaceAll(x, "{tty}", "/dev/none")
+		}
+		if _, err := proc.Run(60*time.Second, "", argv...); err != nil {
+			d.logf("%s: Continuum may not control it yet (%v); sessions there are resumed once allowed in System Settings › Privacy & Security › Automation", a.Name, firstLine(err.Error()))
+		} else {
+			d.logf("%s: Continuum can type into its terminals", a.Name)
+		}
+	}
 }

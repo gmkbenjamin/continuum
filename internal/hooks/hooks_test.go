@@ -2,7 +2,9 @@ package hooks
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -113,7 +115,7 @@ func TestInstallUninstallKeepsEverythingElse(t *testing.T) {
 	}
 	data, _ := os.ReadFile(path)
 	s := string(data)
-	for _, want := range []string{`"model": "opus"`, `git log && git status`, `echo <hi>`, `rex __internal session-start`, bin + ` hook claude`, `"StopFailure"`} {
+	for _, want := range []string{`"model": "opus"`, `git log && git status`, `echo <hi>`, `rex __internal session-start`, `\"` + bin + `\" hook claude 2>/dev/null || true`, `"StopFailure"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in\n%s", want, s)
 		}
@@ -151,12 +153,97 @@ func TestInstallCreatesFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "codex", "hooks.json")
 	os.MkdirAll(filepath.Dir(path), 0o700)
 	tg := Target{Harness: "codex", Path: path, Events: []string{"SessionStart", "Stop"}, Timeout: 10}
-	if _, err := Install(tg, `C:\Program Files\continuum.exe`, false); err != nil {
+	bin := `/Users/me/My Tools/it's/continuum`
+	if _, err := Install(tg, bin, false); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := Status(tg, bin); st != StateCurrent {
+		t.Fatalf("status %s:\n%s", st, mustRead(t, path))
+	}
+	// The command must run the binary with spaces and quotes intact.
+	cmd := Command(bin, "codex")
+	if !isOurs(cmd) {
+		t.Fatalf("own command not recognised: %s", cmd)
+	}
+}
+
+// If Continuum is deleted without uninstalling, the hook must stay silent and
+// succeed, so the agent never shows a hook error.
+func TestHookIsHarmlessWhenContinuumIsGone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix only")
+	}
+	cmd := Command(filepath.Join(t.TempDir(), "gone", "continuum"), "claude")
+	out, err := exec.Command("/bin/sh", "-c", cmd).CombinedOutput()
+	if err != nil || len(out) != 0 {
+		t.Fatalf("err=%v output=%q", err, out)
+	}
+}
+
+func TestOldHooksAreUpgradedAndStraysRemoved(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	// An older Continuum: bare command, another path, and an event this
+	// version no longer uses. Plus the user's own hooks, which must stay.
+	old := `{"hooks": {
+  "SessionStart": [{"hooks": [{"type": "command", "command": "/old/place/continuum hook claude"}]}],
+  "Notification": [{"hooks": [{"type": "command", "command": "/old/place/continuum hook claude"}, {"type": "command", "command": "say done"}]}],
+  "Stop": [{"hooks": [{"type": "command", "command": "/Users/me/continuum-notes/bin/sync hook stop"}]}]
+}}`
+	os.WriteFile(path, []byte(old), 0o600)
+	tg := Target{Harness: "claude", Path: path, Events: []string{"SessionStart", "Stop"}, Timeout: 10}
+	bin := "/new/continuum"
+	if st, _ := Status(tg, bin); st != StateOutdated {
+		t.Fatalf("status before: %s", st)
+	}
+	if _, err := Install(tg, bin, false); err != nil {
 		t.Fatal(err)
 	}
 	s := mustRead(t, path)
-	if !strings.Contains(s, `"\"C:\\Program Files\\continuum.exe\" hook codex"`) {
-		t.Fatalf("path with spaces not quoted:\n%s", s)
+	if st, why := Status(tg, bin); st != StateCurrent {
+		t.Fatalf("status after: %s (%s)\n%s", st, why, s)
+	}
+	for _, gone := range []string{"/old/place/continuum"} {
+		if strings.Contains(s, gone) {
+			t.Fatalf("old hook left:\n%s", s)
+		}
+	}
+	for _, kept := range []string{"say done", "continuum-notes/bin/sync hook stop", `"Notification"`} {
+		if !strings.Contains(s, kept) {
+			t.Fatalf("user hook %q removed:\n%s", kept, s)
+		}
+	}
+	// Uninstall leaves only the user's hooks.
+	Uninstall(tg, false)
+	s = mustRead(t, path)
+	if strings.Contains(s, "/new/continuum") || !strings.Contains(s, "say done") || !strings.Contains(s, "continuum-notes") {
+		t.Fatalf("after uninstall:\n%s", s)
+	}
+	if st, _ := Status(tg, bin); st != StateMissing {
+		t.Fatalf("status after uninstall: %s", st)
+	}
+}
+
+func TestIsOursIsPrecise(t *testing.T) {
+	ours := []string{
+		"/x/continuum hook claude",
+		`"C:\\Program Files\\continuum.exe" hook codex`,
+		`/bin/sh -c '"/x/.continuum/bin/continuum" hook claude 2>/dev/null || true'`,
+	}
+	theirs := []string{
+		"/Users/me/continuum-notes/bin/sync hook stop",
+		"/Users/me/Documents/continuum/scripts/notify.sh",
+		"rex __internal session-start --agent codex",
+		"mycontinuum hook x",
+	}
+	for _, c := range ours {
+		if !isOurs(c) {
+			t.Errorf("not recognised: %s", c)
+		}
+	}
+	for _, c := range theirs {
+		if isOurs(c) {
+			t.Errorf("someone else's hook taken for ours: %s", c)
+		}
 	}
 }
 
@@ -177,4 +264,29 @@ func mustRead(t *testing.T, p string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func TestUninstallRestoresExactBytes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hooks.json")
+	// Compact, unusual formatting the pretty-printer would never produce.
+	orig := "{\"hooks\": {\"SessionStart\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"rex x\", \"timeout\": 5}]}]}}\n"
+	os.WriteFile(path, []byte(orig), 0o644)
+	tg := Target{Harness: "codex", Path: path, Events: []string{"SessionStart", "Stop"}, Timeout: 10}
+	Install(tg, "/a/continuum", false)
+	Install(tg, "/b/continuum", false) // an update: a second backup
+	Uninstall(tg, false)
+	if got := mustRead(t, path); got != orig {
+		t.Fatalf("not restored byte for byte:\n%q\nwant\n%q", got, orig)
+	}
+}
+
+func TestUninstallRemovesAFileItCreated(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	tg := Target{Harness: "codex", Path: path, Events: []string{"SessionStart", "Stop"}, Timeout: 10}
+	Install(tg, "/a/continuum", false)
+	Uninstall(tg, false)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("file Continuum created is still there: %v", err)
+	}
 }

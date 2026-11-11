@@ -74,6 +74,8 @@ func Deliver(o Options, job *core.Job) (Result, error) {
 			res, err = viaWrapper(o, job)
 		case "multiplexer":
 			res, err = viaMultiplexer(o, h, job)
+		case "terminal-app":
+			res, err = viaTerminalApp(o, h, job)
 		case "native", "headless":
 			if !o.Config.HeadlessAllowed() {
 				err = errors.New("disabled by allow_headless=false")

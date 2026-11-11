@@ -3,6 +3,7 @@ package main
 import (
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -36,8 +37,16 @@ func TestEveryCommandHasHelp(t *testing.T) {
 			t.Errorf("command %q has no help entry", m[1])
 		}
 	}
+	all := ""
+	files, _ := filepath.Glob("*.go")
+	for _, f := range files {
+		if !strings.HasSuffix(f, "_test.go") {
+			b, _ := os.ReadFile(f)
+			all += string(b)
+		}
+	}
 	flagsOf := map[string][]string{}
-	for _, m := range regexp.MustCompile(`(?s)newFlagSet\("([a-z-]+)"\)(.*?)parseFlags`).FindAllStringSubmatch(string(src), -1) {
+	for _, m := range regexp.MustCompile(`(?s)newFlagSet\("([a-z-]+)"\)(.*?)parseFlags`).FindAllStringSubmatch(all, -1) {
 		for _, f := range regexp.MustCompile(`fs\.\w+\("([a-z-]+)"`).FindAllStringSubmatch(m[2], -1) {
 			flagsOf[m[1]] = append(flagsOf[m[1]], f[1])
 		}

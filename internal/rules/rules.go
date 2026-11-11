@@ -274,12 +274,29 @@ type Multiplexer struct {
 	List            []Arg    `json:"list"`
 }
 
+// TerminalApp is a terminal emulator with a scripting interface that can type
+// into a specific terminal by its tty, without focusing it.
+type TerminalApp struct {
+	Name            string   `json:"name"`
+	ProcessPatterns []string `json:"process_patterns"`
+	Find            []string `json:"find"`       // {tty} -> lines "id<TAB>pid"
+	SendText        []string `json:"send_text"`  // {id} {text}
+	SendEnter       []string `json:"send_enter"` // {id}
+	Capture         []string `json:"capture"`    // {id} -> screen text; empty: can't read the screen
+
+	procRes []*regexp.Regexp
+}
+
+// MatchesProcess reports whether a command line is the terminal app.
+func (a *TerminalApp) MatchesProcess(line string) bool { return anyMatch(a.procRes, line) }
+
 type Rules struct {
 	blocking     []*regexp.Regexp
 	Version      int                     `json:"version"`
 	Defaults     Defaults                `json:"defaults"`
 	Harnesses    map[string]*Harness     `json:"harnesses"`
 	Multiplexers map[string]*Multiplexer `json:"multiplexers"`
+	TerminalApps map[string]*TerminalApp `json:"terminal_apps"`
 }
 
 // Load returns the embedded rules merged with an optional override file.
@@ -327,11 +344,22 @@ func parse(data []byte) (*Rules, error) {
 		Defaults     Defaults                   `json:"defaults"`
 		Harnesses    map[string]json.RawMessage `json:"harnesses"`
 		Multiplexers map[string]json.RawMessage `json:"multiplexers"`
+		TerminalApps map[string]json.RawMessage `json:"terminal_apps"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, err
 	}
-	r := &Rules{Version: raw.Version, Defaults: raw.Defaults, Harnesses: map[string]*Harness{}, Multiplexers: map[string]*Multiplexer{}}
+	r := &Rules{Version: raw.Version, Defaults: raw.Defaults, Harnesses: map[string]*Harness{}, Multiplexers: map[string]*Multiplexer{}, TerminalApps: map[string]*TerminalApp{}}
+	for name, msg := range raw.TerminalApps {
+		if strings.HasPrefix(name, "_") {
+			continue
+		}
+		a := &TerminalApp{}
+		if err := json.Unmarshal(msg, a); err != nil {
+			return nil, fmt.Errorf("terminal app %s: %w", name, err)
+		}
+		r.TerminalApps[name] = a
+	}
 	for name, msg := range raw.Harnesses {
 		if strings.HasPrefix(name, "_") {
 			continue
@@ -410,6 +438,12 @@ func (r *Rules) compile() error {
 			if a.procRes, err = compileAll(a.ProcessPatterns); err != nil {
 				return fmt.Errorf("harness %s desktop app %s: %w", name, a.Name, err)
 			}
+		}
+	}
+	for name, a := range r.TerminalApps {
+		var err error
+		if a.procRes, err = compileAll(a.ProcessPatterns); err != nil {
+			return fmt.Errorf("terminal app %s: %w", name, err)
 		}
 	}
 	if r.Defaults.MaxAttempts <= 0 {

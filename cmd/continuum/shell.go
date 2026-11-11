@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/continuum-dev/continuum/internal/core"
+	"github.com/continuum-dev/continuum/internal/hooks"
 	"github.com/continuum-dev/continuum/internal/proc"
 	"github.com/continuum-dev/continuum/internal/rules"
 )
@@ -217,8 +217,7 @@ func installShell(bin string, dry bool) []string {
 			continue
 		}
 		if len(old) > 0 {
-			backup := rc.Path + ".continuum-backup-" + time.Now().Format("20060102-150405")
-			if err := os.WriteFile(backup, old, 0o600); err != nil {
+			if err := hooks.SaveBackup(rc.Path, old); err != nil {
 				out = append(out, fmt.Sprintf("%-9s %s: backup failed, left alone: %v", "shell:", rc.Path, err))
 				continue
 			}
@@ -232,9 +231,27 @@ func installShell(bin string, dry bool) []string {
 	return out
 }
 
+// allRCs lists every startup file the shell hook could have been added to,
+// whatever the current login shell.
+func allRCs() []rcFile {
+	home, _ := os.UserHomeDir()
+	return []rcFile{
+		{"zsh", filepath.Join(zdotdir(home), ".zshrc")},
+		{"zsh", filepath.Join(home, ".zshrc")},
+		{"bash", filepath.Join(home, ".bashrc")},
+		{"bash", filepath.Join(home, ".bash_profile")},
+		{"fish", filepath.Join(home, ".config", "fish", "conf.d", "continuum.fish")},
+	}
+}
+
 func uninstallShell(dry bool) []string {
 	var out []string
-	for _, rc := range shellRCs() {
+	seen := map[string]bool{}
+	for _, rc := range allRCs() {
+		if seen[rc.Path] {
+			continue
+		}
+		seen[rc.Path] = true
 		old, err := os.ReadFile(rc.Path)
 		if err != nil || !bytes.Contains(old, []byte(blockStart)) {
 			continue
