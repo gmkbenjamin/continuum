@@ -12,9 +12,11 @@ package main
 //   ~/.continuum (binary, data)     install        -                   uninstall --purge
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -31,6 +33,7 @@ import (
 
 type installOptions struct {
 	Copy, Shell, Service, Dry bool
+	Standalone                bool // no background daemon: `continuum watch` only
 	Only                      string
 	Update                    bool // re-applying a previous install
 }
@@ -42,12 +45,27 @@ func cmdInstall(args []string) error {
 	dry := fs.Bool("dry-run", false, "Show what would change, and change nothing.")
 	only := fs.String("only", "", "Comma-separated `AGENTS` to add hooks for, e.g. claude,codex (default: every installed agent that has hooks).")
 	noShell := fs.Bool("no-shell", false, "Do not add the shell hook. Without it, agents in plain terminals (no tmux etc.) can only be resumed if started with `continuum run`.")
+	standalone := fs.Bool("standalone", false, "Don't run in the background: no login item, and hooks never start a daemon. Continuum works while `continuum watch` is open in a terminal.")
+	background := fs.Bool("background", false, "Run in the background, started at login (the default; skips the question).")
 	yes := fs.Bool("yes", false, "Don't ask for confirmation; go ahead (for scripts). Also -y.")
 	fs.BoolVar(yes, "y", false, "Same as --yes.")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
-	o := installOptions{Copy: !*noCopy, Shell: !*noShell, Service: !*noService, Only: *only}
+	if *standalone && *background {
+		return errors.New("choose either --standalone or --background")
+	}
+	o := installOptions{Copy: !*noCopy, Shell: !*noShell, Service: !*noService, Only: *only, Standalone: *standalone}
+	if !*standalone && !*background && !*yes && !*dry && stdinIsTerminal() {
+		s, err := askMode(os.Stdin)
+		if err != nil {
+			return err
+		}
+		o.Standalone = s
+	}
+	if o.Standalone {
+		o.Service = false
+	}
 	return planAndInstall(o, *dry, *yes, "Continuum will make these changes:", "Install Continuum?")
 }
 
@@ -84,7 +102,7 @@ func cmdUpdate(args []string) error {
 	if !ok {
 		return errors.New("Continuum is not installed here; run `continuum install`")
 	}
-	o := installOptions{Copy: rec.Copy || rec.Version == "", Shell: rec.Shell || rec.Version == "", Service: rec.Service || rec.Version == "", Only: rec.Only, Update: true}
+	o := installOptions{Copy: rec.Copy || rec.Version == "", Shell: rec.Shell || rec.Version == "", Service: (rec.Service || rec.Version == "") && !rec.Standalone, Only: rec.Only, Update: true, Standalone: rec.Standalone}
 	title := fmt.Sprintf("Updating Continuum %s → %s, with the choices you made at install. These changes will be made:", orUnknown(rec.Version), core.Version)
 	return planAndInstall(o, *dry, *yes, title, "Update Continuum?")
 }
@@ -161,17 +179,33 @@ func doInstall(o installOptions) error {
 	if !o.Dry {
 		rec, _ := json.MarshalIndent(daemon.Install{
 			Bin: bin, Hooks: hooked, At: time.Now(), Version: core.Version,
-			Shell: o.Shell, Service: o.Service, Copy: o.Copy, Only: o.Only,
+			Shell: o.Shell, Service: o.Service, Copy: o.Copy, Only: o.Only, Standalone: o.Standalone,
 		}, "", "  ")
 		_ = core.WriteFileAtomic(daemon.InstallPath(p), append(rec, '\n'), 0o600)
 		// A daemon still running an older binary would keep old behaviour:
-		// stop it so the new one takes over.
+		// stop it so the new one takes over (or, in standalone mode, so
+		// nothing runs in the background).
 		if daemonRunning(p) {
 			stopDaemon(p)
-			fmt.Println("daemon:    restarted with this version")
+			if !o.Standalone {
+				fmt.Println("daemon:    restarted with this version")
+			} else {
+				fmt.Println("daemon:    background daemon stopped (standalone mode)")
+			}
+		}
+		if o.Standalone {
+			_ = setConfigKey(p, "autostart_daemon", false)
+			if service.Installed(p) {
+				_ = service.Uninstall(p)
+				fmt.Println("service:   login item removed (standalone mode)")
+			}
+		} else {
+			_ = setConfigKey(p, "autostart_daemon", nil)
 		}
 	}
-	if o.Service {
+	if o.Standalone {
+		// nothing runs in the background
+	} else if o.Service {
 		if o.Dry {
 			plan, err := service.MakePlan(bin, p)
 			if err != nil {
@@ -195,6 +229,13 @@ func doInstall(o installOptions) error {
 		_ = cmdStart()
 	}
 	if o.Dry {
+		return nil
+	}
+	if o.Standalone {
+		fmt.Println()
+		fmt.Println("✅ Continuum is installed in standalone mode. Nothing runs in the background.")
+		fmt.Println("   Run `continuum watch` in a terminal whenever you want stalled sessions")
+		fmt.Println("   resumed; it shows what it does. Events are collected in the meantime.")
 		return nil
 	}
 	fmt.Println()
@@ -430,4 +471,23 @@ func leftovers(p core.Paths, cfg core.Config, purged bool) []string {
 		}
 	}
 	return out
+}
+
+// askMode asks how Continuum should run. It returns true for standalone.
+func askMode(in io.Reader) (bool, error) {
+	fmt.Println("How should Continuum run?")
+	fmt.Println("  1. In the background, started at login (recommended): sessions resume even")
+	fmt.Println("     when no terminal is open.")
+	fmt.Println("  2. Standalone: only while `continuum watch` is open in a terminal, showing")
+	fmt.Println("     what it does. Nothing runs in the background.")
+	fmt.Print("Choose 1 or 2 [1]: ")
+	line, _ := bufio.NewReader(in).ReadString('\n')
+	fmt.Println()
+	switch strings.TrimSpace(line) {
+	case "", "1":
+		return false, nil
+	case "2":
+		return true, nil
+	}
+	return false, fmt.Errorf("please answer 1 or 2")
 }

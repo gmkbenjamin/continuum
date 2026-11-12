@@ -21,6 +21,7 @@ Set up:
   update       Apply this version: refresh hooks, shell hook and login item
   uninstall    Remove everything Continuum added
   doctor       Check agents, hooks, terminals and rules
+  diagnose     Write a report for troubleshooting or a bug report
   status       Show the daemon, hooks and scheduled resumes
   version      Print the version
 
@@ -47,6 +48,8 @@ Running agents:
   shell-init   Print the shell functions that wrap installed agents
 
 Background daemon:
+  watch        Run Continuum in this terminal, showing what it does
+  logs         Show or follow what the background daemon is doing
   start        Start the background daemon
   stop         Stop the background daemon
   daemon       Run the daemon in the foreground (for debugging)
@@ -91,6 +94,8 @@ Usage:
   Limits that happened before installing are never resumed.
 
 Options:
+  --background           Run in the background, started at login (the default;
+                         skips the question).
   --dry-run              Show what would change, and change nothing.
   --no-copy              Use this binary where it is instead of copying it to
                          ~/.continuum/bin.
@@ -102,6 +107,9 @@ Options:
   --only AGENTS          Comma-separated AGENTS to add hooks for, e.g.
                          claude,codex (default: every installed agent that has
                          hooks).
+  --standalone           Don't run in the background: no login item, and hooks
+                         never start a daemon. Continuum works while `continuum
+                         watch` is open in a terminal.
   -y                     Same as --yes.
   --yes                  Don't ask for confirmation; go ahead (for scripts).
                          Also -y.
@@ -213,6 +221,37 @@ Usage:
 
 Options:
   -h, --help             Show this help.
+```
+
+## diagnose
+
+```text
+continuum diagnose - Write a report for troubleshooting or a bug report
+
+Usage:
+  continuum diagnose [options]
+
+  Collects what is needed to understand a problem: version and OS, install and
+  mode, settings, each agent's version, hooks and resume commands, desktop and
+  terminal apps, update checks, recent resumes and the end of the logs.
+
+  Personal details are removed: your home folder becomes ~, your user name
+  <user>, session ids their first 8 characters; custom prompts and limit
+  messages are left out. Read it before sharing.
+
+  For more detail in the logs first, turn on debug logging
+  (`"log_level": "debug"` in config.json, or `continuum watch --debug`), reproduce
+  the problem, then run diagnose.
+
+Options:
+  --lines LINES          How many of the last log LINES to include. (default
+                         150)
+  -o FILE                Write the report to FILE instead of printing it.
+  -h, --help             Show this help.
+
+Examples:
+  continuum diagnose
+  continuum diagnose -o continuum-report.md
 ```
 
 ## status
@@ -548,6 +587,66 @@ Examples:
   continuum shell-init fish | source
 ```
 
+## watch
+
+```text
+continuum watch - Run Continuum in this terminal, showing what it does
+
+Usage:
+  continuum watch [options]
+
+  The standalone mode: Continuum runs in the foreground and prints what it
+  notices and does (stalls, scheduled resumes, resumes, skips), until you press
+  Ctrl+C. Nothing runs in the background. Hooks and the shell hook keep
+  collecting events while it isn't running; it catches up on them (up to
+  catch_up_hours back) when it next runs.
+
+  Only one Continuum runs at a time. If the background daemon is running,
+  `watch` says so; --takeover stops it and watches here instead.
+
+  Install in standalone mode with `continuum install --standalone`.
+
+Options:
+  --debug                Also show why: every event, check and delivery route.
+  --takeover             If Continuum is already running in the background, stop
+                         it and watch here instead.
+  -h, --help             Show this help.
+
+Examples:
+  continuum watch
+  continuum watch --debug
+  continuum watch --takeover
+```
+
+## logs
+
+```text
+continuum logs - Show or follow what the background daemon is doing
+
+Usage:
+  continuum logs [options]
+  (also: log)
+
+  Prints the end of ~/.continuum/daemon.log. Levels: info (default) records what
+  Continuum did; debug (`"log_level": "debug"` in config.json, `watch --debug`,
+  `daemon --debug`, or CONTINUUM_DEBUG=1) also records why: every event, check and
+  delivery route. The log rotates to daemon.log.1 at 5 MB.
+
+Options:
+  -f                     Keep printing new lines as they are written (Ctrl+C to
+                         stop).
+  --hooks                Show hooks.log (one line per agent hook call, written
+                         when debug logging is on) instead of daemon.log.
+  -n LINES               How many of the last LINES to show. (default 40)
+  -h, --help             Show this help.
+
+Examples:
+  continuum logs
+  continuum logs -f
+  continuum logs -n 200
+  continuum logs --hooks
+```
+
 ## start
 
 ```text
@@ -583,6 +682,8 @@ Usage:
   continuum daemon [options]
 
 Options:
+  --debug                Log every decision (events, checks, delivery routes) to
+                         daemon.log, and to this terminal if there is one.
   --once                 Run one pass (collect events, resume what is due) and
                          exit.
   -h, --help             Show this help.
@@ -610,6 +711,7 @@ Set up:
   update       Apply this version: refresh hooks, shell hook and login item
   uninstall    Remove everything Continuum added
   doctor       Check agents, hooks, terminals and rules
+  diagnose     Write a report for troubleshooting or a bug report
   status       Show the daemon, hooks and scheduled resumes
   version      Print the version
 
@@ -636,6 +738,8 @@ Running agents:
   shell-init   Print the shell functions that wrap installed agents
 
 Background daemon:
+  watch        Run Continuum in this terminal, showing what it does
+  logs         Show or follow what the background daemon is doing
   start        Start the background daemon
   stop         Stop the background daemon
   daemon       Run the daemon in the foreground (for debugging)
@@ -672,6 +776,7 @@ Set up:
   update       Apply this version: refresh hooks, shell hook and login item
   uninstall    Remove everything Continuum added
   doctor       Check agents, hooks, terminals and rules
+  diagnose     Write a report for troubleshooting or a bug report
   status       Show the daemon, hooks and scheduled resumes
   version      Print the version
 
@@ -698,6 +803,8 @@ Running agents:
   shell-init   Print the shell functions that wrap installed agents
 
 Background daemon:
+  watch        Run Continuum in this terminal, showing what it does
+  logs         Show or follow what the background daemon is doing
   start        Start the background daemon
   stop         Stop the background daemon
   daemon       Run the daemon in the foreground (for debugging)
@@ -734,6 +841,7 @@ Set up:
   update       Apply this version: refresh hooks, shell hook and login item
   uninstall    Remove everything Continuum added
   doctor       Check agents, hooks, terminals and rules
+  diagnose     Write a report for troubleshooting or a bug report
   status       Show the daemon, hooks and scheduled resumes
   version      Print the version
 
@@ -760,6 +868,8 @@ Running agents:
   shell-init   Print the shell functions that wrap installed agents
 
 Background daemon:
+  watch        Run Continuum in this terminal, showing what it does
+  logs         Show or follow what the background daemon is doing
   start        Start the background daemon
   stop         Stop the background daemon
   daemon       Run the daemon in the foreground (for debugging)

@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-var Version = "0.4.0"
+var Version = "0.5.0"
 
 // Location says where an agent is running so input can be delivered to it
 // without focusing any window.
@@ -195,6 +195,17 @@ type Config struct {
 	// ShellHookAgents replaces the list of agents the shell hook wraps
 	// (default: every installed agent whose rules allow it).
 	ShellHookAgents []string `json:"shell_hook_agents,omitempty"`
+	// LogLevel: error, warn, info (default) or debug. Debug explains every
+	// decision in daemon.log, and hooks write one line each to hooks.log.
+	LogLevel string `json:"log_level,omitempty"`
+}
+
+// Debug reports whether debug logging is on (config or CONTINUUM_DEBUG).
+func (c Config) Debug() bool {
+	if v := os.Getenv("CONTINUUM_DEBUG"); v != "" && v != "0" && v != "false" {
+		return true
+	}
+	return c.LogLevel == "debug" || os.Getenv("CONTINUUM_LOG_LEVEL") == "debug"
 }
 
 func LoadConfig(path string) (Config, error) {

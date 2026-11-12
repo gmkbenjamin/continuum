@@ -1,0 +1,214 @@
+package main
+
+// The daemon, run either in the background (`continuum daemon`, started at
+// login or by hooks) or in the foreground with readable output
+// (`continuum watch`, the standalone mode).
+
+import (
+	"bufio"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/continuum-dev/continuum/internal/core"
+	"github.com/continuum-dev/continuum/internal/daemon"
+	"github.com/continuum-dev/continuum/internal/deliver"
+	"github.com/continuum-dev/continuum/internal/logx"
+	"github.com/continuum-dev/continuum/internal/proc"
+	"github.com/continuum-dev/continuum/internal/rules"
+	"github.com/continuum-dev/continuum/internal/scope"
+	"github.com/continuum-dev/continuum/internal/store"
+	"golang.org/x/term"
+)
+
+type daemonOptions struct {
+	Once, Debug, Watch bool
+}
+
+func runDaemon(o daemonOptions) error {
+	p := core.GetPaths()
+	if err := p.Ensure(); err != nil {
+		return err
+	}
+	cfg, _ := core.LoadConfig(p.Config)
+	lock, err := store.Lock(p.Lock)
+	if err != nil {
+		if errors.Is(err, store.ErrLocked) {
+			if o.Watch {
+				return fmt.Errorf("Continuum is already running in the background. Follow it with `continuum logs -f`, or stop it and watch here with `continuum watch --takeover`")
+			}
+			fmt.Println("continuum daemon is already running")
+			return nil
+		}
+		return err
+	}
+	defer lock.Close()
+	_ = os.WriteFile(p.PID, []byte(strconv.Itoa(os.Getpid())), 0o600)
+	defer os.Remove(p.PID)
+	_ = os.WriteFile(p.BinRecord, []byte(self()), 0o600)
+
+	level := logx.LevelFromEnv(logx.ParseLevel(cfg.LogLevel))
+	if o.Debug || cfg.Debug() {
+		level = logx.Debug
+	}
+	var sinks []logx.Sink
+	if lf, err := logx.OpenFile(p.Log, 5<<20); err == nil {
+		defer lf.Close()
+		sinks = append(sinks, logx.Sink{W: lf, Level: level})
+	}
+	tty := term.IsTerminal(int(os.Stdout.Fd()))
+	if o.Watch || tty {
+		sinks = append(sinks, logx.Sink{W: os.Stdout, Level: level, Human: true, Color: tty})
+	}
+
+	d, err := daemon.New(p)
+	if err != nil {
+		return err
+	}
+	d.Log = logx.New(sinks...)
+	d.Compat = daemon.LoadCompat(p)
+	if o.Once {
+		d.Tick()
+		return nil
+	}
+	if o.Watch {
+		printWatchHeader(p, cfg, level)
+	}
+	warnCapabilities(d)
+	stop := make(chan struct{})
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	go func() { <-sig; close(stop) }()
+	d.Run(stop)
+	if o.Watch {
+		fmt.Printf("\nStopped. Limits that reset while Continuum isn't running are caught up the next\ntime it runs (up to %d hours back).\n", int(cfg.CatchUp().Hours()))
+	}
+	return nil
+}
+
+func printWatchHeader(p core.Paths, cfg core.Config, level logx.Level) {
+	sc, _ := scope.Load(p)
+	var agents []string
+	for _, a := range shellHookAgents() {
+		if r := rulesOrNil(p); r != nil {
+			agents = append(agents, r.Harness(a.Harness).DisplayName)
+		}
+	}
+	scopeText := "every session"
+	if sc.Mode == scope.ModeChosen {
+		scopeText = fmt.Sprintf("chosen sessions only (%d)", len(sc.Chosen))
+	}
+	awake := "off"
+	if h := cfg.KeepAwake(); h > 0 {
+		awake = fmt.Sprintf("on (when a resume is within %dh)", int(h.Hours()))
+	}
+	fmt.Printf("Continuum %s · watching in this terminal. Press Ctrl+C to stop.\n", core.Version)
+	if len(agents) > 0 {
+		fmt.Printf("  agents:      %s\n", strings.Join(agents, ", "))
+	}
+	fmt.Printf("  scope:       %s\n", scopeText)
+	fmt.Printf("  keep-awake:  %s\n", awake)
+	fmt.Printf("  log:         %s (level: %s)\n", tildePath(p.Log), level)
+	if cfg.DryRun {
+		fmt.Println("  dry run:     on (nothing is typed or run)")
+	}
+	fmt.Println()
+}
+
+func cmdWatch(args []string) error {
+	fs := newFlagSet("watch")
+	debug := fs.Bool("debug", false, "Also show why: every event, check and delivery route.")
+	takeover := fs.Bool("takeover", false, "If Continuum is already running in the background, stop it and watch here instead.")
+	if err := parseFlags(fs, args); err != nil {
+		return err
+	}
+	p := core.GetPaths()
+	if daemonRunning(p) && *takeover {
+		stopDaemon(p)
+		fmt.Println("Stopped the background daemon; watching here instead.")
+		fmt.Println()
+	}
+	return runDaemon(daemonOptions{Watch: true, Debug: *debug})
+}
+
+func cmdLogs(args []string) error {
+	fs := newFlagSet("logs")
+	follow := fs.Bool("f", false, "Keep printing new lines as they are written (Ctrl+C to stop).")
+	n := fs.Int("n", 40, "How many of the last `LINES` to show.")
+	hooksLog := fs.Bool("hooks", false, "Show hooks.log (one line per agent hook call, written when debug logging is on) instead of daemon.log.")
+	if err := parseFlags(fs, args); err != nil {
+		return err
+	}
+	p := core.GetPaths()
+	path := p.Log
+	if *hooksLog {
+		path = p.Home + "/hooks.log"
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("no log yet at %s", tildePath(path))
+	}
+	defer f.Close()
+	lines := tailLines(f, *n)
+	for _, l := range lines {
+		fmt.Println(l)
+	}
+	if !*follow {
+		return nil
+	}
+	off, _ := f.Seek(0, io.SeekEnd)
+	r := bufio.NewReader(f)
+	for {
+		line, err := r.ReadString('\n')
+		if err == nil {
+			fmt.Print(line)
+			off += int64(len(line))
+			continue
+		}
+		time.Sleep(300 * time.Millisecond)
+		// The log rotated: start again at the top of the new file.
+		if st, serr := os.Stat(path); serr == nil && st.Size() < off {
+			f.Close()
+			if f, err = os.Open(path); err != nil {
+				return err
+			}
+			r, off = bufio.NewReader(f), 0
+		}
+	}
+}
+
+func tailLines(r io.Reader, n int) []string {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	var ring []string
+	for sc.Scan() {
+		ring = append(ring, sc.Text())
+		if len(ring) > n {
+			ring = ring[1:]
+		}
+	}
+	return ring
+}
+
+// ensureDaemon starts the background daemon from hooks and `continuum run`,
+// unless the user chose standalone mode (autostart_daemon: false).
+func ensureDaemon() {
+	defer func() { _ = recover() }()
+	p := core.GetPaths()
+	cfg, _ := core.LoadConfig(p.Config)
+	if !cfg.AutostartEnabled() || daemonRunning(p) {
+		return
+	}
+	_, _ = proc.StartDetached([]string{self(), "daemon"}, p.Home, deliver.CleanEnv(os.Environ()), p.Home+"/daemon.stderr.log")
+}
+
+func rulesOrNil(p core.Paths) *rules.Rules {
+	r, _ := rules.Cached(p.Rules)
+	return r
+}

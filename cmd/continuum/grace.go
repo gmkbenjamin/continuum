@@ -105,3 +105,27 @@ func describeGrace(sec int) string {
 	}
 	return fmt.Sprintf("waits %ds past the reset for the agent's own resume", sec)
 }
+
+// setConfigKey sets (or, with value nil, removes) one key in config.json,
+// keeping every other setting in the file.
+func setConfigKey(p core.Paths, key string, value any) error {
+	raw := map[string]any{}
+	if data, err := os.ReadFile(p.Config); err == nil && len(strings.TrimSpace(string(data))) > 0 {
+		if err := json.Unmarshal(data, &raw); err != nil {
+			return fmt.Errorf("%s is not valid JSON, not changing it: %w", p.Config, err)
+		}
+	}
+	if value == nil {
+		if _, ok := raw[key]; !ok {
+			return nil
+		}
+		delete(raw, key)
+	} else {
+		raw[key] = value
+	}
+	if err := p.Ensure(); err != nil {
+		return err
+	}
+	data, _ := json.MarshalIndent(raw, "", "  ")
+	return core.WriteFileAtomic(p.Config, append(data, '\n'), 0o600)
+}

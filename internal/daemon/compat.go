@@ -63,6 +63,9 @@ type Install struct {
 	Service bool   `json:"service"`
 	Copy    bool   `json:"copy"`
 	Only    string `json:"only,omitempty"`
+	// Standalone: no background daemon; Continuum runs only while
+	// `continuum watch` is open.
+	Standalone bool `json:"standalone,omitempty"`
 }
 
 func compatPath(p core.Paths) string  { return filepath.Join(p.Home, "compat.json") }

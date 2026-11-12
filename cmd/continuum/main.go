@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -68,6 +67,10 @@ func main() {
 		os.Exit(wrapper.Helper(args))
 	case "daemon":
 		err = cmdDaemon(args)
+	case "watch":
+		err = cmdWatch(args)
+	case "logs", "log":
+		err = cmdLogs(args)
 	case "start":
 		err = cmdStart()
 	case "stop":
@@ -86,6 +89,8 @@ func main() {
 		err = cmdUpdate(args)
 	case "uninstall":
 		err = cmdUninstall(args)
+	case "diagnose":
+		err = cmdDiagnose(args)
 	case "doctor":
 		code = cmdDoctor()
 	case "detect":
@@ -148,62 +153,14 @@ func daemonRunning(p core.Paths) bool {
 	return false
 }
 
-func ensureDaemon() {
-	defer func() { _ = recover() }()
-	p := core.GetPaths()
-	cfg, _ := core.LoadConfig(p.Config)
-	if !cfg.AutostartEnabled() || daemonRunning(p) {
-		return
-	}
-	_, _ = proc.StartDetached([]string{self(), "daemon"}, p.Home, deliver.CleanEnv(os.Environ()), p.Log)
-}
-
-func rotateLog(path string) {
-	if st, err := os.Stat(path); err == nil && st.Size() > 5<<20 {
-		_ = os.Rename(path, path+".1")
-	}
-}
-
 func cmdDaemon(args []string) error {
 	fs := newFlagSet("daemon")
 	once := fs.Bool("once", false, "Run one pass (collect events, resume what is due) and exit.")
+	debug := fs.Bool("debug", false, "Log every decision (events, checks, delivery routes) to daemon.log, and to this terminal if there is one.")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
-	p := core.GetPaths()
-	if err := p.Ensure(); err != nil {
-		return err
-	}
-	lock, err := store.Lock(p.Lock)
-	if err != nil {
-		if errors.Is(err, store.ErrLocked) {
-			fmt.Println("continuum daemon is already running")
-			return nil
-		}
-		return err
-	}
-	defer lock.Close()
-	rotateLog(p.Log)
-	_ = os.WriteFile(p.PID, []byte(strconv.Itoa(os.Getpid())), 0o600)
-	defer os.Remove(p.PID)
-	_ = os.WriteFile(p.BinRecord, []byte(self()), 0o600)
-
-	d, err := daemon.New(p)
-	if err != nil {
-		return err
-	}
-	d.Compat = daemon.LoadCompat(p) // watch for agent updates
-	if *once {
-		d.Tick()
-		return nil
-	}
-	warnCapabilities(d)
-	stop := make(chan struct{})
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	go func() { <-sig; close(stop) }()
-	d.Run(stop)
-	return nil
+	return runDaemon(daemonOptions{Once: *once, Debug: *debug})
 }
 
 // warnCapabilities logs when an installed agent no longer offers a command
@@ -242,7 +199,7 @@ func cmdStart() error {
 		fmt.Println("continuum daemon is already running")
 		return nil
 	}
-	pid, err := proc.StartDetached([]string{self(), "daemon"}, p.Home, deliver.CleanEnv(os.Environ()), p.Log)
+	pid, err := proc.StartDetached([]string{self(), "daemon"}, p.Home, deliver.CleanEnv(os.Environ()), p.Home+"/daemon.stderr.log")
 	if err != nil {
 		return err
 	}
@@ -451,8 +408,19 @@ func cmdStatus() error {
 	cfg, _ := core.LoadConfig(p.Config)
 	running := daemonRunning(p)
 	fmt.Printf("Continuum %s\n", core.Version)
-	fmt.Printf("  daemon:   %s\n", map[bool]string{true: "running", false: "not running (`continuum start`)"}[running])
-	fmt.Printf("  at login: %s\n", map[bool]string{true: "yes", false: "no"}[service.Installed(p)])
+	rec, installed := daemon.LoadInstall(p)
+	switch {
+	case installed && rec.Standalone:
+		fmt.Printf("  mode:     standalone (runs while `continuum watch` is open)\n")
+		fmt.Printf("  running:  %s\n", map[bool]string{true: "yes", false: "no: run `continuum watch` to resume stalled sessions"}[running])
+	default:
+		fmt.Printf("  mode:     background\n")
+		fmt.Printf("  daemon:   %s\n", map[bool]string{true: "running (`continuum logs -f` to follow it)", false: "not running (`continuum start`)"}[running])
+		fmt.Printf("  at login: %s\n", map[bool]string{true: "yes", false: "no"}[service.Installed(p)])
+	}
+	if cfg.Debug() {
+		fmt.Printf("  logging:  debug (%s)\n", tildePath(p.Log))
+	}
 	for _, t := range hooks.Targets(cfg) {
 		ok, detail := hooks.Installed(t)
 		state := "installed"
@@ -637,6 +605,12 @@ func helpFor(name string) {
 			err = cmdUninstall([]string{"-h"})
 		case "update":
 			err = cmdUpdate([]string{"-h"})
+		case "watch":
+			err = cmdWatch([]string{"-h"})
+		case "logs":
+			err = cmdLogs([]string{"-h"})
+		case "diagnose":
+			err = cmdDiagnose([]string{"-h"})
 		case "run":
 			_, err = cmdRun([]string{"-h"})
 		case "list":

@@ -58,15 +58,27 @@ func cmdDoctor() int {
 	} else {
 		ok("rules loaded (version %d)", r.Version)
 	}
-	if daemonRunning(p) {
-		ok("daemon running")
+	if rec, inst := daemon.LoadInstall(p); inst && rec.Standalone {
+		ok("standalone mode: nothing runs in the background")
+		if daemonRunning(p) {
+			ok("running now (`continuum watch`)")
+		} else {
+			fmt.Println("  · not running now: run `continuum watch` to resume stalled sessions")
+		}
 	} else {
-		warn("daemon not running: `continuum start` (hooks and `continuum run` also start it)")
+		if daemonRunning(p) {
+			ok("daemon running (`continuum logs -f` follows it)")
+		} else {
+			warn("daemon not running: `continuum start` (hooks and `continuum run` also start it)")
+		}
+		if service.Installed(p) {
+			ok("starts at login")
+		} else {
+			warn("does not start at login: `continuum install`")
+		}
 	}
-	if service.Installed(p) {
-		ok("starts at login")
-	} else {
-		warn("does not start at login: `continuum install`")
+	if cfg.Debug() {
+		ok("debug logging on: %s, %s", tildePath(p.Log), tildePath(filepath.Join(p.Home, "hooks.log")))
 	}
 
 	fmt.Println("\nRecognition self-test")

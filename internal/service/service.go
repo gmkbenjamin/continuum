@@ -55,8 +55,8 @@ func MakePlan(bin string, p core.Paths) (Plan, error) {
     <key>PATH</key><string>` + xmlEsc(proc.AugmentedPATH()) + `</string>
     <key>CONTINUUM_HOME</key><string>` + xmlEsc(p.Home) + `</string>
   </dict>
-  <key>StandardOutPath</key><string>` + xmlEsc(p.Log) + `</string>
-  <key>StandardErrorPath</key><string>` + xmlEsc(p.Log) + `</string>
+  <key>StandardOutPath</key><string>` + xmlEsc(filepath.Join(p.Home, "daemon.stderr.log")) + `</string>
+  <key>StandardErrorPath</key><string>` + xmlEsc(filepath.Join(p.Home, "daemon.stderr.log")) + `</string>
 </dict>
 </plist>
 `

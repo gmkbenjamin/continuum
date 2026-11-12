@@ -39,10 +39,17 @@ make build
 ./continuum install
 ```
 
-`install` first lists everything it will create or change, where it is and what it's
-for, and asks before doing anything (see [What it installs](#what-it-installs)). Run
-`continuum doctor` afterwards to check that everything works. Open a new terminal tab
-to start using it.
+`install` asks how Continuum should run:
+
+- **In the background** (recommended): a small daemon starts at login, so sessions
+  resume even when no terminal is open.
+- **Standalone:** nothing runs in the background. Continuum works while
+  `continuum watch` is open in a terminal, and prints what it does.
+
+`--background` or `--standalone` choose without asking. Then `install` lists everything
+it will create or change, where it is and what it's for, and asks before doing
+anything (see [What it installs](#what-it-installs)). Run `continuum doctor` afterwards
+to check that everything works, and open a new terminal tab to start using it.
 
 ## How it works
 
@@ -86,7 +93,7 @@ over the network.
 | Claude Code hooks | `~/.claude/settings.json`: `SessionStart`, `StopFailure`, `Stop`, `SessionEnd` | Claude Code reports stalls and where each session runs. This also covers Claude Desktop. |
 | Codex hooks | `~/.codex/hooks.json`: `SessionStart`, `Stop` | Codex reports where each session runs. |
 | Shell hook | A marked block in `~/.zshrc`, `~/.bashrc` or fish's `conf.d/continuum.fish` | Runs interactive `claude`, `codex` and other installed agents under the wrapper, so Continuum can type into them. |
-| Login item | macOS: `~/Library/LaunchAgents/dev.continuum.daemon.plist`. Linux: `~/.config/systemd/user/continuum.service`. Windows: scheduled task "Continuum". | Starts the background daemon when you log in. |
+| Login item (background mode only) | macOS: `~/Library/LaunchAgents/dev.continuum.daemon.plist`. Linux: `~/.config/systemd/user/continuum.service`. Windows: scheduled task "Continuum". | Starts the background daemon when you log in. |
 | Backups | `<file>.continuum-backup-<date-time>` next to each file it changes | Your file as it was before Continuum touched it. |
 
 Each hook is one line, `/bin/sh -c '"~/.continuum/bin/continuum" hook claude 2>/dev/null
@@ -94,6 +101,9 @@ Each hook is one line, `/bin/sh -c '"~/.continuum/bin/continuum" hook claude 2>/
 all of this, and `--purge` also removes the data folder and the backups.
 
 ## What runs in the background
+
+In standalone mode, nothing does: the work happens while `continuum watch` is open, and
+hooks only queue events for it. In background mode:
 
 - **One daemon**, `continuum daemon`, started at login. It uses about 25 MB of memory
   and well under 1% of one CPU core. It:
@@ -113,8 +123,22 @@ all of this, and `--purge` also removes the data folder and the backups.
   still working. On macOS it's a `caffeinate` process, on Linux `systemd-inhibit`, and
   on Windows a system flag. It's released as soon as nothing is pending.
 
-To check what it's doing, run `continuum status` and `continuum list`, or look at
-`~/.continuum/daemon.log`. `continuum stop` stops the daemon until the next login.
+To check what it's doing, run `continuum status` and `continuum list`, or follow the
+log with `continuum logs -f`. `continuum stop` stops the daemon until the next login.
+
+## Troubleshooting
+
+```sh
+continuum doctor                   # checks everything and says what to fix
+continuum watch --debug            # run in this terminal and show every decision
+continuum logs -f                  # follow the background daemon's log
+continuum diagnose -o report.md    # a report for a bug report, personal details removed
+```
+
+For detailed logs from the background daemon, add `"log_level": "debug"` to
+`~/.continuum/config.json`. The daemon then records why it did each thing: every event,
+every check, and every delivery route tried. Hooks also log one line per call to
+`~/.continuum/hooks.log`. Logs rotate at 5 MB.
 
 ## Using it
 

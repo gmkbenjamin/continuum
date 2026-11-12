@@ -60,6 +60,7 @@ type Daemon struct {
 	baseline     bool
 	timingSig    string
 	compatDirty  bool
+	lastBeat     time.Time
 	lastCompat   time.Time
 	lastDesktop  time.Time
 	paneSeen     map[string]string
@@ -213,6 +214,23 @@ func (d *Daemon) Tick() {
 			d.checkCompat(false)
 		}
 	}
+	if d.Log.Enabled(logx.Debug) && now.Sub(d.lastBeat) >= time.Minute {
+		d.lastBeat = now
+		pending, next := 0, time.Time{}
+		for _, j := range d.Jobs {
+			if j.State == core.StatePending {
+				pending++
+				if next.IsZero() || j.DueAt.Before(next) {
+					next = j.DueAt
+				}
+			}
+		}
+		if pending > 0 {
+			d.debugf("waiting: %d resume(s), next at %s", pending, next.Local().Format("15:04:05"))
+		} else {
+			d.debugf("waiting: nothing scheduled")
+		}
+	}
 	d.runDue()
 	d.prune()
 	d.keepAwake()
@@ -258,6 +276,7 @@ func (d *Daemon) ingestSpool() {
 		}
 		var ev core.Event
 		if json.Unmarshal(data, &ev) != nil {
+			d.debugf("spool: unreadable event file %s skipped", n)
 			continue
 		}
 		d.Handle(ev)
@@ -277,6 +296,7 @@ func (d *Daemon) scanSources() {
 		root := filepath.Join(d.Config.ClaudeDir(), "projects")
 		for path, lines := range d.Offsets.Claude.Scan(root, since, 3) {
 			evs := sources.ParseClaude(d.Rules, path, lines, d.Local)
+			d.debugf("transcript %s: %d new lines, %d events%s", filepath.Base(path), len(lines), len(evs), map[bool]string{true: " (first scan: history not acted on)"}[baseline])
 			if baseline {
 				if ev := lastStall(evs, since); ev != nil {
 					stalled = append(stalled, *ev)
@@ -297,6 +317,7 @@ func (d *Daemon) scanSources() {
 				d.Offsets.State[path] = st
 			}
 			evs := sources.ParseCodex(d.Rules, path, lines, st, d.Local)
+			d.debugf("rollout %s: %d new lines, %d events%s", filepath.Base(path), len(lines), len(evs), map[bool]string{true: " (first scan: history not acted on)"}[baseline])
 			if baseline {
 				if ev := lastStall(evs, since); ev != nil {
 					stalled = append(stalled, *ev)
@@ -354,7 +375,11 @@ func (d *Daemon) adoptIfOpen(ev core.Event) {
 // Handle applies one event.
 func (d *Daemon) Handle(ev core.Event) {
 	if !d.Config.IsEnabled() {
+		d.debugf("event ignored: Continuum is switched off (enabled: false)")
 		return
+	}
+	if ev.Kind != "control" && d.Log.Enabled(logx.Debug) {
+		d.debugf("event %s %s session=%s source=%s where=%s at=%s", ev.Harness, ev.Kind, short(ev.SessionID), ev.Source, ev.Location.String(), ev.At.Local().Format("15:04:05"))
 	}
 	if ev.Kind == "control" {
 		d.control(ev.Message)
@@ -569,11 +594,11 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 		if ok, why := d.Scope.Covers(nj); !ok {
 			nj.State, nj.Result = core.StateIgnored, why
 			d.history("ignored", nj, map[string]any{"reason": why})
-			d.logf("%s: %s, %s", key, nj.Kind, why)
+			d.logf("·  %s · %s, not resuming: %s", d.describe(nj), strings.ReplaceAll(nj.Kind, "_", " "), why)
 			return
 		}
 		d.history("scheduled", nj, map[string]any{"due": nj.DueAt.Format(time.RFC3339), "kind": nj.Kind, "source": ev.Source})
-		d.logf("%s: %s, resume at %s (%s)", key, nj.Kind, nj.DueAt.Format(time.RFC1123), ev.Source)
+		d.logf("⏸  %s · %s · resumes %s (from %s)", d.describe(nj), strings.ReplaceAll(nj.Kind, "_", " "), when(nj.DueAt, d.Now()), ev.Source)
 		if nj.Kind == core.KindUsageLimit {
 			d.notify(nj, "Paused until reset", "Will continue at "+nj.DueAt.In(d.Local).Format("Mon 3:04 PM"))
 		}
@@ -771,6 +796,7 @@ func (d *Daemon) sessionActiveSince(j *core.Job) bool {
 
 func (d *Daemon) runJob(j *core.Job) {
 	d.dirty = true
+	d.debugf("%s: due (attempt %d, reset %s, limit at %s); checking", j.Key, j.Attempts+1, j.ResetAt.Local().Format("15:04"), j.LimitAt.Local().Format("15:04"))
 	if d.sessionActiveSince(j) {
 		j.State = core.StateSkipped
 		j.Result = "the session continued on its own or you continued it"
@@ -804,6 +830,15 @@ func (d *Daemon) runJob(j *core.Job) {
 	var st *live.State
 	if d.LiveFn != nil {
 		st = d.LiveFn(j)
+	}
+	if st != nil && d.Log.Enabled(logx.Debug) {
+		pid, status, waiting := 0, "", ""
+		if st.Session != nil {
+			pid, status, waiting = st.Session.PID, st.Session.Status, st.Session.WaitingFor
+		}
+		d.debugf("%s: open=%v (source %s) pid=%d status=%q waiting=%q busy=%v background=%v desktop=%q moved_on=%v", j.Key, st.Open, st.Source, pid, status, waiting, st.Busy, st.Background, st.DesktopApp, st.MovedOn)
+	} else if st == nil {
+		d.debugf("%s: whether the session is open can't be checked for this agent", j.Key)
 	}
 	if st != nil {
 		s := st.Session
@@ -844,8 +879,9 @@ func (d *Daemon) runJob(j *core.Job) {
 	strategies := d.Config.StrategyOrder()
 	opts := deliver.Options{
 		Rules: d.Rules, Paths: d.Paths, Config: d.Config, Prompt: prompt,
-		DryRun: d.Config.DryRun, Strategies: strategies, Log: d.logf, Live: st,
+		DryRun: d.Config.DryRun, Strategies: strategies, Log: d.debugf, Live: st,
 	}
+	d.debugf("%s: delivering through %s (location %s)", j.Key, strings.Join(strategies, " → "), j.Location.String())
 	res, err := d.DeliverFn(opts, j)
 	now := d.Now()
 	j.UpdatedAt = now
@@ -885,7 +921,7 @@ func (d *Daemon) runJob(j *core.Job) {
 			j.DueAt = now.Add(backoff([]int{60, 180, 600, 1800}, j.Attempts-1))
 			d.history("retry", j, map[string]any{"error": err.Error(), "next": j.DueAt.Format(time.RFC3339)})
 		}
-		d.warnf("%s: delivery failed: %v", j.Key, err)
+		d.warnf("%s · could not resume yet (attempt %d, next try %s): %v", d.describe(j), j.Attempts, when(j.DueAt, now), err)
 		return
 	}
 	j.Attempts++
@@ -894,7 +930,7 @@ func (d *Daemon) runJob(j *core.Job) {
 	j.DeliveredVia = res.Via
 	j.Result = res.Detail
 	d.history("delivered", j, map[string]any{"via": res.Via, "detail": res.Detail})
-	d.logf("%s: resumed via %s: %s", j.Key, res.Via, res.Detail)
+	d.logf("▶  %s · resumed via %s: %s", d.describe(j), res.Via, res.Detail)
 	d.notify(j, "Resumed", "Continued via "+res.Via)
 }
 
@@ -960,11 +996,13 @@ func (d *Daemon) scanPanes() {
 	if err != nil {
 		return
 	}
+	d.debugf("pane scan: %d tmux panes", len(panes))
 	for _, p := range panes {
 		h := d.paneHarness(p)
 		if h == nil {
 			continue
 		}
+		d.debugf("pane %s runs %s", p.Location.String(), h.DisplayName)
 		text, err := mux.Capture(d.Rules, p.Location)
 		if err != nil {
 			continue
@@ -1091,7 +1129,7 @@ func (d *Daemon) skip(j *core.Job, why string) {
 	j.UpdatedAt = d.Now()
 	d.dirty = true
 	d.history("skipped", j, map[string]any{"reason": why})
-	d.logf("%s: %s", j.Key, why)
+	d.logf("·  %s · not resuming: %s", d.describe(j), why)
 }
 
 // liveState asks the agent (or the process table) whether the job's session
@@ -1251,3 +1289,50 @@ func (d *Daemon) paneHarness(p mux.Pane) *rules.Harness {
 
 func (d *Daemon) debugf(format string, args ...any) { d.Log.Debugf(format, args...) }
 func (d *Daemon) warnf(format string, args ...any)  { d.Log.Warnf(format, args...) }
+
+func short(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	if id == "" {
+		return "-"
+	}
+	return id
+}
+
+// describe names a job for people: agent · folder · short session id.
+func (d *Daemon) describe(j *core.Job) string {
+	name := j.Harness
+	if h := d.Rules.Harness(j.Harness); h != nil && h.DisplayName != "" {
+		name = h.DisplayName
+	}
+	parts := []string{name}
+	if dir := filepath.Base(j.Cwd); j.Cwd != "" && dir != "." && dir != "/" {
+		parts = append(parts, dir)
+	}
+	if j.SessionID != "" {
+		parts = append(parts, short(j.SessionID))
+	} else if j.Location != nil {
+		parts = append(parts, j.Location.String())
+	}
+	return strings.Join(parts, " · ")
+}
+
+// when describes a time relative to now: "now", "10:01 (in 2h10m)",
+// "Wed 10:01 (in 1d2h)".
+func when(t, now time.Time) string {
+	d := t.Sub(now)
+	if d <= 0 {
+		return "now"
+	}
+	in := d.Round(time.Minute).String()
+	in = strings.TrimSuffix(in, "0s")
+	if d < time.Minute {
+		in = d.Round(time.Second).String()
+	}
+	layout := "15:04"
+	if t.Local().YearDay() != now.Local().YearDay() {
+		layout = "Mon 15:04"
+	}
+	return t.Local().Format(layout) + " (in " + in + ")"
+}

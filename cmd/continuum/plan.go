@@ -256,6 +256,15 @@ func installPlanItems(o installOptions, p core.Paths, cfg core.Config, r *rules.
 				Purpose: "starts Continuum's background daemon when you log in"})
 		}
 	}
+	if o.Standalone {
+		items = append(items, planItem{Action: "change", What: "standalone mode", Path: filepath.Join(p.Home, "config.json"),
+			Purpose: "sets autostart_daemon to false, so hooks and the shell hook never start a background daemon",
+			Notes:   []string{"nothing runs in the background; Continuum works while `continuum watch` is open in a terminal"}})
+		if service.Installed(p) {
+			items = append(items, planItem{Action: "remove", What: "login item", Purpose: "the login item from a previous background install"})
+		}
+		return items
+	}
 	items = append(items, planItem{Action: "start", What: "background daemon", Path: bin + " daemon",
 		Purpose: "watches agent sessions and continues them when their limits reset",
 		Notes:   []string{"while a resume is due soon it asks the OS to postpone idle sleep (released as soon as nothing is pending)"}})

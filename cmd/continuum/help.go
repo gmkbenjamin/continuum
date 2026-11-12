@@ -106,6 +106,22 @@ harmless: they do nothing, silently, until removed.`,
 Run it after updating an agent. Exits 1 if something needs fixing.`,
 	},
 	{
+		Name: "diagnose", Group: "Set up", Args: "[options]",
+		Summary: "Write a report for troubleshooting or a bug report",
+		Detail: `Collects what is needed to understand a problem: version and OS, install and
+mode, settings, each agent's version, hooks and resume commands, desktop and
+terminal apps, update checks, recent resumes and the end of the logs.
+
+Personal details are removed: your home folder becomes ~, your user name
+<user>, session ids their first 8 characters; custom prompts and limit
+messages are left out. Read it before sharing.
+
+For more detail in the logs first, turn on debug logging
+(` + "`\"log_level\": \"debug\"`" + ` in config.json, or ` + "`continuum watch --debug`" + `), reproduce
+the problem, then run diagnose.`,
+		Examples: []string{"continuum diagnose", "continuum diagnose -o continuum-report.md"},
+	},
+	{
 		Name: "status", Group: "Set up",
 		Summary: "Show the daemon, hooks and scheduled resumes",
 	},
@@ -230,6 +246,30 @@ start, so newly installed agents are picked up automatically. Skip it once
 with CONTINUUM_NO_WRAP=1 <agent> or ` + "`command <agent>`" + `. Choose the commands
 with "shell_hook_agents" in config.json.`,
 		Examples: []string{`eval "$(continuum shell-init zsh)"`, "continuum shell-init fish | source"},
+	},
+	{
+		Name: "watch", Group: "Background daemon", Args: "[options]",
+		Summary: "Run Continuum in this terminal, showing what it does",
+		Detail: `The standalone mode: Continuum runs in the foreground and prints what it
+notices and does (stalls, scheduled resumes, resumes, skips), until you press
+Ctrl+C. Nothing runs in the background. Hooks and the shell hook keep
+collecting events while it isn't running; it catches up on them (up to
+catch_up_hours back) when it next runs.
+
+Only one Continuum runs at a time. If the background daemon is running,
+` + "`watch`" + ` says so; --takeover stops it and watches here instead.
+
+Install in standalone mode with ` + "`continuum install --standalone`" + `.`,
+		Examples: []string{"continuum watch", "continuum watch --debug", "continuum watch --takeover"},
+	},
+	{
+		Name: "logs", Aliases: []string{"log"}, Group: "Background daemon", Args: "[options]",
+		Summary: "Show or follow what the background daemon is doing",
+		Detail: `Prints the end of ~/.continuum/daemon.log. Levels: info (default) records what
+Continuum did; debug (` + "`\"log_level\": \"debug\"`" + ` in config.json, ` + "`watch --debug`" + `,
+` + "`daemon --debug`" + `, or CONTINUUM_DEBUG=1) also records why: every event, check and
+delivery route. The log rotates to daemon.log.1 at 5 MB.`,
+		Examples: []string{"continuum logs", "continuum logs -f", "continuum logs -n 200", "continuum logs --hooks"},
 	},
 	{
 		Name: "start", Group: "Background daemon",
@@ -450,7 +490,7 @@ func parseFlags(fs *flag.FlagSet, args []string) error {
 }
 
 // flagCommands lists the commands that parse options; their help shows them.
-var flagCommands = map[string]bool{"install": true, "update": true, "uninstall": true, "run": true, "list": true, "detect": true, "rules": true, "daemon": true}
+var flagCommands = map[string]bool{"diagnose": true, "watch": true, "logs": true, "install": true, "update": true, "uninstall": true, "run": true, "list": true, "detect": true, "rules": true, "daemon": true}
 
 // wantsHelp reports whether args ask for help: -h/--help/help before any
 // "--" (and, for run, before the agent's own command).

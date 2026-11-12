@@ -24,7 +24,8 @@
 | `binaries` | from `PATH` | Agent executables: `{"claude": "/opt/claude"}`. |
 | `claude_home`, `codex_home` | `~/.claude`, `~/.codex` | Where the agents keep their files. |
 | `reset_hints_command` | none | A command printing `{"claude": "<RFC3339>"}`, used when a message gives no reset time. |
-| `autostart_daemon` | `true` | Start the daemon from hooks and `run` if it isn't running. |
+| `autostart_daemon` | `true` | Start the daemon from hooks and `run` if it isn't running. `false` in standalone mode. |
+| `log_level` | `info` | `debug` also logs why: every event, check and delivery route, and hooks write to `hooks.log`. Also: `error`, `warn`. `CONTINUUM_DEBUG=1` turns on debug for one run. |
 
 The scope is in `~/.continuum/scope.json` (use `continuum scope` and `choose`). Rules
 overrides go in `~/.continuum/rules.json` (see [docs/agents.md](agents.md)).
@@ -40,7 +41,9 @@ Everything is in `~/.continuum`; set `CONTINUUM_HOME` to move it.
 | `rules.json` | Your rules overrides (optional) |
 | `jobs.json`, `sessions.json`, `offsets.json` | Scheduler state |
 | `history.jsonl` | Every scheduled, delivered, skipped and failed resume |
-| `daemon.log` | Daemon log |
+| `daemon.log`, `daemon.log.1` | Daemon log (rotates at 5 MB); `continuum logs -f` follows it |
+| `hooks.log` | One line per hook call, when debug logging is on |
+| `daemon.stderr.log` | Crash output of the background daemon, if any |
 | `wrappers/` | One folder per running `continuum run` |
 | `install.json` | What `install` set up and your choices, for `update` and for restoring hooks |
 | `compat.json` | Results of the last update check, and what was learned about desktop apps |

@@ -86,7 +86,13 @@ func Deliver(o Options, job *core.Job) (Result, error) {
 			err = fmt.Errorf("unknown strategy %q", s)
 		}
 		if err == nil {
+			o.logf("route %s: delivered (%s)", s, res.Detail)
 			return res, nil
+		}
+		if errors.Is(err, errSkip) {
+			o.logf("route %s: not applicable", s)
+		} else {
+			o.logf("route %s: %v", s, err)
 		}
 		if errors.Is(err, ErrStillOpen) {
 			stillOpen = true

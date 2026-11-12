@@ -2,6 +2,26 @@
 
 All notable changes to Continuum. Versions follow [Semantic Versioning](https://semver.org).
 
+## [0.5.0] - 2026-11-12
+
+### Added
+- Standalone mode. `continuum install` asks whether to run in the background (started
+  at login) or standalone, where nothing runs in the background. `--background` and
+  `--standalone` choose without asking.
+- `continuum watch` runs Continuum in the terminal with readable live output. Ctrl+C
+  stops it. `--takeover` replaces a running background daemon.
+- `continuum logs [-f] [-n LINES] [--hooks]` shows or follows the daemon's log.
+- `continuum diagnose [-o FILE]` writes a report for troubleshooting, with personal
+  details removed.
+- Log levels (`error`, `warn`, `info`, `debug`). Turn on debug with the `"log_level"`
+  setting, `--debug`, or `CONTINUUM_DEBUG=1`. At debug level every event, check and
+  delivery route is logged, and hooks log to `hooks.log`. Logs rotate at 5 MB.
+
+### Changed
+- Log messages are easier to read, for example
+  "Claude Code · api · 9a010a4e · usage limit · resumes 10:55 (in 2h)".
+- `status` and `doctor` show the mode, and whether debug logging is on.
+
 ## [0.4.0] - 2026-11-12
 
 First public release.
@@ -68,6 +88,7 @@ First public release.
   sign-in errors.
 - Help for every command (`-h`), `doctor`, and docs in `docs/`.
 
+[0.5.0]: ../../releases/tag/v0.5.0
 [0.4.0]: ../../releases/tag/v0.4.0
 [0.3.0]: ../../commit/ba6abd6
 [0.2.0]: ../../commit/f559807

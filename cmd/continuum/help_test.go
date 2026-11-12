@@ -60,7 +60,11 @@ func TestEveryCommandHasHelp(t *testing.T) {
 			t.Errorf("%s: help incomplete:\n%s", e.Name, out)
 		}
 		for _, f := range flagsOf[e.Name] {
-			if !strings.Contains(out, "--"+f) {
+			opt := "--" + f
+			if len(f) == 1 {
+				opt = "-" + f
+			}
+			if !strings.Contains(out, opt) {
 				t.Errorf("%s: option --%s missing from help", e.Name, f)
 			}
 		}

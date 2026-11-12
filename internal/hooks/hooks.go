@@ -153,6 +153,7 @@ func Handle(harness string, stdin io.Reader, environ []string) {
 	data, _ := io.ReadAll(io.LimitReader(stdin, 4<<20))
 	var in Input
 	if json.Unmarshal(data, &in) != nil {
+		debugHook(p, harness, "payload is not JSON; ignored")
 		return
 	}
 	r, _ := rules.Cached(p.Rules)
@@ -161,8 +162,10 @@ func Handle(harness string, stdin io.Reader, environ []string) {
 	}
 	ev, ok := BuildEvent(r, harness, in, mux.EnvMap(environ), time.Now())
 	if !ok {
+		debugHook(p, harness, in.HookEventName+": nothing to report")
 		return
 	}
+	debugHook(p, harness, fmt.Sprintf("%s: %s session=%s where=%s", in.HookEventName, ev.Kind, ev.SessionID, ev.Location.String()))
 	if ev.Kind == core.KindActivity {
 		// Routine notes are only useful to a running daemon; never let them
 		// pile up when it is switched off.
@@ -592,4 +595,23 @@ func SaveBackup(path string, data []byte) error {
 		name = fmt.Sprintf("%s-%d", base, i)
 	}
 	return fmt.Errorf("backup %s: too many backups this second", base)
+}
+
+// debugHook appends one line to hooks.log when debug logging is on. Hooks
+// must stay silent and fast, so this never prints, and the file is capped.
+func debugHook(p core.Paths, harness, msg string) {
+	cfg, _ := core.LoadConfig(p.Config)
+	if !cfg.Debug() {
+		return
+	}
+	path := filepath.Join(p.Home, "hooks.log")
+	if st, err := os.Stat(path); err == nil && st.Size() > 2<<20 {
+		_ = os.Rename(path, path+".1")
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s %s %s\n", time.Now().Format("2006-01-02 15:04:05.000"), harness, msg)
 }
