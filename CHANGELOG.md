@@ -2,6 +2,23 @@
 
 All notable changes to Continuum. Versions follow [Semantic Versioning](https://semver.org).
 
+## [0.7.0] - 2026-11-12
+
+### Added
+- `continuum status` lists every open session (and those active in the last 12
+  hours), not only stalled ones. For each it shows its state (working, idle, waiting
+  for you, usage limit with the resume time, API error, resumed, needs you, not
+  resuming, closed), where it runs (tmux, Rex, a terminal, Claude Desktop,
+  background), and whether Continuum covers it. `--all` adds closed sessions, and
+  `--json` gives the same for scripts.
+- `continuum sessions` shows the same table, plus which message each session would
+  get. `--json` is supported.
+
+### Changed
+- Where a session runs is filled in from the hooks, even when the agent's own
+  session list doesn't say.
+- The interactive menu's status uses the new view.
+
 ## [0.6.0] - 2026-11-12
 
 ### Added
@@ -108,6 +125,7 @@ First public release.
   sign-in errors.
 - Help for every command (`-h`), `doctor`, and docs in `docs/`.
 
+[0.7.0]: ../../releases/tag/v0.7.0
 [0.6.0]: ../../releases/tag/v0.6.0
 [0.5.0]: ../../releases/tag/v0.5.0
 [0.4.0]: ../../releases/tag/v0.4.0

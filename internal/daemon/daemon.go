@@ -1328,6 +1328,9 @@ func when(t, now time.Time) string {
 	}
 	in := d.Round(time.Minute).String()
 	in = strings.TrimSuffix(in, "0s")
+	if strings.HasSuffix(in, "h0m") {
+		in = strings.TrimSuffix(in, "0m")
+	}
 	if d < time.Minute {
 		in = d.Round(time.Second).String()
 	}

@@ -147,13 +147,27 @@ get a notification. Run `continuum` on its own for a menu of everything below, o
 the commands:
 
 ```sh
-continuum status            # is it running, and what is waiting
-continuum sessions          # open agent sessions, and whether each is covered
+continuum status            # is it running, and every session with its state
+continuum sessions          # the same sessions, with the message each would get
 continuum list              # scheduled and recent resumes
 continuum resume-now <id>   # don't wait for the reset
 continuum cancel <id>       # leave a session stalled
 continuum -h                # every command; `continuum <command> -h` for details
 ```
+
+`continuum status` lists every open session, not only stalled ones, and what each is
+doing:
+
+```
+AGENT        SESSION       FOLDER   STATE                                 WHERE     COVERED
+Claude Code  api-refactor  api      working                               Rex       yes
+Claude Code  docs-04       docs     idle, waiting for your next message   terminal  yes
+Claude Code  shop-7a       shop     usage limit · resumes 10:55 (in 2h)   tmux %3   yes
+Codex        3f9c21aa      web      resumed 08:50 by Continuum            Codex app yes
+```
+
+New sessions show up on their own within seconds, and are resumed when their limit
+resets, with nothing to register.
 
 ## Choosing sessions
 

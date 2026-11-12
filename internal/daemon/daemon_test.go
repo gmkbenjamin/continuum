@@ -657,3 +657,32 @@ func TestOpenStalledSessionIsAdoptedOnFirstRun(t *testing.T) {
 		t.Fatalf("delivered %d", len(h.delivered))
 	}
 }
+
+// A Claude session started after Continuum is picked up from its new
+// transcript and resumed at its reset, with no hooks involved.
+func TestNewSessionIsPickedUpAndResumed(t *testing.T) {
+	h := setup(t)
+	h.advance(time.Second) // first scan
+	path := filepath.Join(h.claude, "projects", "-work-new", "brand-new.jsonl")
+	os.MkdirAll(filepath.Dir(path), 0o700)
+	lines := `{"type":"user","sessionId":"brand-new","cwd":"/work/new","timestamp":"` + h.now.Format(time.RFC3339) + `","message":{"role":"user","content":"build it"}}
+{"type":"assistant","sessionId":"brand-new","cwd":"/work/new","timestamp":"` + h.now.Add(time.Minute).Format(time.RFC3339) + `","isApiErrorMessage":true,"error":"rate_limit","message":{"content":[{"type":"text","text":"You've hit your session limit · resets 10am (UTC)"}]}}
+`
+	os.WriteFile(path, []byte(lines), 0o600)
+	h.advance(15 * time.Second)
+	j := h.d.Jobs["claude:brand-new"]
+	if j == nil || j.State != core.StatePending || j.ResetAt.Hour() != 10 {
+		t.Fatalf("new session not picked up: %+v", j)
+	}
+	if s := h.d.Sessions["claude:brand-new"]; s == nil || s.Cwd != "/work/new" {
+		t.Fatalf("session not recorded: %+v", s)
+	}
+	h.advance(62 * time.Minute) // 10:02: still within Claude's 5-minute grace
+	if len(h.delivered) != 0 {
+		t.Fatal("resumed before the grace ended")
+	}
+	h.advance(4 * time.Minute) // 10:06
+	if len(h.delivered) != 1 || h.delivered[0].SessionID != "brand-new" {
+		t.Fatalf("not resumed at the reset: %d", len(h.delivered))
+	}
+}

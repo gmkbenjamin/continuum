@@ -88,7 +88,7 @@ func main() {
 	case "interactive", "menu", "i":
 		err = cmdInteractive(args)
 	case "status":
-		err = cmdStatus()
+		err = cmdStatus(args)
 	case "list", "ls", "jobs":
 		err = cmdList(args)
 	case "cancel":
@@ -418,7 +418,21 @@ func cmdControl(action string, args []string) error {
 	return nil
 }
 
-func cmdStatus() error {
+func cmdStatus(args []string) error {
+	fs := newFlagSet("status")
+	all := fs.Bool("all", false, "Also list sessions closed in the last 3 days (default: open sessions and those active in the last 12 hours).")
+	asJSON := fs.Bool("json", false, "Print the sessions as JSON (for scripts and other apps).")
+	if err := parseFlags(fs, args); err != nil {
+		return err
+	}
+	window := 12 * time.Hour
+	if *all {
+		window = 3 * 24 * time.Hour
+	}
+	rows := sessionRows(window, *all)
+	if *asJSON {
+		return printRowsJSON(rows)
+	}
 	p := core.GetPaths()
 	cfg, _ := core.LoadConfig(p.Config)
 	running := daemonRunning(p)
@@ -433,9 +447,6 @@ func cmdStatus() error {
 		fmt.Printf("  daemon:   %s\n", map[bool]string{true: "running (`continuum logs -f` to follow it)", false: "not running (`continuum start`)"}[running])
 		fmt.Printf("  at login: %s\n", map[bool]string{true: "yes", false: "no"}[service.Installed(p)])
 	}
-	if cfg.Debug() {
-		fmt.Printf("  logging:  debug (%s)\n", tildePath(p.Log))
-	}
 	for _, t := range hooks.Targets(cfg) {
 		ok, detail := hooks.Installed(t)
 		state := "installed"
@@ -447,8 +458,36 @@ func cmdStatus() error {
 	if cfg.DryRun {
 		fmt.Println("  dry run:  on (nothing is typed or run)")
 	}
+	if cfg.Debug() {
+		fmt.Printf("  logging:  debug (%s)\n", tildePath(p.Log))
+	}
 	fmt.Println()
-	return cmdList(nil)
+	if len(rows) == 0 {
+		fmt.Println("No open agent sessions right now.")
+	} else {
+		fmt.Println("Sessions:")
+		printSessionTable(os.Stdout, rows, false)
+	}
+	// Resumes not tied to a listed session (e.g. found on screen in a pane).
+	jobs, _ := store.LoadJobs(p.Jobs)
+	listed := map[string]bool{}
+	for _, r := range rows {
+		listed[r.ID] = true
+	}
+	var extra []*core.Job
+	for _, j := range store.SortedJobs(jobs) {
+		if (j.SessionID == "" || !listed[j.SessionID]) && (j.State == core.StatePending || j.State == core.StateNeedsUser) {
+			extra = append(extra, j)
+		}
+	}
+	if len(extra) > 0 {
+		fmt.Println("\nOther resumes:")
+		for _, j := range extra {
+			fmt.Printf("  %s  %s  %s  %s\n", shortKey(j), j.State, describeDue(j), j.Location.String())
+		}
+	}
+	fmt.Println("\n`continuum status --all` also lists closed sessions; `continuum list` shows resume history.")
+	return nil
 }
 
 // ---- install -------------------------------------------------------------------
@@ -626,6 +665,10 @@ func helpFor(name string) {
 			err = cmdLogs([]string{"-h"})
 		case "diagnose":
 			err = cmdDiagnose([]string{"-h"})
+		case "status":
+			err = cmdStatus([]string{"-h"})
+		case "sessions":
+			err = cmdSessions([]string{"-h"})
 		case "run":
 			_, err = cmdRun([]string{"-h"})
 		case "list":

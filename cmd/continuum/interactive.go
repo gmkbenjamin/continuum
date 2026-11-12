@@ -88,7 +88,7 @@ func runInteractive(in *bufio.Reader, out io.Writer) error {
 		}
 		switch strings.ToLower(t.ask("\nChoose: ")) {
 		case "1":
-			t.report(cmdStatus())
+			t.report(cmdStatus(nil))
 			t.pause()
 		case "2":
 			t.sessions()

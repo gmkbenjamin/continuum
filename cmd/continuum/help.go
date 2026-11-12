@@ -130,16 +130,32 @@ the log, and install, update or uninstall. Running ` + "`continuum`" + ` with no
 arguments in a terminal opens it too.`,
 	},
 	{
-		Name: "status", Group: "Set up",
-		Summary: "Show the daemon, hooks and scheduled resumes",
+		Name: "status", Group: "Set up", Args: "[options]",
+		Summary: "Show the daemon, hooks, and every session and its state",
+		Detail: `Shows whether Continuum is running and its mode, the hooks, and every open
+session (plus those active in the last 12 hours) with:
+
+  STATE    what it is doing: working, idle, waiting for you (a menu or
+           prompt is open), usage limit · resumes 10:55 (in 2h),
+           API error · retrying, resumed 10:55 by Continuum, needs you
+           (billing, sign-in), not resuming (excluded or not chosen),
+           closed
+  WHERE    where it runs: tmux, Rex, a terminal via Continuum, Claude
+           Desktop, background, ...
+  COVERED  whether Continuum will resume it (see ` + "`continuum scope`" + `)
+
+New sessions appear by themselves within seconds of starting; nothing needs
+registering. Agents that report their own state (Claude Code) show working
+or idle; for others the state comes from their recent activity.`,
+		Examples: []string{"continuum status", "continuum status --all", "continuum status --json"},
 	},
 	{
 		Name: "version", Aliases: []string{"--version", "-v"}, Group: "Set up",
 		Summary: "Print the version",
 	},
 	{
-		Name: "sessions", Group: "Sessions and resumes",
-		Summary: "List open agent sessions and whether each is covered",
+		Name: "sessions", Group: "Sessions and resumes", Args: "[options]",
+		Summary: "List sessions with their state, and which message each gets",
 		Detail: `Lists the agent sessions that are open now (from the agents themselves) and
 those seen recently, with their ids, names, state and folder, and whether the
 current scope covers them. Use the ID or NAME with choose, exclude, cancel.`,
@@ -529,7 +545,7 @@ func parseFlags(fs *flag.FlagSet, args []string) error {
 }
 
 // flagCommands lists the commands that parse options; their help shows them.
-var flagCommands = map[string]bool{"diagnose": true, "watch": true, "logs": true, "install": true, "update": true, "uninstall": true, "run": true, "list": true, "detect": true, "rules": true, "daemon": true}
+var flagCommands = map[string]bool{"status": true, "sessions": true, "diagnose": true, "watch": true, "logs": true, "install": true, "update": true, "uninstall": true, "run": true, "list": true, "detect": true, "rules": true, "daemon": true}
 
 // subcommandCommands have subcommands with their own options; their help
 // text documents every option.

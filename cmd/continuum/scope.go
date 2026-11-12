@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/continuum-dev/continuum/internal/core"
@@ -23,6 +22,12 @@ type knownSession struct {
 	Harness, ID, Short, Name, Cwd, Where string
 	Open                                 bool
 	LastSeen                             time.Time
+	// From the agent's own session list (Claude Code), when it has one.
+	Status, Kind, WaitingFor, Tmux, Entrypoint string
+	PID                                        int
+	// From hooks: where the session runs.
+	Location *core.Location
+	Live     bool // the agent reported this session itself, just now
 }
 
 // knownSessions lists open sessions (from the agents) and recently seen ones
@@ -54,17 +59,41 @@ func knownSessions() []knownSession {
 			case s.Status != "":
 				where += ", " + s.Status
 			}
-			out = append(out, knownSession{Harness: name, ID: s.SessionID, Short: s.ShortID, Name: s.Name, Cwd: s.Cwd, Where: where, Open: true, LastSeen: time.Now()})
+			out = append(out, knownSession{Harness: name, ID: s.SessionID, Short: s.ShortID, Name: s.Name, Cwd: s.Cwd, Where: where,
+				Open: s.PID > 0 || s.Kind != "background", LastSeen: time.Now(), Live: true,
+				Status: s.Status, Kind: s.Kind, WaitingFor: s.WaitingFor, Tmux: s.Tmux, Entrypoint: s.Entrypoint, PID: s.PID})
 		}
 	}
 	sessions := map[string]*store.Session{}
 	_ = store.LoadJSON(p.Sessions, &sessions)
+	// Fill in what hooks recorded (where it runs, where it started) for the
+	// sessions the agent listed itself.
+	for i := range out {
+		if st := sessions[store.SessionKey(out[i].Harness, out[i].ID)]; st != nil {
+			if out[i].Location == nil {
+				out[i].Location = st.Location
+			}
+			if out[i].Entrypoint == "" {
+				out[i].Entrypoint = st.Entrypoint
+			}
+		}
+	}
 	for _, s := range sessions {
 		if s.SessionID == "" || seen[s.Harness+s.SessionID] || time.Since(s.LastSeen) > 3*24*time.Hour || s.Ended {
 			continue
 		}
 		seen[s.Harness+s.SessionID] = true
-		out = append(out, knownSession{Harness: s.Harness, ID: s.SessionID, Cwd: s.Cwd, Where: "seen " + ago(s.LastSeen), LastSeen: s.LastSeen})
+		ks := knownSession{Harness: s.Harness, ID: s.SessionID, Cwd: s.Cwd, Where: "seen " + ago(s.LastSeen), LastSeen: s.LastSeen,
+			Location: s.Location, Entrypoint: s.Entrypoint, PID: s.PID}
+		// Agents without a session list (Codex, ...): ask the process table
+		// whether a recent session is still open.
+		if h := r.Harness(s.Harness); h != nil && time.Since(s.LastSeen) < 12*time.Hour && (h.LiveSessions != nil || len(h.DesktopApps) > 0) {
+			bin, _ := deliver.Binary(cfg, h)
+			st := live.Default().Lookup(h, live.Query{SessionID: s.SessionID, Cwd: s.Cwd, PID: s.PID, Bin: bin, Entrypoint: s.Entrypoint,
+				Homes: map[string]string{"claude_home": cfg.ClaudeDir(), "codex_home": cfg.CodexDir()}})
+			ks.Open = st.Open
+		}
+		out = append(out, ks)
 	}
 	// Open sessions first, then by recency.
 	for i := 1; i < len(out); i++ {
@@ -269,24 +298,21 @@ func cmdUnchoose(list string, args []string) error {
 }
 
 func cmdSessions(args []string) error {
-	p := core.GetPaths()
-	sc, _ := scope.Load(p)
-	list := knownSessions()
-	if len(list) == 0 {
+	fs := newFlagSet("sessions")
+	asJSON := fs.Bool("json", false, "Print JSON (for scripts and other apps).")
+	if err := parseFlags(fs, args); err != nil {
+		return err
+	}
+	rows := sessionRows(3*24*time.Hour, true)
+	if *asJSON {
+		return printRowsJSON(rows)
+	}
+	if len(rows) == 0 {
 		fmt.Println("No open or recent agent sessions found.")
 		return nil
 	}
-	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "COVERED\tAGENT\tID\tNAME\tSTATE\tDIR")
-	for _, s := range list {
-		ok, _ := sc.Covers(&core.Job{Harness: s.Harness, SessionID: s.ID, Cwd: s.Cwd})
-		mark := "yes"
-		if !ok {
-			mark = "no"
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", mark, s.Harness, shortID(s.ID), s.Name, s.Where, s.Cwd)
-	}
-	tw.Flush()
+	printSessionTable(os.Stdout, rows, true)
+	sc, _ := scope.Load(core.GetPaths())
 	fmt.Printf("\nScope: %s. Change with `continuum scope all|chosen`, `continuum choose ID`, `continuum exclude ID`.\n", sc.Mode)
 	return nil
 }

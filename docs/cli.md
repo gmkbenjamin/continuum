@@ -24,11 +24,11 @@ Set up:
   doctor       Check agents, hooks, terminals and rules
   diagnose     Write a report for troubleshooting or a bug report
   interactive  A menu for everything Continuum does
-  status       Show the daemon, hooks and scheduled resumes
+  status       Show the daemon, hooks, and every session and its state
   version      Print the version
 
 Sessions and resumes:
-  sessions     List open agent sessions and whether each is covered
+  sessions     List sessions with their state, and which message each gets
   list         Show scheduled and recent resumes
   cancel       Cancel scheduled resumes
   resume-now   Resume now instead of waiting for the reset
@@ -278,13 +278,38 @@ Options:
 ## status
 
 ```text
-continuum status - Show the daemon, hooks and scheduled resumes
+continuum status - Show the daemon, hooks, and every session and its state
 
 Usage:
-  continuum status
+  continuum status [options]
+
+  Shows whether Continuum is running and its mode, the hooks, and every open
+  session (plus those active in the last 12 hours) with:
+
+    STATE    what it is doing: working, idle, waiting for you (a menu or
+             prompt is open), usage limit · resumes 10:55 (in 2h),
+             API error · retrying, resumed 10:55 by Continuum, needs you
+             (billing, sign-in), not resuming (excluded or not chosen),
+             closed
+    WHERE    where it runs: tmux, Rex, a terminal via Continuum, Claude
+             Desktop, background, ...
+    COVERED  whether Continuum will resume it (see `continuum scope`)
+
+  New sessions appear by themselves within seconds of starting; nothing needs
+  registering. Agents that report their own state (Claude Code) show working
+  or idle; for others the state comes from their recent activity.
 
 Options:
+  --all                  Also list sessions closed in the last 3 days (default:
+                         open sessions and those active in the last 12 hours).
+  --json                 Print the sessions as JSON (for scripts and other
+                         apps).
   -h, --help             Show this help.
+
+Examples:
+  continuum status
+  continuum status --all
+  continuum status --json
 ```
 
 ## version
@@ -302,16 +327,17 @@ Options:
 ## sessions
 
 ```text
-continuum sessions - List open agent sessions and whether each is covered
+continuum sessions - List sessions with their state, and which message each gets
 
 Usage:
-  continuum sessions
+  continuum sessions [options]
 
   Lists the agent sessions that are open now (from the agents themselves) and
   those seen recently, with their ids, names, state and folder, and whether the
   current scope covers them. Use the ID or NAME with choose, exclude, cancel.
 
 Options:
+  --json                 Print JSON (for scripts and other apps).
   -h, --help             Show this help.
 ```
 
@@ -782,11 +808,11 @@ Set up:
   doctor       Check agents, hooks, terminals and rules
   diagnose     Write a report for troubleshooting or a bug report
   interactive  A menu for everything Continuum does
-  status       Show the daemon, hooks and scheduled resumes
+  status       Show the daemon, hooks, and every session and its state
   version      Print the version
 
 Sessions and resumes:
-  sessions     List open agent sessions and whether each is covered
+  sessions     List sessions with their state, and which message each gets
   list         Show scheduled and recent resumes
   cancel       Cancel scheduled resumes
   resume-now   Resume now instead of waiting for the reset
@@ -850,11 +876,11 @@ Set up:
   doctor       Check agents, hooks, terminals and rules
   diagnose     Write a report for troubleshooting or a bug report
   interactive  A menu for everything Continuum does
-  status       Show the daemon, hooks and scheduled resumes
+  status       Show the daemon, hooks, and every session and its state
   version      Print the version
 
 Sessions and resumes:
-  sessions     List open agent sessions and whether each is covered
+  sessions     List sessions with their state, and which message each gets
   list         Show scheduled and recent resumes
   cancel       Cancel scheduled resumes
   resume-now   Resume now instead of waiting for the reset
@@ -918,11 +944,11 @@ Set up:
   doctor       Check agents, hooks, terminals and rules
   diagnose     Write a report for troubleshooting or a bug report
   interactive  A menu for everything Continuum does
-  status       Show the daemon, hooks and scheduled resumes
+  status       Show the daemon, hooks, and every session and its state
   version      Print the version
 
 Sessions and resumes:
-  sessions     List open agent sessions and whether each is covered
+  sessions     List sessions with their state, and which message each gets
   list         Show scheduled and recent resumes
   cancel       Cancel scheduled resumes
   resume-now   Resume now instead of waiting for the reset
