@@ -68,7 +68,8 @@ func TestEveryCommandHasHelp(t *testing.T) {
 				t.Errorf("%s: option --%s missing from help", e.Name, f)
 			}
 		}
-		if flagsOf[e.Name] != nil && !flagCommands[e.Name] {
+		// Commands with subcommands document their options in the text.
+		if flagsOf[e.Name] != nil && !flagCommands[e.Name] && !subcommandCommands[e.Name] {
 			t.Errorf("%s parses options but is not in flagCommands", e.Name)
 		}
 	}

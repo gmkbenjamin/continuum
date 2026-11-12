@@ -122,6 +122,14 @@ the problem, then run diagnose.`,
 		Examples: []string{"continuum diagnose", "continuum diagnose -o continuum-report.md"},
 	},
 	{
+		Name: "interactive", Aliases: []string{"menu", "i"}, Group: "Set up",
+		Summary: "A menu for everything Continuum does",
+		Detail: `Opens a menu: status, sessions (choose, exclude, set a resume message,
+resume now, cancel), resume messages, scope, grace, watching live, doctor,
+the log, and install, update or uninstall. Running ` + "`continuum`" + ` with no
+arguments in a terminal opens it too.`,
+	},
+	{
 		Name: "status", Group: "Set up",
 		Summary: "Show the daemon, hooks and scheduled resumes",
 	},
@@ -209,6 +217,36 @@ Default: 5 minutes for Claude, 30 seconds for Codex. Applies within seconds,
 also to sessions already waiting.`,
 		ArgsHelp: [][2]string{{"AGENT", "claude, codex, ..."}, {"MINUTES", "minutes to wait (decimals allowed)"}, {"off", "don't wait: continue right after the reset"}, {"default", "back to the built-in wait"}},
 		Examples: []string{"continuum grace", "continuum grace claude 10", "continuum grace claude off"},
+	},
+	{
+		Name: "message", Aliases: []string{"messages", "msg"}, Group: "Tuning", Args: "[show | set | reset | preview] [options] [TEXT]",
+		Summary: "What Continuum types to continue a session",
+		Detail: `Shows or changes the resume message. The most specific one is used:
+
+  1. a message for that session
+  2. a message for the folder it runs in (the deepest folder wins)
+  3. a message for the agent (claude, codex, ...)
+  4. your default message
+  5. the built-in message
+
+Each can have a separate message for temporary API errors (--outage).
+{agent} and {folder} are replaced by the agent's name and the session's
+folder. Messages are typed as one line: line breaks become spaces.
+
+To give a session its own message as you start it:
+  CONTINUUM_MESSAGE="Only fix the failing test, then stop." claude
+  continuum run --message "..." -- codex
+
+  continuum message                     show every message, and what each open
+                                        session would get
+  continuum message set "TEXT"          your default message
+  continuum message set --agent A "TEXT"
+  continuum message set --session ID|NAME "TEXT"
+  continuum message set --folder PATH "TEXT"
+  continuum message set --outage ...    the message after a temporary API error
+  continuum message reset [--agent A | --session S | --folder F | --all] [--outage]
+  continuum message preview ID|NAME     the exact text a session would get`,
+		Examples: []string{`continuum message set "Limit reset. Re-read the plan, then continue in {folder}."`, `continuum message set --session api-refactor "Finish the migration only."`, `continuum message set --agent codex --outage "Retry the last step."`, "continuum message reset --all"},
 	},
 	{
 		Name: "detect", Group: "Tuning", Args: "[options] [TEXT|-]",
@@ -324,6 +362,7 @@ in place: never a copy, never a new session. Works in any terminal, with the
 window unfocused or the screen locked.
 
 Usage:
+  continuum                     the interactive menu (in a terminal)
   continuum <command> [options] [arguments]
   continuum <command> -h        help for a command
 
@@ -491,6 +530,10 @@ func parseFlags(fs *flag.FlagSet, args []string) error {
 
 // flagCommands lists the commands that parse options; their help shows them.
 var flagCommands = map[string]bool{"diagnose": true, "watch": true, "logs": true, "install": true, "update": true, "uninstall": true, "run": true, "list": true, "detect": true, "rules": true, "daemon": true}
+
+// subcommandCommands have subcommands with their own options; their help
+// text documents every option.
+var subcommandCommands = map[string]bool{"message": true}
 
 // wantsHelp reports whether args ask for help: -h/--help/help before any
 // "--" (and, for run, before the agent's own command).

@@ -19,6 +19,7 @@ import (
 	"github.com/continuum-dev/continuum/internal/ansi"
 	"github.com/continuum-dev/continuum/internal/core"
 	"github.com/continuum-dev/continuum/internal/deliver"
+	"github.com/continuum-dev/continuum/internal/messages"
 	"github.com/continuum-dev/continuum/internal/resettime"
 	"github.com/continuum-dev/continuum/internal/rules"
 	"github.com/continuum-dev/continuum/internal/scope"
@@ -46,6 +47,9 @@ type Options struct {
 	// Choose adds this session to the chosen sessions (scope "chosen") for
 	// as long as it runs.
 	Choose bool
+	// Message is the resume message for this session only (also
+	// CONTINUUM_MESSAGE).
+	Message string
 }
 
 // DetectHarness guesses the harness from the command being run.
@@ -88,6 +92,18 @@ func Run(o Options) (int, error) {
 	cwd, _ := os.Getwd()
 	meta, _ := json.Marshal(map[string]any{"harness": harness, "argv": o.Argv, "cwd": cwd, "started": time.Now()})
 	_ = os.WriteFile(filepath.Join(dir, "meta.json"), meta, 0o600)
+	msg := o.Message
+	if msg == "" {
+		msg = os.Getenv("CONTINUUM_MESSAGE")
+	}
+	if msg != "" {
+		if text, err := messages.Clean(msg); err == nil {
+			if m, err := messages.Load(p); err == nil {
+				m.Set(scope.Entry{Harness: harness, Wrapper: id, Label: filepath.Base(o.Argv[0]) + " in " + cwd}, messages.Pair{Text: text})
+				_ = m.Save(p)
+			}
+		}
+	}
 	if o.Choose || os.Getenv("CONTINUUM_CHOOSE") != "" {
 		if sc, err := scope.Load(p); err == nil {
 			sc.Chosen, _ = scope.Add(sc.Chosen, scope.Entry{Harness: harness, Wrapper: id, Label: filepath.Base(o.Argv[0]) + " in " + cwd})

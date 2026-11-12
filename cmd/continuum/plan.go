@@ -73,6 +73,20 @@ func tildePath(p string) string {
 	return p
 }
 
+// stdinReader is the one buffered reader of the terminal, shared by every
+// prompt (menus, confirmations), so no prompt swallows another's input.
+var stdinReader = bufio.NewReader(os.Stdin)
+
+func lineReader(in io.Reader) *bufio.Reader {
+	if in == os.Stdin {
+		return stdinReader
+	}
+	if br, ok := in.(*bufio.Reader); ok {
+		return br
+	}
+	return bufio.NewReader(in)
+}
+
 // errDeclined means the user answered no.
 var errDeclined = errors.New("nothing was changed")
 
@@ -89,7 +103,7 @@ func confirm(question string, yes bool, in io.Reader) error {
 		return errors.New("no terminal to ask for confirmation; re-run with --yes to proceed")
 	}
 	fmt.Printf("%s [y/N] ", question)
-	line, _ := bufio.NewReader(in).ReadString('\n')
+	line, _ := lineReader(in).ReadString('\n')
 	switch strings.ToLower(strings.TrimSpace(line)) {
 	case "y", "yes":
 		fmt.Println()

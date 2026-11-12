@@ -19,6 +19,7 @@ import (
 	"github.com/continuum-dev/continuum/internal/deliver"
 	"github.com/continuum-dev/continuum/internal/live"
 	"github.com/continuum-dev/continuum/internal/logx"
+	"github.com/continuum-dev/continuum/internal/messages"
 	"github.com/continuum-dev/continuum/internal/mux"
 	"github.com/continuum-dev/continuum/internal/notify"
 	"github.com/continuum-dev/continuum/internal/proc"
@@ -866,16 +867,13 @@ func (d *Daemon) runJob(j *core.Job) {
 	}
 
 	h := d.Rules.Harness(j.Harness)
-	prompt := h.Prompt(d.Rules.Defaults)
-	if p, ok := d.Config.ResumePrompts[j.Harness]; ok && p != "" {
-		prompt = p
+	msgs, err := messages.Load(d.Paths)
+	if err != nil {
+		d.warnf("messages.json unreadable, using the default messages: %v", err)
 	}
-	if j.Kind == core.KindTransient {
-		prompt = "The previous request failed with a temporary API error. Continue the task from where it stopped; do not repeat work that is already complete."
-		if p, ok := d.Config.ResumePrompts[j.Harness+"_transient"]; ok && p != "" {
-			prompt = p
-		}
-	}
+	choice := msgs.Resolve(j, j.Kind == core.KindTransient, d.Config, d.Rules)
+	prompt := choice.Text
+	d.debugf("%s: message from %s: %q", j.Key, choice.Source, prompt)
 	strategies := d.Config.StrategyOrder()
 	opts := deliver.Options{
 		Rules: d.Rules, Paths: d.Paths, Config: d.Config, Prompt: prompt,
@@ -1195,6 +1193,9 @@ func (d *Daemon) wantAwake() (bool, string) {
 // applyScope follows changes to the scope: a session chosen after it stalled
 // is scheduled, and a pending resume that is no longer in scope is dropped.
 func (d *Daemon) applyScope() {
+	if m, err := messages.Load(d.Paths); err == nil && m.PruneWrappers(func(id string) bool { return deliver.WrapperAlive(d.Paths, id) }) {
+		_ = m.Save(d.Paths)
+	}
 	if d.Scope.PruneWrappers(func(id string) bool { return deliver.WrapperAlive(d.Paths, id) }) {
 		if err := d.Scope.Save(d.Paths); err != nil {
 			d.logf("scope: %v", err)

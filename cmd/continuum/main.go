@@ -28,10 +28,20 @@ import (
 	"github.com/continuum-dev/continuum/internal/service"
 	"github.com/continuum-dev/continuum/internal/store"
 	"github.com/continuum-dev/continuum/internal/wrapper"
+	"golang.org/x/term"
 )
 
 func main() {
 	if len(os.Args) < 2 {
+		// In a terminal: the interactive menu. Otherwise (scripts, pipes):
+		// the usage text.
+		if stdinIsTerminal() && term.IsTerminal(int(os.Stdout.Fd())) {
+			if err := cmdInteractive(nil); err != nil {
+				fmt.Fprintln(os.Stderr, "continuum:", err)
+				os.Exit(1)
+			}
+			os.Exit(0)
+		}
 		fmt.Print(usageText())
 		os.Exit(2)
 	}
@@ -75,6 +85,8 @@ func main() {
 		err = cmdStart()
 	case "stop":
 		err = cmdStop()
+	case "interactive", "menu", "i":
+		err = cmdInteractive(args)
 	case "status":
 		err = cmdStatus()
 	case "list", "ls", "jobs":
@@ -97,6 +109,8 @@ func main() {
 		err = cmdDetect(args)
 	case "grace":
 		err = cmdGrace(args)
+	case "message", "messages", "msg":
+		err = cmdMessage(args)
 	case "scope":
 		err = cmdScope(args)
 	case "choose":
@@ -250,6 +264,7 @@ func cmdRun(args []string) (int, error) {
 	harness := fs.String("harness", "", "Treat the command as `AGENT`: claude, codex, gemini, ... or generic. Guessed from COMMAND when empty.")
 	auto := fs.Bool("auto", false, "Wrap only interactive sessions; run anything else (print mode, --version, subcommands, pipes) directly. Used by the shell hook.")
 	choose := fs.Bool("choose", false, "Add this session to the chosen sessions for as long as it runs (for `continuum scope chosen`). Same as CONTINUUM_CHOOSE=1.")
+	message := fs.String("message", "", "Use `TEXT` as the resume message for this session only. Same as CONTINUUM_MESSAGE.")
 	if err := parseFlags(fs, args); err != nil {
 		return 2, err
 	}
@@ -261,7 +276,7 @@ func cmdRun(args []string) (int, error) {
 		return 127, proc.Exec(argv)
 	}
 	ensureDaemon()
-	return wrapper.Run(wrapper.Options{Harness: *harness, Argv: argv, Stdin: os.Stdin, Stdout: os.Stdout, Choose: *choose})
+	return wrapper.Run(wrapper.Options{Harness: *harness, Argv: argv, Stdin: os.Stdin, Stdout: os.Stdout, Choose: *choose, Message: *message})
 }
 
 // wantWrap decides, for the shell hook, whether an invocation is an

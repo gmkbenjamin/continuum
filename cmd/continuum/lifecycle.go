@@ -12,7 +12,6 @@ package main
 //   ~/.continuum (binary, data)     install        -                   uninstall --purge
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -481,7 +480,7 @@ func askMode(in io.Reader) (bool, error) {
 	fmt.Println("  2. Standalone: only while `continuum watch` is open in a terminal, showing")
 	fmt.Println("     what it does. Nothing runs in the background.")
 	fmt.Print("Choose 1 or 2 [1]: ")
-	line, _ := bufio.NewReader(in).ReadString('\n')
+	line, _ := lineReader(in).ReadString('\n')
 	fmt.Println()
 	switch strings.TrimSpace(line) {
 	case "", "1":

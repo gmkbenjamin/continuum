@@ -13,6 +13,7 @@ in place: never a copy, never a new session. Works in any terminal, with the
 window unfocused or the screen locked.
 
 Usage:
+  continuum                     the interactive menu (in a terminal)
   continuum <command> [options] [arguments]
   continuum <command> -h        help for a command
 
@@ -22,6 +23,7 @@ Set up:
   uninstall    Remove everything Continuum added
   doctor       Check agents, hooks, terminals and rules
   diagnose     Write a report for troubleshooting or a bug report
+  interactive  A menu for everything Continuum does
   status       Show the daemon, hooks and scheduled resumes
   version      Print the version
 
@@ -40,6 +42,7 @@ All or chosen sessions:
 
 Tuning:
   grace        How long to let an agent resume by itself first
+  message      What Continuum types to continue a session
   detect       Show what Continuum makes of a message
   rules        Print the effective rules
 
@@ -252,6 +255,24 @@ Options:
 Examples:
   continuum diagnose
   continuum diagnose -o continuum-report.md
+```
+
+## interactive
+
+```text
+continuum interactive - A menu for everything Continuum does
+
+Usage:
+  continuum interactive
+  (also: menu, i)
+
+  Opens a menu: status, sessions (choose, exclude, set a resume message,
+  resume now, cancel), resume messages, scope, grace, watching live, doctor,
+  the log, and install, update or uninstall. Running `continuum` with no
+  arguments in a terminal opens it too.
+
+Options:
+  -h, --help             Show this help.
 ```
 
 ## status
@@ -484,6 +505,51 @@ Examples:
   continuum grace claude off
 ```
 
+## message
+
+```text
+continuum message - What Continuum types to continue a session
+
+Usage:
+  continuum message [show | set | reset | preview] [options] [TEXT]
+  (also: messages, msg)
+
+  Shows or changes the resume message. The most specific one is used:
+
+    1. a message for that session
+    2. a message for the folder it runs in (the deepest folder wins)
+    3. a message for the agent (claude, codex, ...)
+    4. your default message
+    5. the built-in message
+
+  Each can have a separate message for temporary API errors (--outage).
+  {agent} and {folder} are replaced by the agent's name and the session's
+  folder. Messages are typed as one line: line breaks become spaces.
+
+  To give a session its own message as you start it:
+    CONTINUUM_MESSAGE="Only fix the failing test, then stop." claude
+    continuum run --message "..." -- codex
+
+    continuum message                     show every message, and what each open
+                                          session would get
+    continuum message set "TEXT"          your default message
+    continuum message set --agent A "TEXT"
+    continuum message set --session ID|NAME "TEXT"
+    continuum message set --folder PATH "TEXT"
+    continuum message set --outage ...    the message after a temporary API error
+    continuum message reset [--agent A | --session S | --folder F | --all] [--outage]
+    continuum message preview ID|NAME     the exact text a session would get
+
+Options:
+  -h, --help             Show this help.
+
+Examples:
+  continuum message set "Limit reset. Re-read the plan, then continue in {folder}."
+  continuum message set --session api-refactor "Finish the migration only."
+  continuum message set --agent codex --outage "Retry the last step."
+  continuum message reset --all
+```
+
 ## detect
 
 ```text
@@ -555,6 +621,8 @@ Options:
                          CONTINUUM_CHOOSE=1.
   --harness AGENT        Treat the command as AGENT: claude, codex, gemini, ...
                          or generic. Guessed from COMMAND when empty.
+  --message TEXT         Use TEXT as the resume message for this session only.
+                         Same as CONTINUUM_MESSAGE.
   -h, --help             Show this help.
 
 Examples:
@@ -703,6 +771,7 @@ in place: never a copy, never a new session. Works in any terminal, with the
 window unfocused or the screen locked.
 
 Usage:
+  continuum                     the interactive menu (in a terminal)
   continuum <command> [options] [arguments]
   continuum <command> -h        help for a command
 
@@ -712,6 +781,7 @@ Set up:
   uninstall    Remove everything Continuum added
   doctor       Check agents, hooks, terminals and rules
   diagnose     Write a report for troubleshooting or a bug report
+  interactive  A menu for everything Continuum does
   status       Show the daemon, hooks and scheduled resumes
   version      Print the version
 
@@ -730,6 +800,7 @@ All or chosen sessions:
 
 Tuning:
   grace        How long to let an agent resume by itself first
+  message      What Continuum types to continue a session
   detect       Show what Continuum makes of a message
   rules        Print the effective rules
 
@@ -768,6 +839,7 @@ in place: never a copy, never a new session. Works in any terminal, with the
 window unfocused or the screen locked.
 
 Usage:
+  continuum                     the interactive menu (in a terminal)
   continuum <command> [options] [arguments]
   continuum <command> -h        help for a command
 
@@ -777,6 +849,7 @@ Set up:
   uninstall    Remove everything Continuum added
   doctor       Check agents, hooks, terminals and rules
   diagnose     Write a report for troubleshooting or a bug report
+  interactive  A menu for everything Continuum does
   status       Show the daemon, hooks and scheduled resumes
   version      Print the version
 
@@ -795,6 +868,7 @@ All or chosen sessions:
 
 Tuning:
   grace        How long to let an agent resume by itself first
+  message      What Continuum types to continue a session
   detect       Show what Continuum makes of a message
   rules        Print the effective rules
 
@@ -833,6 +907,7 @@ in place: never a copy, never a new session. Works in any terminal, with the
 window unfocused or the screen locked.
 
 Usage:
+  continuum                     the interactive menu (in a terminal)
   continuum <command> [options] [arguments]
   continuum <command> -h        help for a command
 
@@ -842,6 +917,7 @@ Set up:
   uninstall    Remove everything Continuum added
   doctor       Check agents, hooks, terminals and rules
   diagnose     Write a report for troubleshooting or a bug report
+  interactive  A menu for everything Continuum does
   status       Show the daemon, hooks and scheduled resumes
   version      Print the version
 
@@ -860,6 +936,7 @@ All or chosen sessions:
 
 Tuning:
   grace        How long to let an agent resume by itself first
+  message      What Continuum types to continue a session
   detect       Show what Continuum makes of a message
   rules        Print the effective rules
 

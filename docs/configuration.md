@@ -7,7 +7,7 @@
 | `enabled` | `true` | Turn Continuum off without uninstalling. |
 | `dry_run` | `false` | Log what would happen; type and run nothing. |
 | `harnesses` | all on | Turn agents on or off: `{"aider": false}`. |
-| `resume_prompts` | built in | Prompt per agent: `{"claude": "Limit reset. Carry on."}`. Use `"<agent>_transient"` for API-error resumes. |
+| `resume_prompts` | built in | Prompt per agent: `{"claude": "Limit reset. Carry on."}`. Use `"<agent>_transient"` for API-error resumes. Easier: `continuum message`, which also sets messages per session, per folder and as a default (kept in `messages.json`). |
 | `delay_after_reset_seconds` | `60` | Margin after the reset time. |
 | `native_grace_seconds` | Claude 300, Codex 30 | Wait for the agent's own resume first. Easier to set with `continuum grace`. |
 | `keep_awake_hours` | `8` | Hold off idle sleep while a resume is due this soon; `0` turns it off. |
@@ -37,6 +37,7 @@ Everything is in `~/.continuum`; set `CONTINUUM_HOME` to move it.
 | File | Contents |
 |---|---|
 | `config.json` | Your settings |
+| `messages.json` | Resume messages you set with `continuum message`: default, per agent, folder and session |
 | `scope.json` | All or chosen sessions, chosen and excluded entries |
 | `rules.json` | Your rules overrides (optional) |
 | `jobs.json`, `sessions.json`, `offsets.json` | Scheduler state |

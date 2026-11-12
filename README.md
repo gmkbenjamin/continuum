@@ -143,7 +143,8 @@ every check, and every delivery route tried. Hooks also log one line per call to
 ## Using it
 
 There's nothing to do: when a limit resets, the session continues by itself, and you
-get a notification. When you want to look:
+get a notification. Run `continuum` on its own for a menu of everything below, or use
+the commands:
 
 ```sh
 continuum status            # is it running, and what is waiting
@@ -166,6 +167,23 @@ CONTINUUM_CHOOSE=1 claude        # choose a session as you start it
 continuum exclude ~/scratch      # never resume these
 continuum scope all              # back to every session
 ```
+
+## Resume messages
+
+By default Continuum types "Your usage limit has reset. Continue the task you were
+working on…". You can change that for everything, for one agent, for a folder, or for
+a single session. The most specific message wins.
+
+```sh
+continuum message set "Limit reset. Re-read the plan, then continue in {folder}."
+continuum message set --agent codex "Carry on with the current task."
+continuum message set --session api-refactor "Finish the migration only, then stop."
+continuum message set --folder ~/work/docs "Continue editing; don't commit."
+continuum message                     # see every message, and what each session gets
+CONTINUUM_MESSAGE="Only fix the failing test." claude    # set it as you start a session
+```
+
+`--outage` sets the message used after a temporary API error instead.
 
 ## Where it works
 

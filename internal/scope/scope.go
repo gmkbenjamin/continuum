@@ -36,6 +36,9 @@ func (e Entry) String() string {
 	switch {
 	case e.Session != "":
 		s := e.Session
+		if len(s) > 8 {
+			s = s[:8]
+		}
 		if e.Harness != "" {
 			s = e.Harness + " session " + s
 		}

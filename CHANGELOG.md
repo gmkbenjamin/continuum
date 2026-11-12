@@ -2,6 +2,26 @@
 
 All notable changes to Continuum. Versions follow [Semantic Versioning](https://semver.org).
 
+## [0.6.0] - 2026-11-12
+
+### Added
+- Custom resume messages with `continuum message`: a default, per agent, per folder,
+  and per session. The most specific one is used. Each can have a separate message
+  for temporary API errors (`--outage`). `{agent}` and `{folder}` are replaced with
+  the agent's name and the session's folder. `continuum message preview` shows the
+  exact text a session would get.
+- Set a session's message as you start it: `CONTINUUM_MESSAGE="…" claude`, or
+  `continuum run --message "…"`.
+- Interactive mode: `continuum` with no arguments in a terminal (or
+  `continuum interactive`) opens a menu for status, sessions (choose, exclude, set a
+  message, resume now, cancel), messages, scope, grace, watching live, doctor, logs,
+  and install, update or uninstall.
+
+### Changed
+- Messages are always typed as one line: line breaks become spaces, so a message is
+  never sent half-written.
+- Session ids are shortened to 8 characters in listings.
+
 ## [0.5.0] - 2026-11-12
 
 ### Added
@@ -88,6 +108,7 @@ First public release.
   sign-in errors.
 - Help for every command (`-h`), `doctor`, and docs in `docs/`.
 
+[0.6.0]: ../../releases/tag/v0.6.0
 [0.5.0]: ../../releases/tag/v0.5.0
 [0.4.0]: ../../releases/tag/v0.4.0
 [0.3.0]: ../../commit/ba6abd6
