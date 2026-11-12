@@ -2,6 +2,16 @@
 
 All notable changes to Continuum. Versions follow [Semantic Versioning](https://semver.org).
 
+## [0.7.1] - 2026-11-12
+
+### Fixed
+- Sessions started before Continuum was installed showed "terminal" as where they
+  run, even when they were running in Rex, tmux or another multiplexer. Continuum now
+  reads the pane from the agent process's own environment (`REX_BLOCK`, `TMUX_PANE`,
+  and so on).
+- The same lookup lets Continuum type into those older sessions in place, instead of
+  notifying you that it can't reach them.
+
 ## [0.7.0] - 2026-11-12
 
 ### Added
@@ -125,6 +135,7 @@ First public release.
   sign-in errors.
 - Help for every command (`-h`), `doctor`, and docs in `docs/`.
 
+[0.7.1]: ../../releases/tag/v0.7.1
 [0.7.0]: ../../releases/tag/v0.7.0
 [0.6.0]: ../../releases/tag/v0.6.0
 [0.5.0]: ../../releases/tag/v0.5.0

@@ -263,8 +263,8 @@ uninstalling, its hooks do nothing and cause no errors.
 - **Editor-based agents** (Cursor or Windsurf editors, VS Code Copilot Chat, Cline in
   VS Code) have no terminal Continuum can type into.
 - **Open where Continuum can't type.** If a session is open somewhere Continuum can't
-  type into, such as a plain terminal started before installing, you get a
-  notification instead of a duplicate session.
+  type into, such as a plain terminal window (no tmux, Rex or the like) started before
+  installing, you get a notification instead of a duplicate session.
 - **Untested.** Windows, WezTerm, kitty and Ghostty support are built but not yet
   tested on real systems. Limit wording for agents other than Claude Code, Codex,
   opencode and Grok hasn't been seen at a real limit.

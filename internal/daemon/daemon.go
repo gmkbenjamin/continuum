@@ -862,6 +862,14 @@ func (d *Daemon) runJob(j *core.Job) {
 			}
 		}
 	}
+	if j.Location == nil && j.PID > 0 {
+		// A session started before Continuum's hooks: its process's
+		// environment says which pane (or wrapper) it runs in.
+		if loc := mux.LocateFromEnv(d.Rules, proc.Environ(j.PID)); loc != nil {
+			j.Location = loc
+			d.debugf("%s: found its pane from the agent's environment: %s", j.Key, loc.String())
+		}
+	}
 	if j.Location == nil {
 		j.Location = d.findPane(j)
 	}

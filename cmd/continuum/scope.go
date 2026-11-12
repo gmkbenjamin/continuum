@@ -12,6 +12,8 @@ import (
 	"github.com/continuum-dev/continuum/internal/core"
 	"github.com/continuum-dev/continuum/internal/deliver"
 	"github.com/continuum-dev/continuum/internal/live"
+	"github.com/continuum-dev/continuum/internal/mux"
+	"github.com/continuum-dev/continuum/internal/proc"
 	"github.com/continuum-dev/continuum/internal/rules"
 	"github.com/continuum-dev/continuum/internal/scope"
 	"github.com/continuum-dev/continuum/internal/store"
@@ -94,6 +96,15 @@ func knownSessions() []knownSession {
 			ks.Open = st.Open
 		}
 		out = append(out, ks)
+	}
+	// Sessions started before Continuum's hooks (or without them): their
+	// process's environment still says which pane they run in.
+	for i := range out {
+		if out[i].Location == nil && out[i].PID > 0 && out[i].Open {
+			if loc := mux.LocateFromEnv(r, proc.Environ(out[i].PID)); loc != nil {
+				out[i].Location = loc
+			}
+		}
 	}
 	// Open sessions first, then by recency.
 	for i := 1; i < len(out); i++ {
