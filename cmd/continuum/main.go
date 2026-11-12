@@ -487,8 +487,10 @@ func cmdStatus(args []string) error {
 		switch {
 		case running:
 			daemonState = "running (`continuum logs -f` to follow it)"
-		case stoppedByUser(p) && cfg.AutostartEnabled():
+		case stoppedByUser(p) && cfg.AutostartEnabled() && serviceInstalled(p):
 			daemonState = "stopped by you (`continuum start`; it also starts at your next login)"
+		case stoppedByUser(p):
+			daemonState = "stopped by you (`continuum start`)"
 		}
 		fmt.Printf("  mode:       background\n")
 		fmt.Printf("  daemon:     %s\n", daemonState)

@@ -88,3 +88,48 @@ func TestUnknownMultiplexer(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// Pane ids repeat across servers and sessions (tmux %3 on every server,
+// screen window 0 in every session): a process is in the pane only if it is
+// on the same one.
+func TestInPaneNeedsTheSameServer(t *testing.T) {
+	r, _ := rules.Load("")
+	cases := []struct {
+		env  map[string]string
+		loc  core.Location
+		want bool
+	}{
+		{map[string]string{"TMUX_PANE": "%3", "TMUX": "/tmp/tmux-501/default,1,0"}, core.Location{Kind: "tmux", Target: "%3", Socket: "/tmp/tmux-501/default"}, true},
+		{map[string]string{"TMUX_PANE": "%3", "TMUX": "/tmp/tmux-501/default,1,0"}, core.Location{Kind: "tmux", Target: "%3", Socket: "/tmp/tmux-501/work"}, false},
+		{map[string]string{"TMUX_PANE": "%3", "TMUX": "/tmp/tmux-501/default,1,0"}, core.Location{Kind: "tmux", Target: "%3"}, true}, // server not recorded
+		{map[string]string{"WINDOW": "0", "STY": "222.play"}, core.Location{Kind: "screen", Target: "0", Socket: "111.work"}, false},
+		{map[string]string{"WINDOW": "0", "STY": "111.work"}, core.Location{Kind: "screen", Target: "0", Socket: "111.work"}, true},
+		{map[string]string{"ZELLIJ_PANE_ID": "0", "ZELLIJ_SESSION_NAME": "play"}, core.Location{Kind: "zellij", Target: "terminal_0", Socket: "work"}, false},
+	}
+	for _, c := range cases {
+		if got := InPane(r, c.env, &c.loc); got != c.want {
+			t.Errorf("env %v in %s: %v, want %v", c.env, c.loc.String(), got, c.want)
+		}
+	}
+}
+
+// The pane list's third field is the server's socket path, as the panes'
+// own TMUX says it, so a scanned pane matches the one a hook reported.
+func TestListReadsTheServerSocket(t *testing.T) {
+	r, _ := rules.Load("")
+	orig := Runner
+	defer func() { Runner = orig }()
+	Runner = func(_ time.Duration, _ string, argv ...string) (string, error) {
+		return "%1\tzsh\t/private/tmp/tmux-501/default\n%2\tnode\n", nil
+	}
+	panes, err := List(r, "tmux", "/tmp/tmux-501/default")
+	if err != nil || len(panes) != 2 {
+		t.Fatalf("%v %+v", err, panes)
+	}
+	if got := panes[0].Location.String(); got != "tmux:%1@/private/tmp/tmux-501/default" || panes[0].Command != "zsh" {
+		t.Errorf("pane 1: %s %q", got, panes[0].Command)
+	}
+	if got := panes[1].Location.String(); got != "tmux:%2@/tmp/tmux-501/default" || panes[1].Command != "node" {
+		t.Errorf("pane 2 (no socket printed): %s %q", got, panes[1].Command)
+	}
+}

@@ -32,9 +32,9 @@ one doesn't stop Continuum:
   for a Claude one.
 - The wrapper and the tmux pane scanner read the bottom of the agent's screen. That's
   how every other agent is covered. A turn that ends normally with a reply that only
-  *mentions* a limit ("the client now prints 'usage limit reached'") is not a stall:
-  the `Stop` hook reports the reply, and limit text on screen that is part of it is
-  ignored.
+  *mentions* a limit ("the client now prints 'usage limit reached'"), anywhere in the
+  reply, is not a stall: the `Stop` hook reports the reply, and limit text on screen
+  that is part of it is ignored.
 - Print-mode and SDK runs (`claude -p`, Agent SDK scripts, `codex exec`, Codex subagent
   threads) and agents started by another agent's tool are left alone. They inherit the
   pane of the session that started them, and nobody types into them.
@@ -54,8 +54,9 @@ streams) get a short backoff.
 2. **It's still the conversation that stalled.** If the agent's window has moved on to
    another conversation (`/clear`, `/resume`), Continuum leaves the old one alone.
 3. **The pane still runs this session's agent, in front.** Every process in a pane
-   carries the pane's id in its environment (`TMUX_PANE`, `REX_BLOCK`, …). Continuum
-   finds the agent's process that way and checks that it's the session's own process
+   carries the pane's id in its environment (`TMUX_PANE`, `REX_BLOCK`, …), and the
+   server or session it belongs to (a pane id like `%3` exists on every tmux server).
+   Continuum finds the agent's process that way and checks that it's the session's own process
    (or, if none was recorded, one that was already running when the session stalled),
    that it's in the foreground, and that it isn't suspended. If the agent quit and a
    shell, an editor or a new session now has the pane, nothing is typed. Where

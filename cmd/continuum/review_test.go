@@ -3,10 +3,13 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/continuum-dev/continuum/internal/core"
+	"github.com/continuum-dev/continuum/internal/hooks"
+	"github.com/continuum-dev/continuum/internal/messages"
 	"github.com/continuum-dev/continuum/internal/rules"
 )
 
@@ -104,5 +107,78 @@ func TestWhereNamesTheHost(t *testing.T) {
 	}
 	if got := sessionWhere(knownSession{Harness: "claude", Open: true, Host: "iTerm2"}, r); got != "iTerm2" {
 		t.Errorf("plain terminal: %q", got)
+	}
+}
+
+// Installed from a shell with CLAUDE_CONFIG_DIR set: the daemon started at
+// login doesn't have that variable, yet must use the same folder (and never
+// put hooks into a ~/.claude/settings.json the user doesn't use).
+func TestInstallNotesTheAgentFolderForTheDaemon(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("install would query the real Task Scheduler")
+	}
+	home := sandboxHome(t)
+	work := filepath.Join(home, ".claude-work")
+	os.MkdirAll(work, 0o700)
+	t.Setenv("CLAUDE_CONFIG_DIR", work)
+	capture(t, func() {
+		if err := doInstall(installOptions{Standalone: true}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Setenv("CLAUDE_CONFIG_DIR", "") // the daemon's environment
+	cfg, _ := core.LoadConfig(core.GetPaths().Config)
+	if got := cfg.ClaudeDir(); got != work {
+		t.Fatalf("the daemon would use %s, not %s", got, work)
+	}
+	if data, _ := os.ReadFile(hooks.Targets(cfg)[0].Path); !strings.Contains(string(data), " hook claude") {
+		t.Fatalf("no hooks in %s", hooks.Targets(cfg)[0].Path)
+	}
+}
+
+// The daemon runs the agents' own commands (`claude agents`, resume
+// commands); they must use the folder config.json names, not the default.
+func TestDaemonPassesTheAgentFolderToTheAgents(t *testing.T) {
+	home := sandboxHome(t)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CODEX_HOME", "")
+	exportAgentHomes(core.Config{ClaudeHome: filepath.Join(home, ".claude-work"), CodexHome: filepath.Join(home, ".codex")})
+	if got := os.Getenv("CLAUDE_CONFIG_DIR"); got != filepath.Join(home, ".claude-work") {
+		t.Errorf("CLAUDE_CONFIG_DIR=%q", got)
+	}
+	if got := os.Getenv("CODEX_HOME"); got != "" {
+		t.Errorf("the default folder was set explicitly: CODEX_HOME=%q", got)
+	}
+}
+
+// A hand-edited messages.json with a typo: resetting one message must not
+// save an empty file over all the others.
+func TestMessageResetKeepsAnUnreadableFile(t *testing.T) {
+	sandboxHome(t)
+	p := core.GetPaths()
+	p.Ensure()
+	broken := []byte("{\"default\": {\"text\": \"Keep going\"}, \"agents\": {\"codex\": {\"text\": \"Carry on\"}},}\n")
+	os.WriteFile(messages.Path(p), broken, 0o600)
+	err := resetMessage([]string{"--agent", "claude"})
+	if data, _ := os.ReadFile(messages.Path(p)); err == nil || string(data) != string(broken) {
+		t.Fatalf("err=%v, file now %q", err, data)
+	}
+}
+
+// Options after the message are not part of it.
+func TestMessageSetOptionsAfterTheText(t *testing.T) {
+	sandboxHome(t)
+	p := core.GetPaths()
+	if err := setMessage([]string{"Carry on.", "--agent", "codex"}); err == nil {
+		t.Fatal("accepted an option after the message")
+	}
+	if m, _ := messages.Load(p); m.Default.Text != "" || len(m.Agents) != 0 {
+		t.Fatalf("messages changed: %+v", m)
+	}
+	if err := setMessage([]string{"--agent", "codex", "Use -v --verbose output."}); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := messages.Load(p); m.Agents["codex"].Text != "Use -v --verbose output." {
+		t.Fatalf("messages: %+v", m)
 	}
 }

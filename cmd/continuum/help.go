@@ -39,9 +39,10 @@ Sets Continuum up so it works on its own from now on:
 
   1. Copies this binary to ~/.continuum/bin/continuum (and links it into
      ~/.local/bin when that folder is on your PATH).
-  2. Adds hooks to ~/.claude/settings.json and ~/.codex/hooks.json so Claude
-     Code and Codex report stalls and where they run. Every other setting is
-     kept, and a timestamped backup is saved first.
+  2. Adds hooks to ~/.claude/settings.json, ~/.codex/hooks.json and
+     ~/.grok/hooks/continuum.json so Claude Code, Codex and Grok Build report
+     stalls and where they run. Every other setting is kept, and a timestamped
+     backup is saved first.
   3. Adds a marked block to your shell startup file (~/.zshrc, ~/.bashrc, fish
      conf.d) that runs interactive agents (claude, codex, gemini, opencode, ...)
      under Continuum, so it can type into them in any terminal.
@@ -336,8 +337,8 @@ delivery route. The log rotates to daemon.log.1 at 5 MB.`,
 	},
 	{
 		Name: "disable", Group: "Background daemon", Args: "[options]",
-		Summary: "Turn auto-start off: nothing starts the daemon by itself",
-		Detail:  "Removes the login item and stops hooks from starting the daemon, and stops it now\n(unless --keep-running). Hooks still note stalls, so limits that reset meanwhile are\ncaught up the next time Continuum runs: `continuum start` (until you stop it or log\nout) or `continuum watch`. `update` keeps this choice. Undo with `continuum enable`.",
+		Summary:  "Turn auto-start off: nothing starts the daemon by itself",
+		Detail:   "Removes the login item and stops hooks from starting the daemon, and stops it now\n(unless --keep-running). Hooks still note stalls, so limits that reset meanwhile are\ncaught up the next time Continuum runs: `continuum start` (until you stop it or log\nout) or `continuum watch`. `update` keeps this choice. Undo with `continuum enable`.",
 		Examples: []string{"continuum disable", "continuum disable --keep-running"},
 	},
 	{

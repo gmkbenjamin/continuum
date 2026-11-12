@@ -181,10 +181,11 @@ func (m *Messages) Set(e scope.Entry, p Pair) {
 	}
 }
 
-// Clear removes the message (or only the outage one) for an entry.
+// Clear removes the message (or only the outage one) for an entry. A session
+// id may be shortened to its first 4 or more characters.
 func (m *Messages) Clear(e scope.Entry, outageOnly bool) bool {
 	for i := range m.Rules {
-		if same(m.Rules[i].Entry, e) || (e.Session != "" && strings.HasPrefix(m.Rules[i].Session, e.Session)) {
+		if same(m.Rules[i].Entry, e) || (len(e.Session) >= 4 && strings.HasPrefix(m.Rules[i].Session, e.Session)) {
 			if outageOnly {
 				m.Rules[i].Outage = ""
 				if m.Rules[i].Text == "" {

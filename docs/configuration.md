@@ -23,7 +23,7 @@
 | `scan_tmux_socket` | your default tmux server | The tmux server (socket path) the pane scanner watches. |
 | `poll_seconds` | `5` | How often the daemon checks. |
 | `binaries` | from `PATH` | Agent executables: `{"claude": "/opt/claude"}`. |
-| `claude_home`, `codex_home` | `~/.claude`, `~/.codex` | Where the agents keep their files. Grok Build's is `$GROK_HOME`, else `~/.grok`. |
+| `claude_home`, `codex_home`, `grok_home` | `~/.claude`, `~/.codex`, `~/.grok` | Where the agents keep their files. `install` sets these from `$CLAUDE_CONFIG_DIR`, `$CODEX_HOME` and `$GROK_HOME` when your shell sets them, since the daemon started at login doesn't see those variables. |
 | `reset_hints_command` | none | A command printing `{"claude": "<RFC3339>"}`, used when a message gives no reset time. |
 | `autostart_daemon` | `true` | Start the daemon from hooks and `run` if it isn't running. `false` in standalone mode and after `continuum disable`; `continuum enable` turns it back on. |
 | `log_level` | `info` | `debug` also logs why: every event, check and delivery route, and hooks write to `hooks.log`. Also: `error`, `warn`. `CONTINUUM_DEBUG=1` turns on debug for one run. |

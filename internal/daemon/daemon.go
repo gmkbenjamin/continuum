@@ -400,22 +400,7 @@ func (d *Daemon) Handle(ev core.Event) {
 
 	switch ev.Kind {
 	case core.KindActivity:
-		for _, j := range d.Jobs {
-			if j.State != core.StatePending || !ev.At.After(j.LimitAt.Add(time.Second)) {
-				continue
-			}
-			sameSession := ev.SessionID != "" && j.SessionID == ev.SessionID && j.Harness == ev.Harness
-			sameLoc := ev.Location != nil && j.Location != nil && ev.Location.String() == j.Location.String()
-			if !sameSession && !sameLoc {
-				continue
-			}
-			j.State = core.StateSkipped
-			j.Result = "the session continued on its own or you continued it"
-			j.UpdatedAt = d.Now()
-			d.dirty = true
-			d.history("skipped", j, map[string]any{"reason": j.Result})
-			d.logf("%s: %s", j.Key, j.Result)
-		}
+		d.continued(ev, nil)
 	case core.KindSessionEnd:
 		// The agent quit: its pane (or wrapper) now holds something else, so
 		// a pending resume must not be typed there. It continues the closed
@@ -435,12 +420,36 @@ func (d *Daemon) Handle(ev core.Event) {
 		}
 	case core.KindReply:
 		d.reply(ev, sess)
+		// A turn that ended normally is activity too, for an earlier stall
+		// its reply doesn't repeat.
+		d.continued(ev, func(j *core.Job) bool { return !replyHas(ev.Message, j.Hit) && !replyHas(ev.Message, j.Message) })
 	case core.KindUsageLimit, core.KindTransient, core.KindNeverResume:
 		if d.partOfReply(ev, sess) {
 			d.logf("%s · %s: the limit text on screen is part of the agent's reply, not an error; ignoring it", d.name(ev.Harness), ev.Location.String())
 			return
 		}
 		d.limitEvent(ev, sess)
+	}
+}
+
+// continued drops pending resumes of ev's session (or place) whose stall came
+// before ev: the session did something since. only, when set, picks which.
+func (d *Daemon) continued(ev core.Event, only func(*core.Job) bool) {
+	for _, j := range d.Jobs {
+		if j.State != core.StatePending || !ev.At.After(j.LimitAt.Add(time.Second)) {
+			continue
+		}
+		sameSession := ev.SessionID != "" && j.SessionID == ev.SessionID && j.Harness == ev.Harness
+		sameLoc := ev.Location != nil && j.Location != nil && ev.Location.String() == j.Location.String()
+		if !sameSession && !sameLoc || only != nil && !only(j) {
+			continue
+		}
+		j.State = core.StateSkipped
+		j.Result = "the session continued on its own or you continued it"
+		j.UpdatedAt = d.Now()
+		d.dirty = true
+		d.history("skipped", j, map[string]any{"reason": j.Result})
+		d.logf("%s: %s", j.Key, j.Result)
 	}
 }
 
@@ -950,7 +959,7 @@ func (d *Daemon) runJob(j *core.Job) {
 			// The agent's own record of its pane is the freshest; only a
 			// Continuum wrapper (an even more direct route) takes precedence.
 			if pane := live.TmuxPane(s.Tmux); pane != "" && (j.Location == nil || j.Location.Kind != "wrapper") {
-				j.Location = &core.Location{Kind: "tmux", Target: pane}
+				j.Location = &core.Location{Kind: "tmux", Target: pane, Socket: d.tmuxServer(j, s.PID, pane)}
 			}
 		}
 	}
@@ -1032,6 +1041,23 @@ func (d *Daemon) runJob(j *core.Job) {
 	d.notify(j, "Resumed", "Continued via "+res.Via)
 }
 
+// tmuxServer is the socket of the tmux server pane runs on, for a pane taken
+// from the agent's own session list (which names the pane, not the server):
+// the agent's environment says, else the server the hooks recorded. A pane id
+// like %3 exists on every tmux server, so without it the default server's %3
+// would be typed into, whatever runs there.
+func (d *Daemon) tmuxServer(j *core.Job, pid int, pane string) string {
+	if pid > 0 {
+		if loc := mux.LocateFromEnv(d.Rules, proc.Environ(pid)); loc != nil && loc.Kind == "tmux" && loc.Target == pane {
+			return loc.Socket
+		}
+	}
+	if j.Location != nil && j.Location.Kind == "tmux" {
+		return j.Location.Socket
+	}
+	return ""
+}
+
 // findPane looks for the session's pane when no hook recorded it: the tmux
 // pane whose terminal is the agent process's terminal, or else the one tmux
 // pane running the agent in the session's directory.
@@ -1049,17 +1075,26 @@ func (d *Daemon) findPane(j *core.Job) *core.Location {
 	if sock := d.Config.ScanTmuxSocket; sock != "" {
 		argv = append(argv, "-S", sock)
 	}
-	argv = append(argv, "list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_tty}")
+	argv = append(argv, "list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_tty}\t#{socket_path}")
 	out, err := mux.Runner(5*time.Second, "", argv...)
 	if err != nil {
 		return nil
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
+	// The server's own socket path, so the pane compares equal to the one
+	// its hooks report and is never confused with the same pane id on
+	// another tmux server.
+	socket := func(f []string) string {
+		if len(f) >= 5 && strings.TrimSpace(f[4]) != "" {
+			return strings.TrimSpace(f[4])
+		}
+		return d.Config.ScanTmuxSocket
+	}
 	if j.PID > 0 {
 		if tty := proc.TTY(j.PID); tty != "" {
 			for _, line := range lines {
 				if f := strings.Split(line, "\t"); len(f) >= 4 && f[3] == tty {
-					return &core.Location{Kind: "tmux", Target: f[0], Socket: d.Config.ScanTmuxSocket}
+					return &core.Location{Kind: "tmux", Target: f[0], Socket: socket(f)}
 				}
 			}
 		}
@@ -1077,7 +1112,7 @@ func (d *Daemon) findPane(j *core.Job) *core.Location {
 		}
 		if filepath.Clean(f[2]) == filepath.Clean(j.Cwd) {
 			n++
-			found = &core.Location{Kind: "tmux", Target: f[0], Socket: d.Config.ScanTmuxSocket}
+			found = &core.Location{Kind: "tmux", Target: f[0], Socket: socket(f)}
 		}
 	}
 	if n == 1 {
@@ -1337,10 +1372,13 @@ func (d *Daemon) applyScope() {
 	if m, err := messages.Load(d.Paths); err == nil && m.PruneWrappers(func(id string) bool { return deliver.WrapperAlive(d.Paths, id) }) {
 		_ = m.Save(d.Paths)
 	}
-	if d.Scope.PruneWrappers(func(id string) bool { return deliver.WrapperAlive(d.Paths, id) }) {
-		if err := d.Scope.Save(d.Paths); err != nil {
+	// Read afresh: the copy from the start of this pass can be seconds old,
+	// and saving it would undo a `continuum choose` made since.
+	if sc, err := scope.Load(d.Paths); err == nil && sc.PruneWrappers(func(id string) bool { return deliver.WrapperAlive(d.Paths, id) }) {
+		if err := sc.Save(d.Paths); err != nil {
 			d.logf("scope: %v", err)
 		}
+		d.Scope = sc
 	}
 	now := d.Now()
 	for _, j := range d.Jobs {

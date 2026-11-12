@@ -194,3 +194,24 @@ func TestBlockingDialog(t *testing.T) {
 		}
 	}
 }
+
+// A menu without numbers, or with the cursor off the first option, is only
+// recognisable across lines; a reply that answers numbered questions with
+// yes and no is not a menu.
+func TestBlockingDialogAcrossLines(t *testing.T) {
+	r := load(t)
+	for name, screen := range map[string]string{
+		"yes/no menu":        " Apply the patch?\n ❯ Yes\n   No",
+		"cursor on option 2": "   1. Yes\n ❯ 2. No, keep it",
+		"redrawn, wrapper":   "\n\n  › Yes, continue\n\n    No, stop\n",
+		"cursor on option 3": "   1. Yes\n   2. Yes, always\n ❯ 3. No",
+	} {
+		if r.BlockingDialog(screen) == "" || r.BlockingDialogAnywhere(screen) == "" {
+			t.Errorf("%s: menu not detected", name)
+		}
+	}
+	reply := "Answers:\n1. Yes, the cache is per user.\n2. No, it is never shared.\n╭───╮\n│ > │\n╰───╯"
+	if d := r.BlockingDialog(reply); d != "" {
+		t.Errorf("a reply answering yes and no: false dialog %q", d)
+	}
+}

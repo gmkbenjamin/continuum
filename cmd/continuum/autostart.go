@@ -54,10 +54,14 @@ func cmdDisable(args []string) error {
 		return err
 	}
 	fmt.Println("hooks:     no longer start the daemon")
+	// Before the login item goes: removing it also stops a daemon it started
+	// (launchd, systemd and Task Scheduler stop their job).
+	wasRunning, removed := daemonRunning(p), false
 	if serviceInstalled(p) {
 		if err := serviceUninstall(p); err != nil {
 			fmt.Println("login:     couldn't remove the login item:", err)
 		} else {
+			removed = true
 			fmt.Println("login:     login item removed; it won't start at login")
 		}
 	}
@@ -67,12 +71,24 @@ func cmdDisable(args []string) error {
 			return err
 		}
 	}
-	running := daemonRunning(p)
 	switch {
-	case running && *keep:
+	case wasRunning && *keep:
+		// A daemon the login item started stops with it: start it again,
+		// on its own this time.
+		for i := 0; removed && i < 20 && daemonRunning(p); i++ {
+			time.Sleep(100 * time.Millisecond)
+		}
+		if !daemonRunning(p) {
+			if err := startDaemon(); err != nil {
+				fmt.Println("daemon:    stopped with the login item, and couldn't start again:", err)
+				break
+			}
+		}
 		fmt.Println("daemon:    still running (until `continuum stop` or you log out)")
-	case running:
+	case daemonRunning(p):
 		stopRunning(p)
+		fmt.Println("daemon:    stopped")
+	case wasRunning:
 		fmt.Println("daemon:    stopped")
 	}
 	fmt.Println()

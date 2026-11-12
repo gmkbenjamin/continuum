@@ -641,23 +641,32 @@ func (h *Harness) IsHarnessProcess(name string) bool {
 // other dialog in the bottom of the screen, or "" when the agent is simply
 // waiting for input. Typing there could pick an option, so callers must not.
 func (r *Rules) BlockingDialog(screen string) string {
-	for _, l := range TailLines(screen, 12) {
+	return r.dialogIn(TailLines(screen, 12))
+}
+
+// BlockingDialogAnywhere is BlockingDialog over all of text, for output
+// whose last lines may be partial redraws rather than the whole screen.
+func (r *Rules) BlockingDialogAnywhere(text string) string {
+	return r.dialogIn(strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n"))
+}
+
+// dialogIn checks each line, then the lines together: some menus are only
+// recognisable across lines (a "❯ Yes" line above a "No" line).
+func (r *Rules) dialogIn(lines []string) string {
+	for _, l := range lines {
 		for _, re := range r.blocking {
 			if re.MatchString(l) {
 				return strings.TrimSpace(l)
 			}
 		}
 	}
-	return ""
-}
-
-// BlockingDialogAnywhere is BlockingDialog over all of text, for output
-// whose last lines may be partial redraws rather than the whole screen.
-func (r *Rules) BlockingDialogAnywhere(text string) string {
-	for _, l := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
-		for _, re := range r.blocking {
-			if re.MatchString(l) {
-				return strings.TrimSpace(l)
+	joined := strings.Join(lines, "\n")
+	for _, re := range r.blocking {
+		if m := re.FindString(joined); m != "" {
+			for _, l := range strings.Split(m, "\n") {
+				if l = strings.TrimSpace(l); l != "" {
+					return l
+				}
 			}
 		}
 	}

@@ -80,3 +80,13 @@ func TestClean(t *testing.T) {
 		t.Fatal("empty accepted")
 	}
 }
+
+// `continuum message reset --session 1` must not clear another session's
+// message because its id starts with 1.
+func TestClearNeedsMoreThanACharacter(t *testing.T) {
+	m := &Messages{Agents: map[string]Pair{}}
+	m.Set(scope.Entry{Session: "1a2b3c4d"}, Pair{Text: "this one"})
+	if m.Clear(scope.Entry{Session: "1"}, false) || len(m.Rules) != 1 {
+		t.Fatalf("cleared by one character: %+v", m.Rules)
+	}
+}

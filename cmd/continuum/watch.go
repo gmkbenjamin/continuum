@@ -38,7 +38,7 @@ func runDaemon(o daemonOptions) error {
 		return err
 	}
 	cfg, _ := core.LoadConfig(p.Config)
-	lock, err := store.Lock(p.Lock)
+	lock, err := takeLock(p.Lock)
 	if err != nil {
 		if errors.Is(err, store.ErrLocked) {
 			if o.Watch {
@@ -56,6 +56,7 @@ func runDaemon(o daemonOptions) error {
 	}
 	_ = os.WriteFile(p.PID, []byte(strconv.Itoa(os.Getpid())), 0o600)
 	defer os.Remove(p.PID)
+	exportAgentHomes(cfg)
 	_ = os.WriteFile(p.BinRecord, []byte(self()), 0o600)
 
 	level := logx.LevelFromEnv(logx.ParseLevel(cfg.LogLevel))
@@ -102,6 +103,38 @@ func runDaemon(o daemonOptions) error {
 		fmt.Printf("\nStopped. Limits that reset while Continuum isn't running are caught up the next\ntime it runs (up to %d hours back).\n", int(cfg.CatchUp().Hours()))
 	}
 	return nil
+}
+
+// exportAgentHomes passes the agents' folders set in config.json to the
+// agents' own commands the daemon runs (session lists, resume commands): a
+// daemon started at login doesn't have the variables your shell sets, and
+// those commands would otherwise look in the default folders. A default
+// folder is left implicit (Claude Code reads some files elsewhere when
+// CLAUDE_CONFIG_DIR is set, even to ~/.claude).
+func exportAgentHomes(cfg core.Config) {
+	home, _ := os.UserHomeDir()
+	for _, a := range []struct{ env, dir, def string }{
+		{"CLAUDE_CONFIG_DIR", cfg.ClaudeHome, ".claude"},
+		{"CODEX_HOME", cfg.CodexHome, ".codex"},
+		{"GROK_HOME", cfg.GrokHome, ".grok"},
+	} {
+		if a.dir != "" && filepath.Clean(a.dir) != filepath.Join(home, a.def) {
+			_ = os.Setenv(a.env, a.dir)
+		}
+	}
+}
+
+// takeLock takes the daemon lock. `status`, hooks and `start` test whether a
+// daemon runs by taking the lock for an instant; a daemon starting in that
+// instant would wrongly see another one and exit, so it tries again for a
+// moment first.
+func takeLock(path string) (*os.File, error) {
+	f, err := store.Lock(path)
+	for i := 0; i < 10 && errors.Is(err, store.ErrLocked); i++ {
+		time.Sleep(50 * time.Millisecond)
+		f, err = store.Lock(path)
+	}
+	return f, err
 }
 
 func printWatchHeader(p core.Paths, cfg core.Config, level logx.Level) {
@@ -235,7 +268,16 @@ func stoppedByUser(p core.Paths) bool {
 }
 
 // launchedByService: started by launchd or systemd (at login), not by hand.
+// A systemd user unit's parent is the user's service manager ($MANAGERPID),
+// not pid 1. A terminal systemd started passes these variables on too, but
+// there the parent is a shell.
 func launchedByService() bool {
-	return strings.Contains(os.Getenv("XPC_SERVICE_NAME"), "continuum") ||
-		(os.Getenv("INVOCATION_ID") != "" && os.Getppid() == 1)
+	if strings.Contains(os.Getenv("XPC_SERVICE_NAME"), "continuum") {
+		return true
+	}
+	if os.Getenv("INVOCATION_ID") == "" {
+		return false
+	}
+	ppid := os.Getppid()
+	return ppid == 1 || os.Getenv("MANAGERPID") == strconv.Itoa(ppid)
 }

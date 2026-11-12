@@ -31,7 +31,19 @@ You've hit your session limit · resets 10am
 
 ## Install
 
-You need [Go](https://go.dev/dl/) 1.26 or later.
+Download the program for your computer from the
+[latest release](https://github.com/gmkbenjamin/continuum/releases/latest):
+`continuum-darwin-arm64` (Apple-silicon Mac), `continuum-darwin-amd64` (Intel Mac),
+`continuum-linux-amd64`, `continuum-linux-arm64`, `continuum-windows-amd64.exe` or
+`continuum-windows-arm64.exe`. Then run it with `install`:
+
+```sh
+chmod +x continuum-darwin-arm64
+xattr -d com.apple.quarantine continuum-darwin-arm64   # macOS only: the download isn't notarized
+./continuum-darwin-arm64 install
+```
+
+Or build it yourself, with [Go](https://go.dev/dl/) 1.26 or later:
 
 ```sh
 git clone https://github.com/gmkbenjamin/continuum.git
@@ -272,7 +284,8 @@ All settings are in [docs/configuration.md](docs/configuration.md).
 ## Updating and uninstalling
 
 ```sh
-git pull && make build && ./continuum update   # apply a new version, keeping your choices
+./continuum-darwin-arm64 update                # a newly downloaded version, keeping your choices
+git pull && make build && ./continuum update   # or, from source
 continuum uninstall                            # remove everything; keep your settings
 continuum uninstall --purge                    # remove everything, including settings and backups
 ```

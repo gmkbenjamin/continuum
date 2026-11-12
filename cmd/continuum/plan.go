@@ -280,6 +280,22 @@ func installPlanItems(o installOptions, p core.Paths, cfg core.Config, r *rules.
 		}
 		return items
 	}
+	if o.NoAutostart {
+		// `continuum disable`: update restarts a running daemon on the new
+		// version, and starts nothing else.
+		if service.Installed(p) {
+			items = append(items, planItem{Action: "remove", What: "login item", Purpose: "auto-start is off (`continuum disable`)"})
+		}
+		if daemonRunning(p) {
+			items = append(items, planItem{Action: "start", What: "background daemon", Path: bin + " daemon",
+				Purpose: "restarted on this version, as it is running now",
+				Notes:   []string{"auto-start stays off (`continuum disable`): nothing starts it by itself"}})
+		} else {
+			items = append(items, planItem{Action: "none", What: "background daemon",
+				Purpose: "auto-start is off (`continuum disable`), so it isn't started; `continuum start` runs it"})
+		}
+		return items
+	}
 	items = append(items, planItem{Action: "start", What: "background daemon", Path: bin + " daemon",
 		Purpose: "watches agent sessions and continues them when their limits reset",
 		Notes:   []string{"while a resume is due soon it asks the OS to postpone idle sleep (released as soon as nothing is pending)"}})

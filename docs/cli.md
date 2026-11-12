@@ -86,9 +86,10 @@ Usage:
 
     1. Copies this binary to ~/.continuum/bin/continuum (and links it into
        ~/.local/bin when that folder is on your PATH).
-    2. Adds hooks to ~/.claude/settings.json and ~/.codex/hooks.json so Claude
-       Code and Codex report stalls and where they run. Every other setting is
-       kept, and a timestamped backup is saved first.
+    2. Adds hooks to ~/.claude/settings.json, ~/.codex/hooks.json and
+       ~/.grok/hooks/continuum.json so Claude Code, Codex and Grok Build report
+       stalls and where they run. Every other setting is kept, and a timestamped
+       backup is saved first.
     3. Adds a marked block to your shell startup file (~/.zshrc, ~/.bashrc, fish
        conf.d) that runs interactive agents (claude, codex, gemini, opencode, ...)
        under Continuum, so it can type into them in any terminal.

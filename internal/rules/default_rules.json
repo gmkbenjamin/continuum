@@ -47,7 +47,7 @@
       "(?i)\\b(?:approve|deny)\\b.{0,40}\\?",
       "(?i)press\\s+enter\\s+to",
       "(?i)\\(y/n\\)|\\[y/N\\]|\\[Y/n\\]",
-      "(?im)^\\s*[❯›>▶➜]?\\s*(?:\\d+[.)]\\s*)?(?:yes|no)\\b[^\\n]{0,60}\\n(?:[^\\n]*\\n)?\\s*[❯›>▶➜]?\\s*(?:\\d+[.)]\\s*)?(?:yes|no)\\b",
+      "(?im)^\\s*[❯›>▶➜]\\s*(?:\\d+[.)]\\s*)?(?:yes|no)\\b[^\\n]{0,60}\\n(?:[^\\n]*\\n)?\\s*(?:\\d+[.)]\\s*)?(?:yes|no)\\b|^\\s*(?:\\d+[.)]\\s*)?(?:yes|no)\\b[^\\n]{0,60}\\n(?:[^\\n]*\\n)?\\s*[❯›>▶➜]\\s*(?:\\d+[.)]\\s*)?(?:yes|no)\\b",
       "(?im)^\\s*[❯›>▶➜]?\\s*(?:yes|no|allow|deny|proceed|cancel|quit)\\b[^\\n]{0,60}\\s[\\[(]?[yn][\\])]?\\s*$",
       "(?i)\\b(?:trust|allow)\\s+(?:this|the)\\s+(?:folder|directory|workspace|project)\\b"
     ],
@@ -604,7 +604,8 @@
       "send_enter": ["tmux", ["-S", "{socket}"], "send-keys", "-t", "{target}", "Enter"],
       "capture": ["tmux", ["-S", "{socket}"], "capture-pane", "-p", "-J", "-t", "{target}", "-S", "-120"],
       "process": ["tmux", ["-S", "{socket}"], "display-message", "-p", "-t", "{target}", "#{pane_current_command}"],
-      "list": ["tmux", ["-S", "{socket}"], "list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_command}"]
+      "list": ["tmux", ["-S", "{socket}"], "list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_command}\t#{socket_path}"],
+      "_list": "Pane id, what runs in it, and the server's socket path (the one its panes' TMUX names, so a pane found here matches the one a hook reported)."
     },
     "screen": {
       "priority": 20,

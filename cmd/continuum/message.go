@@ -84,6 +84,13 @@ func setMessage(args []string) error {
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
+	// Options go before the message: `set "Carry on." --agent codex` would
+	// otherwise set the default message to "Carry on. --agent codex".
+	for _, a := range fs.Args() {
+		if name := strings.SplitN(strings.TrimLeft(a, "-"), "=", 2)[0]; strings.HasPrefix(a, "-") && fs.Lookup(name) != nil {
+			return fmt.Errorf("put %s before the message: continuum message set [--agent A | --session ID | --folder F] [--outage] \"TEXT\"", a)
+		}
+	}
 	text, err := messages.Clean(strings.Join(fs.Args(), " "))
 	if err != nil {
 		return fmt.Errorf("%v: usage: continuum message set [--agent A | --session ID | --folder F] [--outage] \"TEXT\"", err)
@@ -142,11 +149,15 @@ func resetMessage(args []string) error {
 	}
 	p := core.GetPaths()
 	r, _ := rules.Cached(p.Rules)
-	m, _ := messages.Load(p)
+	m, err := messages.Load(p)
 	if *all {
 		m = &messages.Messages{Agents: map[string]messages.Pair{}}
 		fmt.Println("All messages reset to the built-in ones.")
 		return m.Save(p)
+	}
+	if err != nil {
+		// Saving now would replace every message in the file with nothing.
+		return fmt.Errorf("%s is unreadable, so nothing was changed (fix it, or start over with `continuum message reset --all`): %v", messages.Path(p), err)
 	}
 	agentName, entry, err := msgTarget{agent, session, folder}.resolve(r)
 	if err != nil {

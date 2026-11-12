@@ -112,11 +112,13 @@ func BuildEvent(r *rules.Rules, harness string, in Input, env map[string]string,
 		// A turn ended normally. Real limits and API errors arrive through
 		// StopFailure (and the transcript), so this is activity, unless the
 		// reply reads like a limit message: then it is reported as a reply,
-		// which neither starts nor cancels a resume, and tells the daemon
-		// that the same text read off the screen is not a stall.
-		if h.Classify(in.LastAssistantMessage, 8) != nil {
+		// which tells the daemon that the same text read off the screen is
+		// not a stall. All of the reply counts, not only its last lines: the
+		// wrapper reads up to the last 40 lines of the screen.
+		reply := clip(in.LastAssistantMessage, 8000)
+		if h.Classify(reply, strings.Count(reply, "\n")+1) != nil {
 			ev.Kind = core.KindReply
-			ev.Message = clip(in.LastAssistantMessage, 8000)
+			ev.Message = reply
 		} else {
 			ev.Kind = core.KindActivity
 		}
@@ -199,7 +201,10 @@ func nested(r *rules.Rules, tree map[int]proc.Node, pid int) bool {
 		return false
 	}
 	own := tree[pid].Name
-	for pid = tree[pid].PPID; pid > 1 && tree[pid].Name == own; pid = tree[pid].PPID {
+	// Bounded: on Windows a parent id can be stale and reused, which can
+	// make a loop.
+	for pid = tree[pid].PPID; pid > 1 && steps < 60 && tree[pid].Name == own; pid = tree[pid].PPID {
+		steps++
 	}
 	for ; pid > 1 && steps < 60; steps++ {
 		n, ok := tree[pid]

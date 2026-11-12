@@ -3,11 +3,16 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/continuum-dev/continuum/internal/core"
 	"github.com/continuum-dev/continuum/internal/hooks"
+	"github.com/continuum-dev/continuum/internal/live"
+	"github.com/continuum-dev/continuum/internal/mux"
+	"github.com/continuum-dev/continuum/internal/proc"
+	"github.com/continuum-dev/continuum/internal/scope"
 )
 
 // `continuum resume-now all` means every pending resume: never a billing stop
@@ -290,5 +295,147 @@ func TestResumeNowNeverRevivesABillingStop(t *testing.T) {
 	h.advance(time.Minute)
 	if len(h.delivered) != 0 || h.d.Jobs["claude:s1"].State != core.StateNeedsUser {
 		t.Fatalf("resumed a billing stop: %+v", h.d.Jobs["claude:s1"])
+	}
+}
+
+// Claude's session list names the pane (%12) but not the tmux server. The
+// server the hooks recorded is kept: the default server's %12 is another pane.
+func TestLiveTmuxPaneKeepsItsServer(t *testing.T) {
+	h := setup(t)
+	ev := limitEvent(h, "s1", 30*time.Minute)
+	ev.Location = &core.Location{Kind: "tmux", Target: "%12", Socket: "/private/tmp/tmux-501/work"}
+	h.d.Handle(ev)
+	h.live = &live.State{Checked: true, Open: true, Session: &live.Session{SessionID: "s1", PID: deadPID, Tmux: "work:@3.%12"}}
+	h.advance(37 * time.Minute)
+	if len(h.delivered) != 1 || h.delivered[0].Location.String() != "tmux:%12@/private/tmp/tmux-501/work" {
+		for _, j := range h.delivered {
+			t.Logf("delivered to %s", j.Location.String())
+		}
+		t.Fatalf("delivered %d, want 1 to the work server's %%12", len(h.delivered))
+	}
+}
+
+// fakeTmuxScan makes the pane scanner see one Grok Build pane, %2, showing a
+// limit. Like tmux, it prints the server's socket path only when the list
+// format asks for it.
+func fakeTmuxScan(t *testing.T, screen string) {
+	t.Helper()
+	if _, err := proc.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	orig := mux.Runner
+	t.Cleanup(func() { mux.Runner = orig })
+	mux.Runner = func(_ time.Duration, _ string, argv ...string) (string, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "list-panes") && strings.Contains(joined, "#{socket_path}"):
+			return "%2\tgrok\t/private/tmp/tmux-501/default\n", nil
+		case strings.Contains(joined, "list-panes"):
+			return "%2\tgrok\n", nil
+		case strings.Contains(joined, "capture-pane"):
+			return screen, nil
+		}
+		return "", nil
+	}
+}
+
+// What a Grok hook reports from that pane: TMUX names the server's socket.
+var grokPane = &core.Location{Kind: "tmux", Target: "%2", Socket: "/private/tmp/tmux-501/default"}
+
+// One stall seen by the pane scanner and by Grok's hook is one resume, not two.
+func TestPaneScanAndHookAreOneResume(t *testing.T) {
+	msg := "✕ You've hit the rate limit for your plan. Try again in 30 minutes."
+	fakeTmuxScan(t, "> refactor the parser\n"+msg+"\n> ")
+	h := setup(t)
+	ev, ok := hooks.BuildEvent(h.d.Rules, "grok", hooks.Input{HookEventName: "StopFailure", SessionID: "g1", Cwd: "/work/app", LastAssistantMessage: msg},
+		map[string]string{"TMUX_PANE": "%2", "TMUX": "/private/tmp/tmux-501/default,1,0"}, h.now)
+	if !ok || ev.Location.String() != grokPane.String() {
+		t.Fatalf("hook event: ok=%v %s", ok, ev.Location.String())
+	}
+	h.d.scanPanes()
+	h.d.Handle(ev)
+	h.advance(32 * time.Minute)
+	if len(h.delivered) != 1 {
+		for _, j := range h.delivered {
+			t.Logf("delivered %s at %s", j.Key, j.Location.String())
+		}
+		t.Fatalf("one stall resumed %d times", len(h.delivered))
+	}
+}
+
+// Limit text the pane scanner reads that is part of Grok's finished reply is
+// not a stall.
+func TestPaneScanSeesTheReplyFromTheHook(t *testing.T) {
+	reply := "Done. When the API answers 429 the CLI now prints: You've hit the rate limit for your plan."
+	fakeTmuxScan(t, "> add the error message\n"+reply+"\n> ")
+	h := setup(t)
+	ev, _ := hooks.BuildEvent(h.d.Rules, "grok", hooks.Input{HookEventName: "Stop", SessionID: "g1", Cwd: "/work/app", LastAssistantMessage: reply},
+		map[string]string{"TMUX_PANE": "%2", "TMUX": "/private/tmp/tmux-501/default,1,0"}, h.now)
+	if ev.Kind != core.KindReply {
+		t.Fatalf("kind %s", ev.Kind)
+	}
+	h.d.Handle(ev)
+	h.d.scanPanes()
+	for k, j := range h.d.Jobs {
+		if j.State == core.StatePending {
+			t.Fatalf("the reply on screen was scheduled as a stall: %s at %s", k, j.Location.String())
+		}
+	}
+}
+
+// A long reply that mentions a limit well above its last lines: the wrapper
+// still sees that line on screen, and it is still not a stall.
+func TestLimitHighUpInALongReplyIsNotAStall(t *testing.T) {
+	h := setup(t)
+	lines := []string{"Summary:", "The CLI now prints \"usage limit reached\" when the quota API returns 429."}
+	for i := 0; i < 20; i++ {
+		lines = append(lines, "- step "+strings.Repeat("·", i%5+1))
+	}
+	reply := strings.Join(lines, "\n")
+	loc := map[string]string{"CONTINUUM_WRAPPER_ID": "w1"}
+	ev, _ := hooks.BuildEvent(h.d.Rules, "claude", hooks.Input{HookEventName: "Stop", SessionID: "s1", Cwd: "/work/app", LastAssistantMessage: reply}, loc, h.now)
+	h.d.Handle(ev)
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindUsageLimit, Source: "wrapper", At: h.now.Add(2 * time.Second),
+		Location: &core.Location{Kind: "wrapper", Target: "w1"}, Message: lines[1], Hit: "usage limit reached"})
+	h.advance(20 * time.Minute)
+	if len(h.delivered) > 0 {
+		t.Fatalf("typed %q into a session that had finished its turn", h.delivered[0].Kind)
+	}
+}
+
+// A turn that ends normally after a stall means the session went on, even
+// when its reply happens to mention limits.
+func TestReplyAfterAStallIsActivity(t *testing.T) {
+	h := setup(t)
+	h.d.Handle(limitEvent(h, "s1", 2*time.Hour))
+	ev, _ := hooks.BuildEvent(h.d.Rules, "claude", hooks.Input{HookEventName: "Stop", SessionID: "s1", Cwd: "/work/app",
+		LastAssistantMessage: "Continued with extra usage. The retry wrapper now handles API Error: 529 too."}, nil, h.now.Add(10*time.Minute))
+	if ev.Kind != core.KindReply {
+		t.Fatalf("kind %s", ev.Kind)
+	}
+	h.d.Handle(ev)
+	if j := h.d.Jobs["claude:s1"]; j.State != core.StateSkipped {
+		t.Fatalf("the session went on, but its resume is still %s", j.State)
+	}
+}
+
+// Dropping a finished `continuum run --choose` from the scope must not undo
+// a `continuum choose` made while the daemon was busy with this pass.
+func TestScopePruneKeepsAChoiceMadeMeanwhile(t *testing.T) {
+	h := setup(t)
+	old := scope.Scope{Mode: scope.ModeChosen, Chosen: []scope.Entry{{Wrapper: "finished-wrapper"}}}
+	if err := old.Save(h.d.Paths); err != nil {
+		t.Fatal(err)
+	}
+	h.d.reload() // the start of a pass
+	meanwhile := old
+	meanwhile.Chosen = append(meanwhile.Chosen, scope.Entry{Harness: "claude", Session: "s-new"})
+	if err := meanwhile.Save(h.d.Paths); err != nil {
+		t.Fatal(err)
+	}
+	h.d.applyScope()
+	sc, _ := scope.Load(h.d.Paths)
+	if len(sc.Chosen) != 1 || sc.Chosen[0].Session != "s-new" {
+		t.Fatalf("chosen after pruning: %+v", sc.Chosen)
 	}
 }

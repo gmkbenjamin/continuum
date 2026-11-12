@@ -128,6 +128,9 @@ func doInstall(o installOptions) error {
 	}
 	cfg, _ := core.LoadConfig(p.Config)
 	r, _ := rules.Cached(p.Rules)
+	if !o.Dry {
+		cfg = pinAgentHomes(p, cfg)
+	}
 	bin := self()
 	if o.Copy {
 		name := "continuum"
@@ -274,6 +277,40 @@ func doInstall(o installOptions) error {
 		fmt.Println("   continuum scope       all or chosen        continuum -h       every command")
 	}
 	return nil
+}
+
+// pinAgentHomes notes in config.json the agents' folders this shell names
+// ($CLAUDE_CONFIG_DIR, $CODEX_HOME, $GROK_HOME). The daemon started at login
+// doesn't see those variables: without this it would watch the default
+// folders, and put hooks back into a settings file you don't use.
+func pinAgentHomes(p core.Paths, cfg core.Config) core.Config {
+	home, _ := os.UserHomeDir()
+	for _, a := range []struct {
+		key, env, name, def string
+		set                 *string
+	}{
+		{"claude_home", "CLAUDE_CONFIG_DIR", "Claude Code", ".claude", &cfg.ClaudeHome},
+		{"codex_home", "CODEX_HOME", "Codex", ".codex", &cfg.CodexHome},
+		{"grok_home", "GROK_HOME", "Grok Build", ".grok", &cfg.GrokHome},
+	} {
+		dir := os.Getenv(a.env)
+		if dir == "" || *a.set != "" {
+			continue
+		}
+		if abs, err := filepath.Abs(dir); err == nil {
+			dir = abs
+		}
+		if filepath.Clean(dir) == filepath.Join(home, a.def) {
+			continue // the default: nothing to note
+		}
+		if err := setConfigKey(p, a.key, dir); err != nil {
+			fmt.Printf("%-9s %v\n", "settings:", err)
+			continue
+		}
+		*a.set = dir
+		fmt.Printf("%-9s %s's folder is %s ($%s); noted in config.json for the daemon\n", "settings:", a.name, tildePath(dir), a.env)
+	}
+	return cfg
 }
 
 // stopDaemon stops a running daemon quietly.

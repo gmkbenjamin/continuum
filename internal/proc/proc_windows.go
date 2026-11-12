@@ -125,5 +125,21 @@ type Node struct {
 	Name string
 }
 
-// Tree is not used on Windows.
-func Tree() map[int]Node { return nil }
+// Tree returns every process's parent and executable name, from one
+// snapshot. Hooks use it to tell an agent started by another agent. A parent
+// id may belong to a process that has exited (its id may even be reused), so
+// callers bound their walks up the tree.
+func Tree() map[int]Node {
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil
+	}
+	defer windows.CloseHandle(snap)
+	var e windows.ProcessEntry32
+	e.Size = uint32(unsafe.Sizeof(e))
+	tree := map[int]Node{}
+	for err = windows.Process32First(snap, &e); err == nil; err = windows.Process32Next(snap, &e) {
+		tree[int(e.ProcessID)] = Node{PPID: int(e.ParentProcessID), Name: windows.UTF16ToString(e.ExeFile[:])}
+	}
+	return tree
+}

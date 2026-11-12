@@ -2,6 +2,62 @@
 
 All notable changes to Continuum. Versions follow [Semantic Versioning](https://semver.org).
 
+## [0.9.1] - 2026-11-13
+
+A second independent review found the issues fixed below.
+
+### Fixed
+- **Typing into the wrong pane.** A pane id is only unique within its server or
+  session: tmux's `%3` exists on every tmux server, screen's window 0 and zellij's pane
+  0 in every session. The check before typing now also compares the server or session,
+  so an agent in the same-numbered pane elsewhere no longer passes for the session's
+  own. And a pane taken from Claude Code's session list keeps the tmux server the hooks
+  recorded, instead of the default server's pane of the same number.
+- A stall seen by both the tmux pane scanner and an agent's hook (Grok Build, and
+  others in tmux) could be resumed twice: the scanner recorded the pane without its
+  server, so the two never matched. For the same reason a reply that only mentioned a
+  limit, or a session you had continued, didn't cancel a resume the scanner scheduled.
+- The pane check's "started after the stall" test never worked in locales that write
+  dates differently ("Fri 13 Nov" in Australia, German, French, …): `ps` is now asked
+  in the C locale.
+- A reply that mentioned a limit above its last 8 lines was still taken for a stall
+  when the wrapper read it on screen (it reads the last 40). The whole reply counts
+  now. A finished turn whose reply mentions limits also counts as activity again, so a
+  resume you no longer need is dropped.
+- Menus recognisable only across lines ("❯ Yes" above "No", or the cursor on a later
+  option) were never detected: the rule for them could not match, as lines were
+  checked one at a time. It now matches, and needs a selection marker so a reply that
+  answers questions with "Yes" and "No" isn't taken for a menu.
+- `continuum disable --keep-running` stopped the daemon anyway when the login item had
+  started it (removing the login item stops its job). It is started again on its own.
+- On Linux, `continuum stop` lasted past the next login: the start by the systemd user
+  unit wasn't recognised as a login.
+- On Windows the process tree was empty, so an agent started by another agent wasn't
+  recognised, and a session that only inherited Grok's or Cursor's variables was
+  reported as theirs.
+- Installed from a shell that sets `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GROK_HOME`,
+  the daemon (started at login without those variables) watched the default folders,
+  ran the agents' commands there, and could put hooks into a settings file you don't
+  use. `install` and `update` now note the folders in `config.json` (`grok_home` is
+  new), and the daemon passes them to the agents' commands.
+- `continuum message reset` on a `messages.json` with a typo saved an empty file over
+  all your messages. It now leaves the file alone and says so.
+- `continuum message set "TEXT" --agent codex` set the default message to "TEXT --agent
+  codex". Options after the message are refused.
+- `continuum include 1` (or `unchoose`) removed every entry whose session id starts
+  with what was typed, and `message reset --session 1` a message of such a session.
+  An id prefix needs 4 characters, as elsewhere.
+- Dropping a finished `continuum run --choose` from the scope could undo a `continuum
+  choose` made at the same moment.
+- A daemon starting at the instant `status` or a hook checked for one could exit as if
+  another one ran.
+- `continuum status` said a stopped daemon starts again at the next login even when
+  there is no login item.
+- With auto-start off, `update`'s list of changes said it would start the daemon, which
+  it doesn't (it only restarts one that is running), and left out removing a login
+  item.
+- `install -h` didn't mention Grok Build's hook file.
+
 ## [0.9.0] - 2026-11-13
 
 ### Added
@@ -218,6 +274,7 @@ First public release.
   sign-in errors.
 - Help for every command (`-h`), `doctor`, and docs in `docs/`.
 
+[0.9.1]: ../../releases/tag/v0.9.1
 [0.9.0]: ../../releases/tag/v0.9.0
 [0.8.0]: ../../releases/tag/v0.8.0
 [0.7.1]: ../../releases/tag/v0.7.1

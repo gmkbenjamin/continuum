@@ -177,7 +177,9 @@ func Add(list []Entry, e Entry) ([]Entry, bool) {
 	return append(list, e), true
 }
 
-// Remove drops entries naming e (or everything when all is true).
+// Remove drops entries naming e (or everything when all is true). A session
+// id may be shortened to its first 4 or more characters; a shorter one ("1",
+// a typo) would match too many.
 func Remove(list []Entry, e Entry, all bool) ([]Entry, int) {
 	if all {
 		return nil, len(list)
@@ -185,7 +187,7 @@ func Remove(list []Entry, e Entry, all bool) ([]Entry, int) {
 	var out []Entry
 	n := 0
 	for _, x := range list {
-		if same(x, e) || (e.Session != "" && x.Session != "" && strings.HasPrefix(x.Session, e.Session)) {
+		if same(x, e) || (len(e.Session) >= 4 && x.Session != "" && strings.HasPrefix(x.Session, e.Session)) {
 			n++
 			continue
 		}

@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-var Version = "0.9.0"
+var Version = "0.9.1"
 
 // Location says where an agent is running so input can be delivered to it
 // without focusing any window.
@@ -194,6 +194,7 @@ type Config struct {
 	PollSeconds       int               `json:"poll_seconds,omitempty"`
 	ClaudeHome        string            `json:"claude_home,omitempty"`
 	CodexHome         string            `json:"codex_home,omitempty"`
+	GrokHome          string            `json:"grok_home,omitempty"`
 	ResetHintsCommand []string          `json:"reset_hints_command,omitempty"`
 	Binaries          map[string]string `json:"binaries,omitempty"`
 	AutostartDaemon   *bool             `json:"autostart_daemon,omitempty"`
@@ -302,6 +303,9 @@ func (c Config) CodexDir() string {
 
 // GrokDir is Grok Build's home ($GROK_HOME, else ~/.grok).
 func (c Config) GrokDir() string {
+	if c.GrokHome != "" {
+		return c.GrokHome
+	}
 	if v := os.Getenv("GROK_HOME"); v != "" {
 		return v
 	}

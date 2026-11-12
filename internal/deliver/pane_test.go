@@ -172,3 +172,16 @@ func TestWithoutProcessInfoTheScreenMustShowTheAgent(t *testing.T) {
 		}
 	}
 }
+
+// The job's pane is %3 on the "work" tmux server; an agent that has been
+// running since before the stall in %3 of the default server is a different
+// pane, so nothing may be typed (it would land in whatever "work" %3 holds).
+func TestNeverTypesIntoTheSamePaneIdOnAnotherServer(t *testing.T) {
+	sent := fakePane(t, "~/work main\n❯ \n", "zsh",
+		fakeProc{pid: 100, name: "claude", pane: "%3", state: "S+", started: time.Now().Add(-5 * time.Hour)})
+	j := paneJob(0)
+	j.Location.Socket = "/tmp/tmux-501/work" // fakePane's agent runs on .../default
+	if _, err := paneDeliver(t, j, nil); err == nil || len(*sent) > 0 || j.PID == 100 {
+		t.Fatalf("typed into %s because an agent runs in %%3 of another server: err=%v sent=%q pid=%d", j.Location.String(), err, *sent, j.PID)
+	}
+}

@@ -14,12 +14,18 @@ import (
 
 // Run executes argv with a timeout and returns trimmed stdout.
 func Run(timeout time.Duration, stdin string, argv ...string) (string, error) {
+	return run(timeout, stdin, nil, argv...)
+}
+
+// run is Run with env as the command's environment (nil: this process's).
+func run(timeout time.Duration, stdin string, env []string, argv ...string) (string, error) {
 	if len(argv) == 0 {
 		return "", errors.New("empty command")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = env
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}

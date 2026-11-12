@@ -157,7 +157,9 @@ func State(pid int) string {
 
 // StartTime returns when pid started (to the second).
 func StartTime(pid int) (time.Time, bool) {
-	out, err := Run(2*time.Second, "", "ps", "-o", "lstart=", "-p", strconv.Itoa(pid))
+	// In the C locale: ps writes the date in the user's language and order
+	// otherwise ("Fri 13 Nov" in Australia, "Fr. 13 Nov." in Germany).
+	out, err := run(2*time.Second, "", append(os.Environ(), "LC_ALL=C"), "ps", "-o", "lstart=", "-p", strconv.Itoa(pid))
 	if err != nil {
 		return time.Time{}, false
 	}

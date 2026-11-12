@@ -75,3 +75,16 @@ func TestFolderMatchesThroughSymlinks(t *testing.T) {
 		t.Fatal("matched a sibling folder")
 	}
 }
+
+// `continuum include 1` (a typo, or a session no longer listed) must not
+// drop every exclusion whose id starts with 1: those sessions would be
+// resumed again.
+func TestRemoveNeedsMoreThanACharacter(t *testing.T) {
+	list := []Entry{{Session: "1a2b3c4d-0000"}, {Session: "1f00aa00-0000"}}
+	if out, n := Remove(list, Entry{Session: "1"}, false); n != 0 || len(out) != 2 {
+		t.Fatalf("removed %d: %+v", n, out)
+	}
+	if out, n := Remove(list, Entry{Session: "1a2b"}, false); n != 1 || len(out) != 1 {
+		t.Fatalf("by prefix: removed %d: %+v", n, out)
+	}
+}

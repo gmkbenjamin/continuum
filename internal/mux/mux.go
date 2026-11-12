@@ -51,7 +51,13 @@ func InPane(r *rules.Rules, env map[string]string, loc *core.Location) bool {
 		return false
 	}
 	got := locate(m, env)
-	return got != nil && got.Target == loc.Target
+	if got == nil || got.Target != loc.Target {
+		return false
+	}
+	// A pane id is only unique within its server or session (tmux's %3,
+	// screen's window 0 and zellij's pane 0 exist in each one): when both
+	// say which, it must be the same.
+	return got.Socket == "" || loc.Socket == "" || got.Socket == loc.Socket
 }
 
 func locate(m *rules.Multiplexer, env map[string]string) *core.Location {
@@ -266,7 +272,9 @@ type Pane struct {
 }
 
 // List returns panes for multiplexers that define a list command. The default
-// tmux server is listed when socket is empty.
+// tmux server is listed when socket is empty. A third field, when the list
+// prints one, is the server's own socket path: the same one its panes' agents
+// report (TMUX), so a pane found here and one a hook reported compare equal.
 func List(r *rules.Rules, kind, socket string) ([]Pane, error) {
 	m, ok := r.Multiplexers[kind]
 	if !ok || len(m.List) == 0 {
@@ -278,13 +286,16 @@ func List(r *rules.Rules, kind, socket string) ([]Pane, error) {
 	}
 	var panes []Pane
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		f := strings.SplitN(line, "\t", 2)
+		f := strings.SplitN(line, "\t", 3)
 		if len(f) == 0 || f[0] == "" {
 			continue
 		}
 		p := Pane{Location: &core.Location{Kind: kind, Target: f[0], Socket: socket}}
 		if len(f) > 1 {
 			p.Command = filepath.Base(f[1])
+		}
+		if len(f) > 2 && strings.TrimSpace(f[2]) != "" {
+			p.Location.Socket = strings.TrimSpace(f[2])
 		}
 		panes = append(panes, p)
 	}
