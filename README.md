@@ -129,8 +129,17 @@ hooks only queue events for it. In background mode:
   on Windows a system flag. It's released as soon as nothing is pending.
 
 To check what it's doing, run `continuum status` and `continuum list`, or follow the
-log with `continuum logs -f`. `continuum stop` stops the daemon until you run
-`continuum start` (or until your next login, in background mode).
+log with `continuum logs -f`. To control it:
+
+```sh
+continuum start      # start it now
+continuum stop       # stop it until `continuum start` or your next login
+continuum disable    # no auto-start: not at login, not from hooks (also stops it)
+continuum enable     # auto-start again, at login and whenever an agent needs it
+```
+
+While auto-start is off, stalls are still noted and caught up the next time Continuum
+runs. The same controls are in the menu (`continuum` on its own).
 
 ## Troubleshooting
 

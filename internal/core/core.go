@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-var Version = "0.8.0"
+var Version = "0.9.0"
 
 // Location says where an agent is running so input can be delivered to it
 // without focusing any window.

@@ -33,6 +33,7 @@ import (
 type installOptions struct {
 	Copy, Shell, Service, Dry bool
 	Standalone                bool // no background daemon: `continuum watch` only
+	NoAutostart               bool // `continuum disable`: background mode, started by hand only
 	Only                      string
 	Update                    bool // re-applying a previous install
 }
@@ -88,6 +89,13 @@ func planAndInstall(o installOptions, dry, yes bool, title, question string) err
 	return doInstall(o)
 }
 
+// installOptionsFromRecord: the choices made at install, which update keeps.
+func installOptionsFromRecord(rec *daemon.Install) installOptions {
+	return installOptions{Copy: rec.Copy || rec.Version == "", Shell: rec.Shell || rec.Version == "",
+		Service: (rec.Service || rec.Version == "") && !rec.Standalone && !rec.NoAutostart, Only: rec.Only, Update: true,
+		Standalone: rec.Standalone, NoAutostart: rec.NoAutostart && !rec.Standalone}
+}
+
 func cmdUpdate(args []string) error {
 	fs := newFlagSet("update")
 	dry := fs.Bool("dry-run", false, "Show what would change, and change nothing.")
@@ -101,7 +109,7 @@ func cmdUpdate(args []string) error {
 	if !ok {
 		return errors.New("Continuum is not installed here; run `continuum install`")
 	}
-	o := installOptions{Copy: rec.Copy || rec.Version == "", Shell: rec.Shell || rec.Version == "", Service: (rec.Service || rec.Version == "") && !rec.Standalone, Only: rec.Only, Update: true, Standalone: rec.Standalone}
+	o := installOptionsFromRecord(rec)
 	title := fmt.Sprintf("Updating Continuum %s → %s, with the choices you made at install. These changes will be made:", orUnknown(rec.Version), core.Version)
 	return planAndInstall(o, *dry, *yes, title, "Update Continuum?")
 }
@@ -175,28 +183,29 @@ func doInstall(o installOptions) error {
 			fmt.Println(line)
 		}
 	}
+	wasRunning := false
 	if !o.Dry {
 		rec, _ := json.MarshalIndent(daemon.Install{
 			Bin: bin, Hooks: hooked, At: time.Now(), Version: core.Version,
-			Shell: o.Shell, Service: o.Service, Copy: o.Copy, Only: o.Only, Standalone: o.Standalone,
+			Shell: o.Shell, Service: o.Service, Copy: o.Copy, Only: o.Only, Standalone: o.Standalone, NoAutostart: o.NoAutostart,
 		}, "", "  ")
 		_ = core.WriteFileAtomic(daemon.InstallPath(p), append(rec, '\n'), 0o600)
 		// A daemon still running an older binary would keep old behaviour:
 		// stop it so the new one takes over (or, in standalone mode, so
 		// nothing runs in the background).
-		if daemonRunning(p) {
+		if wasRunning = daemonRunning(p); wasRunning {
 			stopDaemon(p)
-			if !o.Standalone {
-				fmt.Println("daemon:    restarted with this version")
-			} else {
+			if o.Standalone {
 				fmt.Println("daemon:    background daemon stopped (standalone mode)")
+			} else {
+				fmt.Println("daemon:    restarted with this version")
 			}
 		}
-		if o.Standalone {
+		if o.Standalone || o.NoAutostart {
 			_ = setConfigKey(p, "autostart_daemon", false)
 			if service.Installed(p) {
 				_ = service.Uninstall(p)
-				fmt.Println("service:   login item removed (standalone mode)")
+				fmt.Println("service:   login item removed (" + map[bool]string{true: "standalone mode", false: "auto-start is off"}[o.Standalone] + ")")
 			}
 		} else {
 			_ = setConfigKey(p, "autostart_daemon", nil)
@@ -204,6 +213,11 @@ func doInstall(o installOptions) error {
 	}
 	if o.Standalone {
 		// nothing runs in the background
+	} else if o.NoAutostart {
+		// started by hand only: keep it running if it was
+		if wasRunning && !o.Dry {
+			_ = cmdStart()
+		}
 	} else if o.Service {
 		if o.Dry {
 			plan, err := service.MakePlan(bin, p)
@@ -228,6 +242,12 @@ func doInstall(o installOptions) error {
 		_ = cmdStart()
 	}
 	if o.Dry {
+		return nil
+	}
+	if o.NoAutostart {
+		fmt.Println()
+		fmt.Printf("✅ Continuum is updated to %s. Auto-start is off (`continuum disable`):\n", core.Version)
+		fmt.Println("   it runs only after `continuum start`; `continuum enable` turns auto-start back on.")
 		return nil
 	}
 	if o.Standalone {

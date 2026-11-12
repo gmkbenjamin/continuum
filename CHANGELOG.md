@@ -2,6 +2,21 @@
 
 All notable changes to Continuum. Versions follow [Semantic Versioning](https://semver.org).
 
+## [0.9.0] - 2026-11-13
+
+### Added
+- `continuum disable` turns auto-start off: the login item is removed, hooks no longer
+  start the daemon, and the running daemon stops (`--keep-running` leaves it running).
+  `update` keeps the choice. `continuum enable` turns auto-start back on (and from
+  standalone mode, switches to background mode).
+- The interactive menu has "Start, stop or turn off auto-start", showing whether the
+  daemon runs and whether it starts by itself.
+
+### Changed
+- `continuum status` shows `auto-start` (on at login and when an agent needs it, on
+  when an agent needs it, or off) instead of `at login`, and says when you stopped the
+  daemon.
+
 ## [0.8.0] - 2026-11-13
 
 An independent review of the whole project found the issues fixed below.
@@ -203,6 +218,7 @@ First public release.
   sign-in errors.
 - Help for every command (`-h`), `doctor`, and docs in `docs/`.
 
+[0.9.0]: ../../releases/tag/v0.9.0
 [0.8.0]: ../../releases/tag/v0.8.0
 [0.7.1]: ../../releases/tag/v0.7.1
 [0.7.0]: ../../releases/tag/v0.7.0

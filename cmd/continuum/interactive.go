@@ -78,9 +78,10 @@ func runInteractive(in *bufio.Reader, out io.Writer) error {
 			"4  Scope: which sessions are resumed (now: " + scopeNow + ")",
 			"5  Wait for an agent's own resume (grace)",
 			"6  Watch live in this terminal",
-			"7  Check everything (doctor)",
-			"8  Recent log",
-			"9  Install, update or uninstall",
+			"7  Start, stop or turn off auto-start (now: " + daemonSummary(p) + ")",
+			"8  Check everything (doctor)",
+			"9  Recent log",
+			"10 Install, update or uninstall",
 			"q  Quit",
 		}
 		for _, it := range items {
@@ -102,12 +103,14 @@ func runInteractive(in *bufio.Reader, out io.Writer) error {
 			fmt.Fprintln(out, "\nWatching. Press Ctrl+C to come back to the menu.")
 			t.report(cmdWatch(nil))
 		case "7":
+			t.daemonMenu()
+		case "8":
 			cmdDoctor()
 			t.pause()
-		case "8":
+		case "9":
 			t.report(cmdLogs([]string{"-n", "40"}))
 			t.pause()
-		case "9":
+		case "10":
 			t.lifecycle()
 		case "q", "quit", "exit", "0":
 			return nil
@@ -362,6 +365,61 @@ func (t *tui) grace() {
 	} else if ans != "" && ans != "q" {
 		fmt.Fprintln(t.out, "  Expected an agent and a value, e.g. \"claude off\".")
 		t.pause()
+	}
+}
+
+// daemonSummary: running or not, and whether it starts by itself.
+func daemonSummary(p core.Paths) string {
+	cfg, _ := core.LoadConfig(p.Config)
+	run := "not running"
+	if daemonRunning(p) {
+		run = "running"
+	}
+	if rec, ok := daemon.LoadInstall(p); ok && rec.Standalone {
+		return run + ", standalone"
+	}
+	if cfg.AutostartEnabled() {
+		return run + ", auto-start on"
+	}
+	return run + ", auto-start off"
+}
+
+func (t *tui) daemonMenu() {
+	for {
+		p := core.GetPaths()
+		cfg, _ := core.LoadConfig(p.Config)
+		running := daemonRunning(p)
+		fmt.Fprintf(t.out, "\n  Daemon: %s\n  Auto-start: %s\n\n", map[bool]string{true: "running", false: "not running"}[running], autostartState(p, cfg))
+		if running {
+			fmt.Fprintln(t.out, "  1  Stop it (until you start it again or log in)")
+		} else {
+			fmt.Fprintln(t.out, "  1  Start it")
+		}
+		auto := cfg.AutostartEnabled()
+		if rec, ok := daemon.LoadInstall(p); ok && rec.Standalone {
+			auto = false
+		}
+		if auto {
+			fmt.Fprintln(t.out, "  2  Turn auto-start off (nothing starts it by itself; also stops it)")
+		} else {
+			fmt.Fprintln(t.out, "  2  Turn auto-start on (at login, and whenever an agent needs it)")
+		}
+		switch t.ask("Choose (Enter to go back): ") {
+		case "1":
+			if running {
+				t.report(cmdStop())
+			} else {
+				t.report(cmdStart())
+			}
+		case "2":
+			if auto {
+				t.report(cmdDisable(nil))
+			} else {
+				t.report(cmdEnable(nil))
+			}
+		default:
+			return
+		}
 	}
 }
 

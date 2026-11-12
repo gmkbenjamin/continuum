@@ -66,6 +66,10 @@ type Install struct {
 	// Standalone: no background daemon; Continuum runs only while
 	// `continuum watch` is open.
 	Standalone bool `json:"standalone,omitempty"`
+	// NoAutostart: `continuum disable`. Background mode, but nothing starts
+	// the daemon by itself (no login item, hooks don't start it); you start
+	// it with `continuum start`. `continuum enable` turns this off.
+	NoAutostart bool `json:"no_autostart,omitempty"`
 }
 
 func compatPath(p core.Paths) string  { return filepath.Join(p.Home, "compat.json") }

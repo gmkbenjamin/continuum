@@ -55,6 +55,8 @@ Background daemon:
   logs         Show or follow what the background daemon is doing
   start        Start the background daemon
   stop         Stop the background daemon
+  disable      Turn auto-start off: nothing starts the daemon by itself
+  enable       Turn auto-start back on (at login, and whenever an agent needs it)
   daemon       Run the daemon in the foreground (for debugging)
 
 Getting started:
@@ -764,7 +766,46 @@ Usage:
   continuum stop
 
   It stays stopped (hooks don't start it again) until `continuum start`, or until
-  your next login if the login item is installed.
+  your next login if auto-start is on. To keep it from starting at all, use
+  `continuum disable`.
+
+Options:
+  -h, --help             Show this help.
+```
+
+## disable
+
+```text
+continuum disable - Turn auto-start off: nothing starts the daemon by itself
+
+Usage:
+  continuum disable [options]
+
+  Removes the login item and stops hooks from starting the daemon, and stops it now
+  (unless --keep-running). Hooks still note stalls, so limits that reset meanwhile are
+  caught up the next time Continuum runs: `continuum start` (until you stop it or log
+  out) or `continuum watch`. `update` keeps this choice. Undo with `continuum enable`.
+
+Options:
+  --keep-running         Leave the daemon running now; only stop it from
+                         starting by itself.
+  -h, --help             Show this help.
+
+Examples:
+  continuum disable
+  continuum disable --keep-running
+```
+
+## enable
+
+```text
+continuum enable - Turn auto-start back on (at login, and whenever an agent needs it)
+
+Usage:
+  continuum enable
+
+  Adds the login item back, lets hooks start the daemon, and starts it now. From
+  standalone mode, this switches to background mode.
 
 Options:
   -h, --help             Show this help.

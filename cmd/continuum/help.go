@@ -332,7 +332,18 @@ delivery route. The log rotates to daemon.log.1 at 5 MB.`,
 	{
 		Name: "stop", Group: "Background daemon",
 		Summary: "Stop the background daemon",
-		Detail:  "It stays stopped (hooks don't start it again) until `continuum start`, or until\nyour next login if the login item is installed.",
+		Detail:  "It stays stopped (hooks don't start it again) until `continuum start`, or until\nyour next login if auto-start is on. To keep it from starting at all, use\n`continuum disable`.",
+	},
+	{
+		Name: "disable", Group: "Background daemon", Args: "[options]",
+		Summary: "Turn auto-start off: nothing starts the daemon by itself",
+		Detail:  "Removes the login item and stops hooks from starting the daemon, and stops it now\n(unless --keep-running). Hooks still note stalls, so limits that reset meanwhile are\ncaught up the next time Continuum runs: `continuum start` (until you stop it or log\nout) or `continuum watch`. `update` keeps this choice. Undo with `continuum enable`.",
+		Examples: []string{"continuum disable", "continuum disable --keep-running"},
+	},
+	{
+		Name: "enable", Group: "Background daemon",
+		Summary: "Turn auto-start back on (at login, and whenever an agent needs it)",
+		Detail:  "Adds the login item back, lets hooks start the daemon, and starts it now. From\nstandalone mode, this switches to background mode.",
 	},
 	{
 		Name: "daemon", Group: "Background daemon", Args: "[options]",
@@ -545,7 +556,7 @@ func parseFlags(fs *flag.FlagSet, args []string) error {
 }
 
 // flagCommands lists the commands that parse options; their help shows them.
-var flagCommands = map[string]bool{"status": true, "sessions": true, "diagnose": true, "watch": true, "logs": true, "install": true, "update": true, "uninstall": true, "run": true, "list": true, "detect": true, "rules": true, "daemon": true}
+var flagCommands = map[string]bool{"disable": true, "enable": true, "status": true, "sessions": true, "diagnose": true, "watch": true, "logs": true, "install": true, "update": true, "uninstall": true, "run": true, "list": true, "detect": true, "rules": true, "daemon": true}
 
 // subcommandCommands have subcommands with their own options; their help
 // text documents every option.

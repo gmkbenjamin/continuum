@@ -25,7 +25,7 @@
 | `binaries` | from `PATH` | Agent executables: `{"claude": "/opt/claude"}`. |
 | `claude_home`, `codex_home` | `~/.claude`, `~/.codex` | Where the agents keep their files. Grok Build's is `$GROK_HOME`, else `~/.grok`. |
 | `reset_hints_command` | none | A command printing `{"claude": "<RFC3339>"}`, used when a message gives no reset time. |
-| `autostart_daemon` | `true` | Start the daemon from hooks and `run` if it isn't running. `false` in standalone mode. |
+| `autostart_daemon` | `true` | Start the daemon from hooks and `run` if it isn't running. `false` in standalone mode and after `continuum disable`; `continuum enable` turns it back on. |
 | `log_level` | `info` | `debug` also logs why: every event, check and delivery route, and hooks write to `hooks.log`. Also: `error`, `warn`. `CONTINUUM_DEBUG=1` turns on debug for one run. |
 
 The scope is in `~/.continuum/scope.json` (use `continuum scope` and `choose`). Rules

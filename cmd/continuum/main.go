@@ -86,6 +86,10 @@ func main() {
 		err = cmdStart()
 	case "stop":
 		err = cmdStop()
+	case "disable":
+		err = cmdDisable(args)
+	case "enable":
+		err = cmdEnable(args)
 	case "interactive", "menu", "i":
 		err = cmdInteractive(args)
 	case "status":
@@ -259,7 +263,7 @@ func cmdStop() error {
 	}
 	fmt.Println("continuum daemon stopped; `continuum start` starts it again")
 	if service.Installed(p) {
-		fmt.Println("(it also starts again at your next login; `continuum uninstall` removes that)")
+		fmt.Println("(it also starts again at your next login; `continuum disable` stops that)")
 	}
 	return nil
 }
@@ -476,12 +480,19 @@ func cmdStatus(args []string) error {
 	rec, installed := daemon.LoadInstall(p)
 	switch {
 	case installed && rec.Standalone:
-		fmt.Printf("  mode:     standalone (runs while `continuum watch` is open)\n")
-		fmt.Printf("  running:  %s\n", map[bool]string{true: "yes", false: "no: run `continuum watch` to resume stalled sessions"}[running])
+		fmt.Printf("  mode:       standalone (runs while `continuum watch` is open)\n")
+		fmt.Printf("  running:    %s\n", map[bool]string{true: "yes", false: "no: run `continuum watch` to resume stalled sessions"}[running])
 	default:
-		fmt.Printf("  mode:     background\n")
-		fmt.Printf("  daemon:   %s\n", map[bool]string{true: "running (`continuum logs -f` to follow it)", false: "not running (`continuum start`)"}[running])
-		fmt.Printf("  at login: %s\n", map[bool]string{true: "yes", false: "no"}[service.Installed(p)])
+		daemonState := "not running (`continuum start`)"
+		switch {
+		case running:
+			daemonState = "running (`continuum logs -f` to follow it)"
+		case stoppedByUser(p) && cfg.AutostartEnabled():
+			daemonState = "stopped by you (`continuum start`; it also starts at your next login)"
+		}
+		fmt.Printf("  mode:       background\n")
+		fmt.Printf("  daemon:     %s\n", daemonState)
+		fmt.Printf("  auto-start: %s\n", autostartState(p, cfg))
 	}
 	for _, t := range hooks.Targets(cfg) {
 		ok, detail := hooks.Installed(t)
@@ -489,13 +500,13 @@ func cmdStatus(args []string) error {
 		if !ok {
 			state = "not installed (" + detail + ")"
 		}
-		fmt.Printf("  %-8s  hooks %s\n", t.Harness+":", state)
+		fmt.Printf("  %-11s hooks %s\n", t.Harness+":", state)
 	}
 	if cfg.DryRun {
-		fmt.Println("  dry run:  on (nothing is typed or run)")
+		fmt.Println("  dry run:    on (nothing is typed or run)")
 	}
 	if cfg.Debug() {
-		fmt.Printf("  logging:  debug (%s)\n", tildePath(p.Log))
+		fmt.Printf("  logging:    debug (%s)\n", tildePath(p.Log))
 	}
 	fmt.Println()
 	if len(rows) == 0 {
@@ -726,6 +737,10 @@ func helpFor(name string) {
 			err = cmdRules([]string{"-h"})
 		case "daemon":
 			err = cmdDaemon([]string{"-h"})
+		case "disable":
+			err = cmdDisable([]string{"-h"})
+		case "enable":
+			err = cmdEnable([]string{"-h"})
 		}
 		if errors.Is(err, errHelpShown) {
 			return
