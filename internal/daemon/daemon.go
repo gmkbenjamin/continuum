@@ -65,6 +65,7 @@ type Daemon struct {
 	lastCompat   time.Time
 	lastDesktop  time.Time
 	paneSeen     map[string]string
+	replies      map[string]replySeen
 	lastScan     time.Time
 	lastPaneScan time.Time
 	dirty        bool
@@ -415,6 +416,16 @@ func (d *Daemon) Handle(ev core.Event) {
 			d.history("skipped", j, map[string]any{"reason": j.Result})
 			d.logf("%s: %s", j.Key, j.Result)
 		}
+	case core.KindSessionEnd:
+		// The agent quit: its pane (or wrapper) now holds something else, so
+		// a pending resume must not be typed there. It continues the closed
+		// session through the agent's own command instead, if it has one.
+		if j := d.jobFor(ev); j != nil && j.State == core.StatePending && (j.Location != nil || j.PID > 0) {
+			d.debugf("%s: the session ended; forgetting its pane %s", j.Key, j.Location.String())
+			j.Location, j.PID = nil, 0
+			j.UpdatedAt = d.Now()
+			d.dirty = true
+		}
 	case core.KindNativeGaveUp:
 		if j := d.jobFor(ev); j != nil && j.State == core.StatePending {
 			j.NativeGaveUp = true
@@ -422,9 +433,79 @@ func (d *Daemon) Handle(ev core.Event) {
 			d.reschedule(j)
 			d.dirty = true
 		}
+	case core.KindReply:
+		d.reply(ev, sess)
 	case core.KindUsageLimit, core.KindTransient, core.KindNeverResume:
+		if d.partOfReply(ev, sess) {
+			d.logf("%s · %s: the limit text on screen is part of the agent's reply, not an error; ignoring it", d.name(ev.Harness), ev.Location.String())
+			return
+		}
 		d.limitEvent(ev, sess)
 	}
+}
+
+// A reply that mentions limits, kept for a few minutes per place.
+type replySeen struct {
+	text string
+	at   time.Time
+}
+
+const replyWindow = 3 * time.Minute
+
+func screenSourced(source string) bool { return source == "wrapper" || source == "pane-scan" }
+
+func replyHas(reply, hit string) bool {
+	hit = strings.ToLower(strings.Join(strings.Fields(hit), " "))
+	return hit != "" && strings.Contains(strings.ToLower(strings.Join(strings.Fields(reply), " ")), hit)
+}
+
+// reply records a normal turn end whose reply mentions limits, and drops a
+// resume that was scheduled from that same text on screen.
+func (d *Daemon) reply(ev core.Event, sess *store.Session) {
+	loc := ev.Location
+	if loc == nil && sess != nil {
+		loc = sess.Location
+	}
+	if loc == nil || ev.Message == "" {
+		return
+	}
+	if d.replies == nil {
+		d.replies = map[string]replySeen{}
+	}
+	d.replies[loc.String()] = replySeen{text: ev.Message, at: ev.At}
+	for _, j := range d.Jobs {
+		if j.State != core.StatePending || j.Location == nil || j.Location.String() != loc.String() {
+			continue
+		}
+		if !onlyScreenSources(j.Sources) || j.LimitAt.Sub(ev.At).Abs() > replyWindow || !replyHas(ev.Message, j.Hit) {
+			continue
+		}
+		j.State = core.StateSkipped
+		j.Result = "the limit text on screen was part of the agent's reply, not an error"
+		j.UpdatedAt = d.Now()
+		d.dirty = true
+		d.history("skipped", j, map[string]any{"reason": j.Result})
+		d.logf("%s: %s", j.Key, j.Result)
+	}
+}
+
+func onlyScreenSources(list []string) bool {
+	for _, s := range list {
+		if !screenSourced(s) {
+			return false
+		}
+	}
+	return len(list) > 0
+}
+
+// partOfReply: limit text read off the screen that the agent's own reply,
+// just finished, contains.
+func (d *Daemon) partOfReply(ev core.Event, sess *store.Session) bool {
+	if !screenSourced(ev.Source) || ev.Location == nil || ev.Hit == "" {
+		return false
+	}
+	r, ok := d.replies[ev.Location.String()]
+	return ok && ev.At.Sub(r.at).Abs() <= replyWindow && replyHas(r.text, ev.Hit)
 }
 
 func (d *Daemon) touchSession(ev core.Event) *store.Session {
@@ -501,6 +582,16 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 		d.logf("ignoring %s %s event with no session or location", ev.Harness, ev.Kind)
 		return
 	}
+	if h := d.Rules.Harness(ev.Harness); h.IgnoredEntrypoint(ev.Entrypoint) || sess != nil && h.IgnoredEntrypoint(sess.Entrypoint) {
+		d.debugf("%s: a print-mode or SDK run; not resuming it", key)
+		return
+	}
+	// Where the session runs, as its hooks recorded it: a transcript or
+	// rollout line doesn't say, and without it a wrapper's job could be
+	// matched to another session in the same folder.
+	if ev.Location == nil && sess != nil && sess.Location != nil && !sess.Ended {
+		ev.Location = sess.Location
+	}
 	j := d.Jobs[key]
 	if twin := d.findTwin(ev, key); twin != nil {
 		if ev.SessionID != "" && twin.SessionID == "" {
@@ -549,7 +640,7 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 		Location: ev.Location, PID: ev.PID, Entrypoint: ev.Entrypoint,
 		Kind: ev.Kind, Message: ev.Message, ResetAt: ev.ResetAt, ResetKnown: !ev.ResetAt.IsZero(),
 		LimitAt: ev.At, CreatedAt: now, UpdatedAt: now, Attempts: attempts,
-		State: core.StatePending, Sources: []string{ev.Source},
+		State: core.StatePending, Sources: []string{ev.Source}, Hit: ev.Hit,
 	}
 	if sess != nil {
 		if nj.Location == nil {
@@ -819,8 +910,9 @@ func (d *Daemon) runJob(j *core.Job) {
 			}
 		}
 	}
-	// Refresh what we know about where the session lives.
-	if s := d.Sessions[store.SessionKey(j.Harness, j.SessionID)]; s != nil {
+	// Refresh what we know about where the session lives (not from a session
+	// that has ended: its pane belongs to whatever runs there now).
+	if s := d.Sessions[store.SessionKey(j.Harness, j.SessionID)]; s != nil && !s.Ended {
 		if s.Location != nil && (j.Location == nil || s.LastSeen.After(j.LimitAt)) {
 			j.Location = s.Location
 		}
@@ -862,7 +954,7 @@ func (d *Daemon) runJob(j *core.Job) {
 			}
 		}
 	}
-	if j.Location == nil && j.PID > 0 {
+	if j.Location == nil && j.PID > 0 && d.isAgentPID(j) {
 		// A session started before Continuum's hooks: its process's
 		// environment says which pane (or wrapper) it runs in.
 		if loc := mux.LocateFromEnv(d.Rules, proc.Environ(j.PID)); loc != nil {
@@ -881,7 +973,7 @@ func (d *Daemon) runJob(j *core.Job) {
 	}
 	choice := msgs.Resolve(j, j.Kind == core.KindTransient, d.Config, d.Rules)
 	prompt := choice.Text
-	d.debugf("%s: message from %s: %q", j.Key, choice.Source, prompt)
+	d.debugf("%s: message from %s (%d characters)", j.Key, choice.Source, len(prompt))
 	strategies := d.Config.StrategyOrder()
 	opts := deliver.Options{
 		Rules: d.Rules, Paths: d.Paths, Config: d.Config, Prompt: prompt,
@@ -953,7 +1045,12 @@ func (d *Daemon) findPane(j *core.Job) *core.Location {
 	if _, err := proc.LookPath("tmux"); err != nil {
 		return nil
 	}
-	out, err := mux.Runner(5*time.Second, "", "tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_tty}")
+	argv := []string{"tmux"}
+	if sock := d.Config.ScanTmuxSocket; sock != "" {
+		argv = append(argv, "-S", sock)
+	}
+	argv = append(argv, "list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_tty}")
+	out, err := mux.Runner(5*time.Second, "", argv...)
 	if err != nil {
 		return nil
 	}
@@ -962,7 +1059,7 @@ func (d *Daemon) findPane(j *core.Job) *core.Location {
 		if tty := proc.TTY(j.PID); tty != "" {
 			for _, line := range lines {
 				if f := strings.Split(line, "\t"); len(f) >= 4 && f[3] == tty {
-					return &core.Location{Kind: "tmux", Target: f[0]}
+					return &core.Location{Kind: "tmux", Target: f[0], Socket: d.Config.ScanTmuxSocket}
 				}
 			}
 		}
@@ -980,7 +1077,7 @@ func (d *Daemon) findPane(j *core.Job) *core.Location {
 		}
 		if filepath.Clean(f[2]) == filepath.Clean(j.Cwd) {
 			n++
-			found = &core.Location{Kind: "tmux", Target: f[0]}
+			found = &core.Location{Kind: "tmux", Target: f[0], Socket: d.Config.ScanTmuxSocket}
 		}
 	}
 	if n == 1 {
@@ -998,7 +1095,7 @@ func (d *Daemon) scanPanes() {
 	if _, err := proc.LookPath("tmux"); err != nil {
 		return
 	}
-	panes, err := mux.List(d.Rules, "tmux", "")
+	panes, err := mux.List(d.Rules, "tmux", d.Config.ScanTmuxSocket)
 	if err != nil {
 		return
 	}
@@ -1026,7 +1123,7 @@ func (d *Daemon) scanPanes() {
 			continue
 		}
 		d.paneSeen[p.Location.String()] = screen
-		ev := core.Event{Harness: h.Name, Kind: m.Kind, Message: m.Text, At: d.Now(), Source: "pane-scan", Location: p.Location}
+		ev := core.Event{Harness: h.Name, Kind: m.Kind, Message: m.Text, At: d.Now(), Source: "pane-scan", Location: p.Location, Hit: m.Hit}
 		if h.NeverResume(m.Text) {
 			ev.Kind = core.KindNeverResume
 		}
@@ -1054,6 +1151,21 @@ func (d *Daemon) prune() {
 			d.dirty = true
 		}
 	}
+	// The resume history: keep the current file and one older one.
+	if st, err := os.Stat(d.Paths.History); err == nil && st.Size() > 5<<20 {
+		_ = os.Rename(d.Paths.History, d.Paths.History+".1")
+	}
+	// Folders of wrappers that were killed (kill -9) and couldn't clean up.
+	if entries, err := os.ReadDir(d.Paths.Wrappers); err == nil {
+		for _, e := range entries {
+			dir := filepath.Join(d.Paths.Wrappers, e.Name())
+			info, err := e.Info()
+			if err != nil || !e.IsDir() || time.Since(info.ModTime()) < 10*time.Minute || deliver.WrapperAlive(d.Paths, e.Name()) {
+				continue
+			}
+			_ = os.RemoveAll(dir)
+		}
+	}
 }
 
 func (d *Daemon) notify(j *core.Job, title, body string) {
@@ -1079,40 +1191,59 @@ func (d *Daemon) notify(j *core.Job, title, body string) {
 
 func (d *Daemon) control(cmd string) {
 	f := strings.Fields(cmd)
-	if len(f) == 0 {
-		return
+	if len(f) < 2 {
+		return // a selector is required; an empty one never means "all"
 	}
-	match := func(j *core.Job, sel string) bool {
-		return sel == "all" || j.Key == sel || strings.HasPrefix(j.SessionID, sel) || strings.HasSuffix(j.Key, sel)
-	}
-	sel := "all"
-	if len(f) > 1 {
-		sel = f[1]
-	}
+	action, sel := f[0], f[1]
 	for _, j := range d.Jobs {
-		if j.State != core.StatePending && f[0] != "resume-now" {
+		if !SelectorMatches(j, sel) {
 			continue
 		}
-		if !match(j, sel) {
-			continue
-		}
-		switch f[0] {
+		switch action {
 		case "cancel":
+			if j.State != core.StatePending {
+				continue
+			}
 			j.State = core.StateCancelled
 			j.Result = "cancelled by you"
 			j.UpdatedAt = d.Now()
 			d.history("cancelled", j, nil)
 		case "resume-now":
-			if j.State == core.StateDelivered && sel == "all" {
+			if j.Kind == core.KindNeverResume {
+				d.logf("%s: not resuming: it needs you (billing, credits, spend cap or sign-in)", j.Key)
+				continue
+			}
+			// "all" means every pending resume. A finished one (resumed,
+			// cancelled, skipped, failed) is only resumed when named.
+			if sel == "all" && j.State != core.StatePending {
 				continue
 			}
 			j.State = core.StatePending
 			j.DueAt = d.Now()
 			j.UpdatedAt = d.Now()
 			d.history("resume-now", j, nil)
+		default:
+			continue
 		}
 		d.dirty = true
 	}
+}
+
+// SelectorMatches reports whether a `cancel`/`resume-now` selector names job
+// j: "all", its key (claude:<id>), its session id, or the start of the
+// session id (at least 4 characters).
+func SelectorMatches(j *core.Job, sel string) bool {
+	switch {
+	case sel == "":
+		return false
+	case sel == "all":
+		return true
+	case j.Key == sel || j.SessionID == sel:
+		return true
+	case len(sel) >= 4 && j.SessionID != "" && strings.HasPrefix(j.SessionID, sel):
+		return true
+	}
+	return false
 }
 
 func firstLine(s string) string {
@@ -1179,7 +1310,9 @@ func (d *Daemon) wantAwake() (bool, string) {
 	for _, j := range d.Jobs {
 		switch j.State {
 		case core.StatePending:
-			if j.DueAt.Sub(now) <= horizon {
+			// A session held open in a desktop app waits for the user, who
+			// is at the computer anyway: no reason to keep it awake.
+			if j.DueAt.Sub(now) <= horizon && !j.WaitingOpen {
 				return true, "a resume is due at " + j.DueAt.Local().Format("15:04")
 			}
 		case core.StateDelivered:
@@ -1285,7 +1418,11 @@ func (d *Daemon) paneHarness(p mux.Pane) *rules.Harness {
 	if !d.Rules.IsInterpreter(p.Command) || p.Location.Kind != "tmux" {
 		return nil
 	}
-	tty, err := mux.Runner(5*time.Second, "", "tmux", "display-message", "-p", "-t", p.Location.Target, "#{pane_tty}")
+	argv := []string{"tmux"}
+	if p.Location.Socket != "" {
+		argv = append(argv, "-S", p.Location.Socket)
+	}
+	tty, err := mux.Runner(5*time.Second, "", append(argv, "display-message", "-p", "-t", p.Location.Target, "#{pane_tty}")...)
 	if err != nil {
 		return nil
 	}
@@ -1347,4 +1484,19 @@ func when(t, now time.Time) string {
 		layout = "Mon 15:04"
 	}
 	return t.Local().Format(layout) + " (in " + in + ")"
+}
+
+// name is an agent's display name.
+func (d *Daemon) name(harness string) string {
+	if h := d.Rules.Harness(harness); h != nil && h.DisplayName != "" {
+		return h.DisplayName
+	}
+	return harness
+}
+
+// isAgentPID: the job's recorded process still runs and is the agent (a pid
+// can be reused by another program once the agent exits).
+func (d *Daemon) isAgentPID(j *core.Job) bool {
+	_, name, ok := proc.Info(j.PID)
+	return ok && d.Rules.Harness(j.Harness).IsHarnessProcess(name)
 }

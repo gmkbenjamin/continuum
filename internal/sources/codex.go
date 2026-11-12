@@ -50,6 +50,27 @@ type CodexState struct {
 	Cwd        string       `json:"cwd"`
 	Originator string       `json:"originator"`
 	Limits     *codexLimits `json:"limits,omitempty"`
+	// Headless: a `codex exec` run or a subagent thread. Nobody types into
+	// those, and continuing one would start work the user didn't ask for.
+	Headless bool `json:"headless,omitempty"`
+}
+
+// codexHeadless reports whether a rollout's session_meta is a non-interactive
+// run (codex exec, a subagent thread) rather than a session someone works in.
+func codexHeadless(originator string, source json.RawMessage) bool {
+	if strings.Contains(strings.ToLower(originator), "exec") {
+		return true
+	}
+	var s string
+	if json.Unmarshal(source, &s) == nil {
+		return strings.EqualFold(s, "exec") || strings.EqualFold(s, "mcp")
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(source, &obj) == nil {
+		_, sub := obj["subagent"]
+		return sub
+	}
+	return false
 }
 
 var uuidRe = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
@@ -87,6 +108,7 @@ func codexMeta(path string) CodexState {
 			}
 			st.Cwd = p.Cwd
 			st.Originator = p.Originator
+			st.Headless = codexHeadless(p.Originator, p.Source)
 		}
 		break
 	}
@@ -150,6 +172,10 @@ func ParseCodex(r *rules.Rules, path string, lines []Line, state *CodexState, lo
 				state.Cwd = p.Cwd
 			}
 			state.Originator = p.Originator
+			state.Headless = codexHeadless(p.Originator, p.Source)
+			continue
+		}
+		if state.Headless {
 			continue
 		}
 		if cl.Type == "turn_context" && p.Cwd != "" {

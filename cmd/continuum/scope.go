@@ -30,6 +30,9 @@ type knownSession struct {
 	// From hooks: where the session runs.
 	Location *core.Location
 	Live     bool // the agent reported this session itself, just now
+	// Host: the multiplexer or terminal app the session's process runs in
+	// (Rex, tmux, iTerm2, ...), from its environment.
+	Host string
 }
 
 // knownSessions lists open sessions (from the agents) and recently seen ones
@@ -46,7 +49,7 @@ func knownSessions() []knownSession {
 			continue
 		}
 		bin, _ := deliver.Binary(cfg, h)
-		list, _ := live.Default().List(h, live.Query{Bin: bin, Homes: map[string]string{"claude_home": cfg.ClaudeDir(), "codex_home": cfg.CodexDir()}})
+		list, _ := live.Default().List(h, live.Query{Bin: bin, Homes: cfg.Homes()})
 		for _, s := range list {
 			if s.SessionID == "" || seen[name+s.SessionID] {
 				continue
@@ -92,7 +95,7 @@ func knownSessions() []knownSession {
 		if h := r.Harness(s.Harness); h != nil && time.Since(s.LastSeen) < 12*time.Hour && (h.LiveSessions != nil || len(h.DesktopApps) > 0) {
 			bin, _ := deliver.Binary(cfg, h)
 			st := live.Default().Lookup(h, live.Query{SessionID: s.SessionID, Cwd: s.Cwd, PID: s.PID, Bin: bin, Entrypoint: s.Entrypoint,
-				Homes: map[string]string{"claude_home": cfg.ClaudeDir(), "codex_home": cfg.CodexDir()}})
+				Homes: cfg.Homes()})
 			ks.Open = st.Open
 		}
 		out = append(out, ks)
@@ -100,11 +103,16 @@ func knownSessions() []knownSession {
 	// Sessions started before Continuum's hooks (or without them): their
 	// process's environment still says which pane they run in.
 	for i := range out {
-		if out[i].Location == nil && out[i].PID > 0 && out[i].Open {
-			if loc := mux.LocateFromEnv(r, proc.Environ(out[i].PID)); loc != nil {
+		if out[i].PID <= 0 || !out[i].Open {
+			continue
+		}
+		env := proc.Environ(out[i].PID)
+		if out[i].Location == nil {
+			if loc := mux.LocateFromEnv(r, env); loc != nil {
 				out[i].Location = loc
 			}
 		}
+		out[i].Host = hostFromEnv(r, env)
 	}
 	// Open sessions first, then by recency.
 	for i := 1; i < len(out); i++ {

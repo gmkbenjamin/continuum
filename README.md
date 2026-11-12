@@ -20,17 +20,18 @@ You've hit your session limit · resets 10am
 - **Works however the session is open:** focused, minimised, hidden, in the
   background, over SSH, or with the screen locked.
 - **Any terminal:** Terminal, iTerm2, Ghostty, VS Code, tmux, screen, zellij, and more.
-- **About 25 agents:** Claude Code (CLI and Desktop), Codex (CLI and app), Gemini CLI,
-  Aider, opencode, Cursor CLI, GitHub Copilot CLI, and more.
+- **About 25 agents:** Claude Code (CLI and Desktop), Codex (CLI and app), Grok Build,
+  Gemini CLI, Antigravity CLI, Cursor CLI, Aider, opencode, GitHub Copilot CLI, and more.
 - **All sessions or only the ones you choose.**
-- **Safe:** it never types into a menu or approval prompt, and never retries billing or
-  sign-in errors.
+- **Safe:** it types only into the session's own agent, never into a shell, an editor,
+  another session, a menu or an approval prompt, and never retries billing or sign-in
+  errors.
 - **Local only:** everything runs on your computer and nothing is sent anywhere.
 - **macOS, Linux and Windows.** One small binary.
 
 ## Install
 
-You need [Go](https://go.dev/dl/) 1.23 or later.
+You need [Go](https://go.dev/dl/) 1.26 or later.
 
 ```sh
 git clone https://github.com/gmkbenjamin/continuum.git
@@ -55,7 +56,8 @@ to check that everything works, and open a new terminal tab to start using it.
 
 1. **Notice the stall.** When an agent hits a limit, Continuum learns about it from up
    to three places:
-   - the agent's hook (Claude Code and Codex call `continuum hook` on session events);
+   - the agent's hook (Claude Code, Codex and Grok Build call `continuum hook` on
+     session events);
    - the session files the agent already writes (`~/.claude/projects`,
      `~/.codex/sessions`);
    - the bottom of the agent's screen, for every other agent.
@@ -67,7 +69,8 @@ to check that everything works, and open a new terminal tab to start using it.
    with `continuum grace`.
 3. **Check.** Just before acting, it checks four things:
    - the session hasn't already continued;
-   - the agent is still the program in that window;
+   - the session's own agent process still runs in that pane, in front (not a shell,
+     an editor, or a session started since);
    - no menu or approval prompt is open;
    - the session is in scope.
 
@@ -92,12 +95,14 @@ over the network.
 | Data folder | `~/.continuum/` | Settings (`config.json`, `scope.json`), scheduled resumes, `history.jsonl`, `daemon.log`, and a record of what was installed. |
 | Claude Code hooks | `~/.claude/settings.json`: `SessionStart`, `StopFailure`, `Stop`, `SessionEnd` | Claude Code reports stalls and where each session runs. This also covers Claude Desktop. |
 | Codex hooks | `~/.codex/hooks.json`: `SessionStart`, `Stop` | Codex reports where each session runs. |
+| Grok Build hooks | `~/.grok/hooks/continuum.json`, a file of Continuum's own | Grok Build reports stalls and where each session runs. Grok runs hooks in folders you have trusted. |
 | Shell hook | A marked block in `~/.zshrc`, `~/.bashrc` or fish's `conf.d/continuum.fish` | Runs interactive `claude`, `codex` and other installed agents under the wrapper, so Continuum can type into them. |
 | Login item (background mode only) | macOS: `~/Library/LaunchAgents/dev.continuum.daemon.plist`. Linux: `~/.config/systemd/user/continuum.service`. Windows: scheduled task "Continuum". | Starts the background daemon when you log in. |
 | Backups | `<file>.continuum-backup-<date-time>` next to each file it changes | Your file as it was before Continuum touched it. |
 
-Each hook is one line, `/bin/sh -c '"~/.continuum/bin/continuum" hook claude 2>/dev/null
-|| true'`. Your other settings and hooks are left alone. `continuum uninstall` removes
+Each hook is one line that runs the program by its full path, for example
+`/bin/sh -c '"/Users/you/.continuum/bin/continuum" hook claude 2>/dev/null || true'`.
+Your other settings and hooks are left alone. `continuum uninstall` removes
 all of this, and `--purge` also removes the data folder and the backups.
 
 ## What runs in the background
@@ -113,7 +118,7 @@ hooks only queue events for it. In background mode:
   - checks the hooks are intact, and whether an agent was updated, every 10 minutes.
 
   It types or runs anything only when a resume is due.
-- **Hooks**, run by Claude Code and Codex on session events. Each takes a few
+- **Hooks**, run by Claude Code, Codex and Grok Build on session events. Each takes a few
   milliseconds, drops a small event file in `~/.continuum/spool/`, and starts the
   daemon if it isn't running.
 - **The wrapper**, around each agent started from your shell: two small processes,
@@ -124,7 +129,8 @@ hooks only queue events for it. In background mode:
   on Windows a system flag. It's released as soon as nothing is pending.
 
 To check what it's doing, run `continuum status` and `continuum list`, or follow the
-log with `continuum logs -f`. `continuum stop` stops the daemon until the next login.
+log with `continuum logs -f`. `continuum stop` stops the daemon until you run
+`continuum start` (or until your next login, in background mode).
 
 ## Troubleshooting
 
@@ -138,7 +144,7 @@ continuum diagnose -o report.md    # a report for a bug report, personal details
 For detailed logs from the background daemon, add `"log_level": "debug"` to
 `~/.continuum/config.json`. The daemon then records why it did each thing: every event,
 every check, and every delivery route tried. Hooks also log one line per call to
-`~/.continuum/hooks.log`. Logs rotate at 5 MB.
+`~/.continuum/hooks.log`. `daemon.log` rotates at 5 MB and `hooks.log` at 2 MB.
 
 ## Using it
 
@@ -159,12 +165,16 @@ continuum -h                # every command; `continuum <command> -h` for detail
 doing:
 
 ```
-AGENT        SESSION       FOLDER   STATE                                 WHERE     COVERED
-Claude Code  api-refactor  api      working                               Rex       yes
-Claude Code  docs-04       docs     idle, waiting for your next message   terminal  yes
-Claude Code  shop-7a       shop     usage limit · resumes 10:55 (in 2h)   tmux %3   yes
-Codex        3f9c21aa      web      resumed 08:50 by Continuum            Codex app yes
+AGENT        SESSION       FOLDER  STATE                                WHERE                    COVERED
+Claude Code  api-refactor  api     working                              Rex (via Continuum)      yes
+Claude Code  docs-04       docs    idle, waiting for your next message  iTerm2                   yes
+Claude Code  shop-7a       shop    usage limit · resumes 10:55 (in 2h)  tmux %3                  yes
+Codex        3f9c21aa      web     resumed 08:50 by Continuum           Codex app                yes
+Grok Build   019a4c2e      cli     working                              Ghostty (via Continuum)  yes
 ```
+
+WHERE is the multiplexer or terminal app the session runs in; "via Continuum" means
+it runs through Continuum's wrapper, the most direct way to type into it.
 
 New sessions show up on their own within seconds, and are resumed when their limit
 resets, with nothing to register.
@@ -217,7 +227,8 @@ CONTINUUM_MESSAGE="Only fix the failing test." claude    # set it as you start a
 | Agent | Coverage |
 |---|---|
 | Claude Code (CLI, IDE, Desktop), Codex (CLI, app) | Full: hooks, session files and screen |
-| Gemini CLI, Qwen Code, Aider, opencode, Grok CLI, Cursor CLI, GitHub Copilot CLI, Auggie, Cline, Kimi, OpenHands, Kilo Code, Letta, Plandex, Codebuff, Junie, Kiro | Screen: through the wrapper or a tmux pane |
+| Grok Build | Hooks, its list of open sessions, and screen |
+| Gemini CLI, Antigravity CLI (`agy`), Cursor CLI, Qwen Code, Aider, opencode, GitHub Copilot CLI, Auggie, Cline, Kimi, OpenHands, Kilo Code, Letta, Plandex, Codebuff, Junie, Kiro | Screen: through the wrapper or a tmux pane |
 | Amp, Goose, Factory Droid, Continue, Crush, Mistral Vibe, Pi, Rovo Dev | Screen, with the shell hook opt-in (their command names are shared with other tools) |
 
 See [docs/agents.md](docs/agents.md) for details, and for how to add an agent or correct
@@ -231,15 +242,21 @@ Everything works without configuration. The settings people change most are thes
 continuum grace claude off   # don't wait for Claude's own auto-resume (default: 5 min)
 ```
 
-```jsonc
-// ~/.continuum/config.json
+In `~/.continuum/config.json` (plain JSON, no comments):
+
+```json
 {
-  "resume_prompts": { "claude": "Limit reset. Carry on with the plan." },
-  "notify": true,            // desktop notifications
-  "keep_awake_hours": 8,     // keep the computer awake while a resume is near (0 = off)
-  "dry_run": false           // log what would happen, change nothing
+  "notify": true,
+  "keep_awake_hours": 8,
+  "dry_run": false
 }
 ```
+
+- `notify`: desktop notifications.
+- `keep_awake_hours`: keep the computer awake while a resume is this near (0 = off).
+- `dry_run`: log what would happen, and change nothing.
+
+Resume messages are set with `continuum message` (above).
 
 All settings are in [docs/configuration.md](docs/configuration.md).
 
@@ -251,23 +268,28 @@ continuum uninstall                            # remove everything; keep your se
 continuum uninstall --purge                    # remove everything, including settings and backups
 ```
 
-Both commands show what they'll change and ask first. Uninstalling puts your agents'
-settings files back exactly as they were. If Continuum is deleted without
-uninstalling, its hooks do nothing and cause no errors.
+Both commands show what they'll change and ask first. Uninstalling removes only what
+Continuum added, and a settings file you haven't changed since gets back its exact
+original bytes. `--purge` deletes only Continuum's own files. If Continuum is deleted
+without uninstalling, its hooks do nothing and cause no errors (on macOS and Linux; on
+Windows, uninstall first).
 
 ## Limitations
 
 - **Sleep.** A sleeping computer can't resume anything. Continuum keeps it awake while
   a resume is near, but closing a laptop lid on battery still sleeps it. Overdue
   resumes run when it wakes.
-- **Editor-based agents** (Cursor or Windsurf editors, VS Code Copilot Chat, Cline in
-  VS Code) have no terminal Continuum can type into.
+- **Editor-based agents** (the Cursor, Windsurf and Antigravity editors' own agents, VS
+  Code Copilot Chat, Cline in VS Code) have no terminal Continuum can type into. Their
+  command-line agents work.
+- **Print mode and scripts** (`claude -p`, Agent SDK scripts, `codex exec`) and agents
+  started by another agent are left alone.
 - **Open where Continuum can't type.** If a session is open somewhere Continuum can't
   type into, such as a plain terminal window (no tmux, Rex or the like) started before
   installing, you get a notification instead of a duplicate session.
 - **Untested.** Windows, WezTerm, kitty and Ghostty support are built but not yet
-  tested on real systems. Limit wording for agents other than Claude Code, Codex,
-  opencode and Grok hasn't been seen at a real limit.
+  tested on real systems. For agents other than Claude Code and Codex, the limit wording
+  comes from each agent's documentation and program, not from a real limit.
 
 ## Documentation
 

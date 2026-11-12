@@ -335,10 +335,12 @@ func cmdUninstall(args []string) error {
 	}
 
 	// 2. Agent hooks: every Continuum hook, in every event, any version.
+	restoreFailed := false
 	for _, t := range hooks.Targets(cfg) {
 		changed, err := hooks.Uninstall(t, *dry)
 		switch {
 		case err != nil:
+			restoreFailed = true
 			say(t.Harness, err.Error())
 		case changed:
 			say(t.Harness, would("remove its hooks from ")+tildePath(t.Path))
@@ -346,6 +348,9 @@ func cmdUninstall(args []string) error {
 	}
 	// 3. Shell hook blocks, in every shell's startup file.
 	for _, line := range uninstallShell(*dry) {
+		if strings.Contains(line, "left alone") || strings.Contains(line, ": open ") || strings.Contains(line, "denied") {
+			restoreFailed = true
+		}
 		fmt.Println(line)
 	}
 	// 4. The ~/.local/bin link.
@@ -371,23 +376,24 @@ func cmdUninstall(args []string) error {
 			m, _ := filepath.Glob(rc.Path + ".continuum-backup-*")
 			backups = append(backups, m...)
 		}
-		for _, b := range backups {
-			if !*dry {
-				os.Remove(b)
-			}
-		}
-		if len(backups) > 0 {
-			say("backups", would(fmt.Sprintf("delete %d backup(s) of your settings files", len(backups))))
-		}
-		if err := safeToPurge(p.Home); err != nil {
-			say("data", "not deleted: "+err.Error())
-		} else {
-			if !*dry {
-				if err := os.RemoveAll(p.Home); err != nil {
-					say("data", err.Error())
+		switch {
+		case restoreFailed && len(backups) > 0:
+			// They may be the only copy of a file Continuum couldn't put back.
+			say("backups", fmt.Sprintf("kept %d backup(s) of your settings files, because a file above couldn't be restored", len(backups)))
+		case len(backups) > 0:
+			for _, b := range backups {
+				if !*dry {
+					os.Remove(b)
 				}
 			}
-			say("data", would("delete ")+tildePath(p.Home))
+			say("backups", would(fmt.Sprintf("delete %d backup(s) of your settings files", len(backups))))
+		}
+		if *dry {
+			say("data", would("delete Continuum's files in ")+tildePath(p.Home))
+		} else if err := purgeHome(p.Home); err != nil {
+			say("data", "not all deleted: "+err.Error())
+		} else {
+			say("data", "deleted "+tildePath(p.Home))
 		}
 	}
 	if *dry {
@@ -422,18 +428,48 @@ func safeToPurge(dir string) error {
 	if clean == "/" || clean == filepath.Clean(home) || clean == "." || len(clean) < 4 {
 		return fmt.Errorf("%s is not a Continuum folder", dir)
 	}
-	if _, err := os.Stat(clean); os.IsNotExist(err) {
-		return nil
+	return nil
+}
+
+// ownFiles are the files and folders Continuum keeps in its folder. Purge
+// deletes only these, then the folder itself if nothing else is left in it,
+// so a CONTINUUM_HOME pointed at a folder with other things in it keeps them.
+var ownFiles = []string{
+	"bin", "bin-path", "spool", "wrappers",
+	"config.json", "rules.json", "scope.json", "messages.json", "install.json", "compat.json",
+	"jobs.json", "sessions.json", "offsets.json", "history.jsonl", "history.jsonl.1",
+	"daemon.log", "daemon.log.1", "daemon.stderr.log", "daemon.lock", "daemon.pid",
+	"hooks.log", "hooks.log.1", "stopped",
+}
+
+// purgeHome deletes Continuum's files in dir, then dir if it is empty.
+func purgeHome(dir string) error {
+	if err := safeToPurge(dir); err != nil {
+		return err
 	}
-	if filepath.Base(clean) == ".continuum" {
-		return nil
-	}
-	for _, marker := range []string{"jobs.json", "offsets.json", "install.json", "config.json", "daemon.log", "spool"} {
-		if _, err := os.Stat(filepath.Join(clean, marker)); err == nil {
-			return nil
+	var errs []string
+	for _, name := range ownFiles {
+		if err := os.RemoveAll(filepath.Join(dir, name)); err != nil {
+			errs = append(errs, err.Error())
 		}
 	}
-	return fmt.Errorf("%s doesn't contain Continuum's files", dir)
+	// Temporary files Continuum writes next to its own (.tmp-jobs.json-…).
+	if tmp, _ := filepath.Glob(filepath.Join(dir, ".tmp-*")); len(tmp) > 0 {
+		for _, f := range tmp {
+			_ = os.Remove(f)
+		}
+	}
+	if err := os.Remove(dir); err != nil && !os.IsNotExist(err) {
+		if entries, _ := os.ReadDir(dir); len(entries) > 0 {
+			errs = append(errs, fmt.Sprintf("%s still holds files that aren't Continuum's (%d); left them, and the folder, in place", dir, len(entries)))
+		} else {
+			errs = append(errs, err.Error())
+		}
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 // leftovers lists anything of Continuum's still present after uninstalling.

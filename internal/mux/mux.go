@@ -33,37 +33,53 @@ const cmdTimeout = 8 * time.Second
 // variable names to values (use EnvMap(os.Environ())).
 func LocateFromEnv(r *rules.Rules, env map[string]string) *core.Location {
 	for _, m := range r.MultiplexersByPriority() {
-		if m.EnvTarget == "" {
-			continue
+		if loc := locate(m, env); loc != nil {
+			return loc
 		}
-		target := env[m.EnvTarget]
-		if target == "" {
-			continue
-		}
-		missing := false
-		for _, req := range m.RequireEnv {
-			if env[req] == "" {
-				missing = true
-			}
-		}
-		if missing {
-			continue
-		}
-		socket := ""
-		if m.EnvSocket != "" {
-			socket = env[m.EnvSocket]
-		}
-		if m.SocketTransform == "first_csv_field" {
-			if i := strings.IndexByte(socket, ','); i >= 0 {
-				socket = socket[:i]
-			}
-		}
-		if m.TargetFormat != "" && !strings.Contains(target, "_") {
-			target = fmt.Sprintf(m.TargetFormat, target)
-		}
-		return &core.Location{Kind: m.Name, Target: target, Socket: socket}
 	}
 	return nil
+}
+
+// InPane reports whether a process with environment env runs in the pane
+// loc (its pane variable, e.g. TMUX_PANE or REX_BLOCK, names that pane).
+func InPane(r *rules.Rules, env map[string]string, loc *core.Location) bool {
+	if loc == nil {
+		return false
+	}
+	m, ok := r.Multiplexers[loc.Kind]
+	if !ok {
+		return false
+	}
+	got := locate(m, env)
+	return got != nil && got.Target == loc.Target
+}
+
+func locate(m *rules.Multiplexer, env map[string]string) *core.Location {
+	if m == nil || m.EnvTarget == "" {
+		return nil
+	}
+	target := env[m.EnvTarget]
+	if target == "" {
+		return nil
+	}
+	for _, req := range m.RequireEnv {
+		if env[req] == "" {
+			return nil
+		}
+	}
+	socket := ""
+	if m.EnvSocket != "" {
+		socket = env[m.EnvSocket]
+	}
+	if m.SocketTransform == "first_csv_field" {
+		if i := strings.IndexByte(socket, ','); i >= 0 {
+			socket = socket[:i]
+		}
+	}
+	if m.TargetFormat != "" && !strings.Contains(target, "_") {
+		target = fmt.Sprintf(m.TargetFormat, target)
+	}
+	return &core.Location{Kind: m.Name, Target: target, Socket: socket}
 }
 
 func EnvMap(environ []string) map[string]string {
@@ -172,6 +188,11 @@ func Send(r *rules.Rules, loc *core.Location, text string, enterDelay time.Durat
 	if len(m.SendText) == 0 || len(m.SendEnter) == 0 {
 		return fmt.Errorf("%s: sending is not defined", m.Name)
 	}
+	if strings.HasPrefix(text, "-") {
+		// Some multiplexers' send commands would read a leading "-" as an
+		// option of their own; a space in front is harmless to the agent.
+		text = " " + text
+	}
 	v := vars(loc, text)
 	stdin, _ := fill(m.SendTextStdin, v)
 	if _, err := Runner(cmdTimeout, stdin, Expand(m.SendText, v)...); err != nil {
@@ -197,14 +218,14 @@ func Capture(r *rules.Rules, loc *core.Location) (string, error) {
 	v := vars(loc, "")
 	var tmp string
 	if m.CaptureFrom == "tmpfile" {
-		f, err := os.CreateTemp("", "continuum-capture-*.txt")
+		// A private folder (only this user can enter it), so the pane's text
+		// is never readable by others, even for a moment.
+		dir, err := os.MkdirTemp("", "continuum-capture-")
 		if err != nil {
 			return "", err
 		}
-		tmp = f.Name()
-		f.Close()
-		os.Remove(tmp)
-		defer os.Remove(tmp)
+		defer os.RemoveAll(dir)
+		tmp = filepath.Join(dir, "screen.txt")
 		v["tmpfile"] = tmp
 	}
 	out, err := Runner(cmdTimeout, "", Expand(m.Capture, v)...)

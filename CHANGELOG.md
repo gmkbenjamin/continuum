@@ -2,6 +2,74 @@
 
 All notable changes to Continuum. Versions follow [Semantic Versioning](https://semver.org).
 
+## [0.8.0] - 2026-11-13
+
+An independent review of the whole project found the issues fixed below.
+
+### Added
+- **Grok Build**: Continuum adds its own hook file (`~/.grok/hooks/continuum.json`),
+  reads Grok's list of open sessions, knows Grok's limit and error messages, and
+  continues a closed Grok session with `grok --resume`.
+- **Antigravity CLI** (`agy`): recognised, wrapped by the shell hook, and its quota
+  and capacity messages understood.
+- **Cursor CLI**: more of its limit wording, and its billing messages are never retried.
+- `continuum status` shows where each session really runs: `Rex (via Continuum)`,
+  `iTerm2`, `Ghostty`, … instead of "terminal". Agents with no session list of their own
+  (Antigravity, Cursor, Gemini, …) are listed while they run in Continuum's wrapper.
+- `scan_tmux_socket` setting: which tmux server the pane scanner watches.
+
+### Fixed
+- **Typing into the wrong place.** Before typing into a pane, Continuum now finds the
+  agent's own process in it (from the pane id every process there inherits) and checks
+  that it's the session's process, in the foreground, and not suspended. If the agent
+  quit and a shell, an editor or a new session has the pane, nothing is typed. A
+  session's pane is forgotten when the session ends.
+- A turn that ended normally with a reply that only *mentioned* a limit or an API error
+  could be taken for a stall, and "continue" typed into the session later.
+- Grok Build runs Claude Code's hooks, so Grok sessions were recorded as Claude Code
+  sessions. Cursor, which can do the same, is recognised too.
+- Print-mode and SDK runs (`claude -p`, Agent SDK scripts, `codex exec`, Codex subagent
+  threads) and agents started by another agent's tool inherited their parent's pane.
+  They're now left alone.
+- `resume-now all` also resumed finished jobs: billing stops, cancelled resumes, and
+  sessions that had continued by themselves. `all` now means pending resumes only, a
+  billing or sign-in stop is never resumed, and a selector must name one session (an
+  empty one, or a prefix shorter than 4 characters, matches nothing).
+- `continuum stop` didn't hold: the next hook started the daemon again. It now stays
+  stopped until `continuum start` or the next login. In standalone mode, `resume-now`
+  and `cancel` no longer start a background daemon.
+- Running `/usage` or another local command after a limit made Continuum think the
+  session had continued, so it was never resumed.
+- A weekday reset ("resets Mon 6pm") seen later the same day resolved to the past.
+- Two Codex sessions in the same folder could be matched to each other's wrapper.
+- The wrapper's menu check could miss a menu that later redraws pushed off the bottom
+  of the screen. It now also checks everything shown since you last typed.
+- Install, update and uninstall replaced a symlinked `settings.json` or `.zshrc`
+  (dotfiles managers) with a regular file. They now write through the link, and keep
+  the file's permissions.
+- Uninstall gives a shell startup file back byte for byte, even without a final
+  newline, and leaves alone a file whose Continuum block is damaged instead of deleting
+  lines past it.
+- `--purge` deletes only Continuum's own files, and keeps your settings backups if any
+  file couldn't be restored.
+- Choosing or excluding a folder through a symlink (or `/tmp` on macOS) never matched.
+- On Windows: a session Claude Desktop or the Codex app may hold could be copied, and
+  `update` failed while the daemon ran.
+- Windows notifications could break on a curly quote in the message.
+- Smaller fixes: messages from `config.json` or a hand-edited `messages.json` are typed
+  as one line too; a message starting with `-` isn't read as an option; Ctrl+C works
+  in the interactive menu after "Watch live"; a session waiting on a desktop app no
+  longer keeps the computer awake; `diagnose` reports leave custom messages out even at
+  debug level; `status` no longer reports another Continuum folder's login item; the
+  systemd unit survives paths with spaces or `%`; screen captures stay private; the
+  history and leftover wrapper folders no longer grow without bound; a settings backup
+  isn't saved again when nothing changed.
+
+### Changed
+- Tests no longer run the real `claude` and `codex`. The integration tests use stand-in
+  agent programs and their own tmux server, and include the case of an agent that quit.
+- `docs/cli.md` no longer ends with three empty sections.
+
 ## [0.7.1] - 2026-11-12
 
 ### Fixed
@@ -66,7 +134,7 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ### Changed
 - Log messages are easier to read, for example
-  "Claude Code · api · 9a010a4e · usage limit · resumes 10:55 (in 2h)".
+  "Claude Code · api · 5e551011 · usage limit · resumes 10:55 (in 2h)".
 - `status` and `doctor` show the mode, and whether debug logging is on.
 
 ## [0.4.0] - 2026-11-12
@@ -135,6 +203,7 @@ First public release.
   sign-in errors.
 - Help for every command (`-h`), `doctor`, and docs in `docs/`.
 
+[0.8.0]: ../../releases/tag/v0.8.0
 [0.7.1]: ../../releases/tag/v0.7.1
 [0.7.0]: ../../releases/tag/v0.7.0
 [0.6.0]: ../../releases/tag/v0.6.0

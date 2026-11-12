@@ -103,7 +103,7 @@ func TestCodexRollout(t *testing.T) {
 	dir := t.TempDir()
 	day := filepath.Join(dir, "2026", "11", "04")
 	os.MkdirAll(day, 0o700)
-	name := "rollout-2026-11-04T20-25-51-01a1a5e1-093f-7213-9184-4ca49bda5024.jsonl"
+	name := "rollout-2026-11-04T20-25-51-0c0de000-0000-7000-8000-000000000024.jsonl"
 	path := copyFixture(t, day, name)
 	tl := NewTailer()
 	got := tl.Scan(dir, time.Time{}, 5)
@@ -113,7 +113,7 @@ func TestCodexRollout(t *testing.T) {
 		t.Fatalf("want 1 event, got %+v", evs)
 	}
 	ev := evs[0]
-	if ev.Kind != core.KindUsageLimit || ev.SessionID != "01a1a5e1-093f-7213-9184-4ca49bda5024" || ev.Cwd != "/work/api" || ev.Entrypoint != "codex-tui" {
+	if ev.Kind != core.KindUsageLimit || ev.SessionID != "0c0de000-0000-7000-8000-000000000024" || ev.Cwd != "/work/api" || ev.Entrypoint != "codex-tui" {
 		t.Fatalf("bad event %+v", ev)
 	}
 	// The exhausted window's exact reset wins over the minute-precision text.
@@ -127,12 +127,12 @@ func TestCodexRollout(t *testing.T) {
 
 func TestCodexWithoutStructuredLimits(t *testing.T) {
 	r := loadRules(t)
-	path := filepath.Join(t.TempDir(), "rollout-x-01a1a5e1-093f-7213-9184-4ca49bda5099.jsonl")
+	path := filepath.Join(t.TempDir(), "rollout-x-0c0de000-0000-7000-8000-000000000099.jsonl")
 	line := `{"timestamp":"2026-11-04T09:25:51.350Z","type":"event_msg","payload":{"type":"task_complete","error":{"message":"You've hit your usage limit. Try again at 5:53 PM.","codex_error_info":"usage_limit_exceeded"}}}` + "\n"
 	os.WriteFile(path, []byte(line), 0o600)
 	lines := ReadFrom(path, 0)
 	evs := ParseCodex(r, path, lines, &CodexState{}, syd(t))
-	if len(evs) != 1 || evs[0].SessionID != "01a1a5e1-093f-7213-9184-4ca49bda5099" {
+	if len(evs) != 1 || evs[0].SessionID != "0c0de000-0000-7000-8000-000000000099" {
 		t.Fatalf("got %+v", evs)
 	}
 	// 09:25Z = 20:25 Sydney, so 5:53 PM is the next day.

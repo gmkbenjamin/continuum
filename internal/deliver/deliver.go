@@ -168,7 +168,10 @@ func viaMultiplexer(o Options, h *rules.Harness, job *core.Job) (Result, error) 
 	if _, ok := o.Rules.Multiplexers[loc.Kind]; !ok {
 		return Result{}, fmt.Errorf("unknown multiplexer %s", loc.Kind)
 	}
-	if err := VerifyPane(o.Rules, h, loc); err != nil {
+	if o.Live != nil && o.Live.Checked && !o.Live.Open && o.Live.Authoritative {
+		return Result{}, fmt.Errorf("the session is closed (the agent says so); its old pane %s may now hold something else", loc.String())
+	}
+	if err := VerifyPane(o.Rules, h, job, loc); err != nil {
 		return Result{}, err
 	}
 	if o.DryRun {
@@ -181,10 +184,31 @@ func viaMultiplexer(o Options, h *rules.Harness, job *core.Job) (Result, error) 
 	return Result{Via: loc.Kind, Detail: "typed into " + loc.String()}, nil
 }
 
-// VerifyPane makes sure the pane still shows the agent, waiting for input,
-// before anything is typed: a prompt must never land in a plain shell, and
-// Enter must never land in a menu or approval prompt.
-func VerifyPane(r *rules.Rules, h *rules.Harness, loc *core.Location) error {
+// Procs is how delivery inspects processes. Tests replace it.
+var Procs = struct {
+	List      func() ([]proc.Process, error)
+	Environ   func(pid int) map[string]string
+	Supported func() bool
+	Alive     func(pid int) bool
+	Info      func(pid int) (ppid int, name string, ok bool)
+	State     func(pid int) string
+	StartTime func(pid int) (time.Time, bool)
+}{proc.List, proc.Environ, proc.EnvironSupported, proc.Alive, proc.Info, proc.State, proc.StartTime}
+
+type paneVerdict int
+
+const (
+	paneUnknown paneVerdict = iota // processes can't be checked here: fall back to the screen
+	paneOwned                      // the session's own agent process runs there
+	paneOther                      // an agent runs there, but it is a different session
+	paneEmpty                      // no agent runs there any more
+)
+
+// VerifyPane makes sure the pane still runs this session's agent, in the
+// foreground and waiting for input, before anything is typed: a prompt must
+// never land in a shell, an editor or a different session, and Enter must
+// never land in a menu or approval prompt.
+func VerifyPane(r *rules.Rules, h *rules.Harness, job *core.Job, loc *core.Location) error {
 	text, err := mux.Capture(r, loc)
 	if err != nil {
 		return fmt.Errorf("pane %s is unavailable: %w", loc.String(), err)
@@ -192,15 +216,125 @@ func VerifyPane(r *rules.Rules, h *rules.Harness, loc *core.Location) error {
 	if dialog := r.BlockingDialog(text); dialog != "" {
 		return fmt.Errorf("pane %s has a menu or prompt open (%q); not typing into it", loc.String(), dialog)
 	}
-	if name, ok := mux.ProcessName(r, loc); ok && h.IsHarnessProcess(name) {
+	pid, verdict := paneAgent(r, h, job, loc)
+	switch verdict {
+	case paneOwned:
+		st := Procs.State(pid)
+		if st != "" && strings.ContainsAny(st[:1], "TtZ") {
+			return fmt.Errorf("pane %s: %s is suspended (Ctrl+Z) or stopped; not typing into what is in front of it", loc.String(), h.DisplayName)
+		}
+		if st != "" && !strings.Contains(st, "+") {
+			return fmt.Errorf("pane %s: %s is not in the foreground of its terminal (another program is); not typing into it", loc.String(), h.DisplayName)
+		}
+		if job != nil && job.PID <= 0 {
+			job.PID = pid
+		}
 		return nil
+	case paneOther:
+		return fmt.Errorf("pane %s now runs a different %s session; not typing this session's message into it", loc.String(), h.DisplayName)
+	case paneEmpty:
+		return fmt.Errorf("pane %s no longer runs %s", loc.String(), h.DisplayName)
 	}
-	// Agents may run under node/bun or a wrapper script: check the screen.
-	tail := strings.Join(rules.TailLines(text, 60), "\n")
-	if h.HasUIMarker(tail) || h.Classify(tail, 60) != nil {
+	// Processes can't be matched to panes here (Windows, or the process list
+	// failed): rely on the pane's foreground program and the screen.
+	if name, ok := mux.ProcessName(r, loc); ok && name != "" {
+		if h.IsHarnessProcess(name) {
+			return nil
+		}
+		if !r.IsInterpreter(name) {
+			return fmt.Errorf("pane %s runs %s, not %s", loc.String(), name, h.DisplayName)
+		}
+	}
+	if h.HasStrongUIMarker(strings.Join(rules.TailLines(text, 15), "\n")) {
 		return nil
 	}
 	return fmt.Errorf("pane %s no longer shows %s", loc.String(), h.DisplayName)
+}
+
+// paneAgent finds the agent process running in pane loc, from the pane
+// variable every process in it inherits (TMUX_PANE, REX_BLOCK, ...).
+func paneAgent(r *rules.Rules, h *rules.Harness, job *core.Job, loc *core.Location) (int, paneVerdict) {
+	m, ok := r.Multiplexers[loc.Kind]
+	if !ok || m.EnvTarget == "" || !Procs.Supported() {
+		return 0, paneUnknown
+	}
+	list, err := Procs.List()
+	if err != nil || len(list) == 0 {
+		return 0, paneUnknown
+	}
+	lines := make(map[int]string, len(list))
+	for _, p := range list {
+		lines[p.PID] = p.Line
+	}
+	byLine := func(pid int) bool {
+		line := lines[pid]
+		f := strings.Fields(line)
+		return len(f) > 0 && h.IsHarnessProcess(f[0]) || line != "" && h.MatchesCommandLine(line)
+	}
+	isAgent := func(pid int) bool { // the line, else the process name (one ps call)
+		if byLine(pid) {
+			return true
+		}
+		_, name, ok := Procs.Info(pid)
+		return ok && h.IsHarnessProcess(name)
+	}
+	inPane := func(pid int) bool { return mux.InPane(r, Procs.Environ(pid), loc) }
+	recorded := 0
+	if job != nil {
+		recorded = job.PID
+	}
+	if recorded > 0 && Procs.Alive(recorded) && isAgent(recorded) && inPane(recorded) {
+		return recorded, paneOwned
+	}
+	found := map[int]bool{}
+	var order []int
+	unreadable := 0
+	for _, p := range list {
+		if p.PID == os.Getpid() || len(p.Args) == 0 || !byLine(p.PID) {
+			continue
+		}
+		env := Procs.Environ(p.PID)
+		if len(env) == 0 {
+			// macOS hides the environment of its own programs (/bin/bash,
+			// /usr/bin/python3): this one can't be placed in a pane.
+			unreadable++
+			continue
+		}
+		if mux.InPane(r, env, loc) {
+			found[p.PID] = true
+			order = append(order, p.PID)
+		}
+	}
+	// The agent itself, not its helper processes (which share its pane).
+	var top []int
+	for _, pid := range order {
+		if ppid, _, ok := Procs.Info(pid); !ok || !found[ppid] {
+			top = append(top, pid)
+		}
+	}
+	if len(top) == 0 {
+		if unreadable > 0 {
+			return 0, paneUnknown // it may be one of those: check the screen
+		}
+		return 0, paneEmpty
+	}
+	if recorded > 0 {
+		// The session's own process has gone; whatever runs there now is a
+		// session the user started since.
+		return top[0], paneOther
+	}
+	// No process recorded: it can only be this session if it was already
+	// running when the session stalled.
+	for _, pid := range top {
+		if job == nil || job.LimitAt.IsZero() {
+			return pid, paneOwned
+		}
+		if t, ok := Procs.StartTime(pid); ok && t.After(job.LimitAt.Add(time.Minute)) {
+			continue
+		}
+		return pid, paneOwned
+	}
+	return top[0], paneOther
 }
 
 // capability cache: binary path+mtime -> help text.

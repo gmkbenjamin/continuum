@@ -78,12 +78,12 @@ Description=Continuum - keeps AI coding agents working through usage limits
 ExecStart=%s daemon
 Restart=on-failure
 RestartSec=10
-Environment=PATH=%s
-Environment=CONTINUUM_HOME=%s
+Environment=%s
+Environment=%s
 
 [Install]
 WantedBy=default.target
-`, systemdQuote(bin), proc.AugmentedPATH(), p.Home)
+`, systemdQuote(bin), systemdEnv("PATH", proc.AugmentedPATH()), systemdEnv("CONTINUUM_HOME", p.Home))
 		return Plan{File: file, Content: content, Commands: [][]string{
 			{"systemctl", "--user", "daemon-reload"},
 			{"systemctl", "--user", "enable", unitName},
@@ -101,6 +101,7 @@ WantedBy=default.target
 }
 
 func systemdQuote(s string) string {
+	s = strings.ReplaceAll(s, "%", "%%") // systemd expands %-specifiers
 	if strings.ContainsAny(s, " \t\"'\\") {
 		return `"` + strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), `"`, `\"`) + `"`
 	}
@@ -161,9 +162,18 @@ func Installed(p core.Paths) bool {
 		return false
 	}
 	if plan.File != "" {
-		_, err := os.Stat(plan.File)
-		return err == nil
+		// The login item of this Continuum (the same CONTINUUM_HOME), not
+		// one another Continuum folder installed.
+		data, err := os.ReadFile(plan.File)
+		return err == nil && strings.Contains(string(data), p.Home)
 	}
 	_, err = proc.Run(10*time.Second, "", "schtasks", "/Query", "/TN", taskName)
 	return err == nil
+}
+
+// systemdEnv quotes one Environment= assignment: the whole of it in double
+// quotes, with %, \ and " escaped, so paths with spaces or % survive.
+func systemdEnv(name, value string) string {
+	v := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "%", "%%").Replace(name + "=" + value)
+	return `"` + v + `"`
 }

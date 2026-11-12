@@ -140,8 +140,8 @@ session (plus those active in the last 12 hours) with:
            API error · retrying, resumed 10:55 by Continuum, needs you
            (billing, sign-in), not resuming (excluded or not chosen),
            closed
-  WHERE    where it runs: tmux, Rex, a terminal via Continuum, Claude
-           Desktop, background, ...
+  WHERE    where it runs: tmux, Rex, iTerm2, Claude Desktop, background...
+           "(via Continuum)": through Continuum's wrapper
   COVERED  whether Continuum will resume it (see ` + "`continuum scope`" + `)
 
 New sessions appear by themselves within seconds of starting; nothing needs
@@ -177,14 +177,14 @@ and those finished in the last 24 hours. States:
 	{
 		Name: "cancel", Group: "Sessions and resumes", Args: "ID|all",
 		Summary:  "Cancel scheduled resumes",
-		ArgsHelp: [][2]string{{"ID", "a resume from `continuum list` (or a session id prefix)"}, {"all", "every pending resume"}},
+		ArgsHelp: [][2]string{{"ID", "a resume from `continuum list`, a session id, or its first 4+ characters (it must name one session)"}, {"all", "every pending resume"}},
 		Examples: []string{"continuum cancel claude:4f2c1d9e", "continuum cancel all"},
 	},
 	{
 		Name: "resume-now", Aliases: []string{"now"}, Group: "Sessions and resumes", Args: "ID|all",
 		Summary:  "Resume now instead of waiting for the reset",
-		Detail:   "Useful when you bought extra usage or the limit was lifted early. The usual\nsafety checks (still stalled, no menu open, never a copy) still apply.",
-		ArgsHelp: [][2]string{{"ID", "a resume from `continuum list` (or a session id prefix)"}, {"all", "every pending resume"}},
+		Detail:   "Useful when you bought extra usage or the limit was lifted early. The usual\nsafety checks (still stalled, no menu open, never a copy) still apply. Naming a\nsession also retries one that finished (resumed, skipped, cancelled, failed);\n`all` covers pending resumes only. A billing or sign-in stop is never resumed.",
+		ArgsHelp: [][2]string{{"ID", "a resume from `continuum list`, a session id, or its first 4+ characters (it must name one session)"}, {"all", "every pending resume"}},
 	},
 	{
 		Name: "scope", Group: "All or chosen sessions", Args: "[all|chosen]",
@@ -332,7 +332,7 @@ delivery route. The log rotates to daemon.log.1 at 5 MB.`,
 	{
 		Name: "stop", Group: "Background daemon",
 		Summary: "Stop the background daemon",
-		Detail:  "If the login item is installed, the daemon starts again at the next login.",
+		Detail:  "It stays stopped (hooks don't start it again) until `continuum start`, or until\nyour next login if the login item is installed.",
 	},
 	{
 		Name: "daemon", Group: "Background daemon", Args: "[options]",

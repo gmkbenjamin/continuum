@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/continuum-dev/continuum/internal/core"
@@ -198,6 +199,36 @@ func replaceBlock(content, block string) string {
 	return content + block
 }
 
+// blockIntact: every Continuum start marker has its end marker after it.
+func blockIntact(content string) bool {
+	rest := content
+	for {
+		i := strings.Index(rest, blockStart)
+		j := strings.Index(rest, blockEnd)
+		switch {
+		case i < 0 && j < 0:
+			return true
+		case i < 0 || j < 0 || j < i:
+			return false
+		}
+		rest = rest[j+len(blockEnd):]
+	}
+}
+
+// matchingRCBackup returns the newest backup of path that equals content
+// apart from trailing newlines, or nil.
+func matchingRCBackup(path, content string) []byte {
+	list, _ := filepath.Glob(path + ".continuum-backup-*")
+	sort.Sort(sort.Reverse(sort.StringSlice(list)))
+	want := strings.TrimRight(content, "\n")
+	for _, b := range list {
+		if data, err := os.ReadFile(b); err == nil && strings.TrimRight(string(data), "\n") == want {
+			return data
+		}
+	}
+	return nil
+}
+
 // installShell adds or refreshes the shell hook. It returns a line per file.
 func installShell(bin string, dry bool) []string {
 	var out []string
@@ -207,6 +238,10 @@ func installShell(bin string, dry bool) []string {
 			continue
 		}
 		old, _ := os.ReadFile(rc.Path)
+		if !blockIntact(string(old)) {
+			out = append(out, fmt.Sprintf("%-9s %s has a damaged Continuum block (a %q line without its %q line, or the reverse); left alone. Remove those lines and run install again", "shell:", tildePath(rc.Path), blockStart, blockEnd))
+			continue
+		}
 		next := replaceBlock(string(old), snip)
 		if next == string(old) {
 			out = append(out, fmt.Sprintf("%-9s already set up in %s", "shell:", tildePath(rc.Path)))
@@ -264,7 +299,16 @@ func uninstallShell(dry bool) []string {
 		if err != nil || !bytes.Contains(old, []byte(blockStart)) {
 			continue
 		}
+		if !blockIntact(string(old)) {
+			out = append(out, fmt.Sprintf("%-9s %s has a damaged Continuum block (a %q line without its %q line, or the reverse); left alone. Remove those lines by hand", "shell:", tildePath(rc.Path), blockStart, blockEnd))
+			continue
+		}
 		next := replaceBlock(string(old), "")
+		// If nothing else changed since install, give back the exact bytes
+		// (install may have added a final newline).
+		if b := matchingRCBackup(rc.Path, next); b != nil {
+			next = string(b)
+		}
 		if dry {
 			out = append(out, fmt.Sprintf("%-9s would remove the hook from %s", "shell:", rc.Path))
 			continue

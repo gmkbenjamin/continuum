@@ -143,7 +143,7 @@ func cmdDiagnose(args []string) error {
 			w("  - resume commands: %s", strings.Join(routes, ", "))
 			if ls := h.LiveSessions; ls != nil {
 				if len(ls.Command) > 0 || ls.RegistryDir != "" {
-					list, ok := live.Default().List(h, live.Query{Bin: bin, Homes: map[string]string{"claude_home": cfg.ClaudeDir(), "codex_home": cfg.CodexDir()}})
+					list, ok := live.Default().List(h, live.Query{Bin: bin, Homes: cfg.Homes()})
 					w("  - open sessions: %d (from its session list, readable: %v)", len(list), ok)
 				} else if ls.ScanProcesses {
 					w("  - open sessions: found by process scan")

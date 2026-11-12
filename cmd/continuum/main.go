@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -209,6 +210,7 @@ func cmdStart() error {
 	if err := p.Ensure(); err != nil {
 		return err
 	}
+	_ = os.Remove(stoppedPath(p))
 	if daemonRunning(p) {
 		fmt.Println("continuum daemon is already running")
 		return nil
@@ -229,9 +231,14 @@ func cmdStart() error {
 
 func cmdStop() error {
 	p := core.GetPaths()
+	if err := p.Ensure(); err == nil {
+		// Keep hooks from starting it again until `continuum start` or the
+		// next login.
+		_ = os.WriteFile(stoppedPath(p), []byte(time.Now().Format(time.RFC3339)+"\n"), 0o600)
+	}
 	data, err := os.ReadFile(p.PID)
 	if err != nil || !daemonRunning(p) {
-		fmt.Println("continuum daemon is not running")
+		fmt.Println("continuum daemon is not running (it won't be started again until `continuum start`)")
 		return nil
 	}
 	pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
@@ -250,9 +257,9 @@ func cmdStop() error {
 	for i := 0; i < 50 && daemonRunning(p); i++ {
 		time.Sleep(100 * time.Millisecond)
 	}
-	fmt.Println("continuum daemon stopped")
+	fmt.Println("continuum daemon stopped; `continuum start` starts it again")
 	if service.Installed(p) {
-		fmt.Println("(it starts again at login; `continuum uninstall` removes that)")
+		fmt.Println("(it also starts again at your next login; `continuum uninstall` removes that)")
 	}
 	return nil
 }
@@ -384,25 +391,46 @@ func cmdList(args []string) error {
 }
 
 func cmdControl(action string, args []string) error {
-	if len(args) != 1 {
+	if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
 		return fmt.Errorf("usage: continuum %s ID|all", action)
 	}
 	sel := args[0]
 	if i := strings.IndexByte(sel, ':'); i >= 0 && !strings.Contains(sel, "@") {
 		sel = sel[i+1:] // accept the harness:id form shown by list
 	}
+	if sel == "" {
+		return fmt.Errorf("usage: continuum %s ID|all", action)
+	}
 	p := core.GetPaths()
 	if err := p.Ensure(); err != nil {
 		return err
+	}
+	if sel != "all" {
+		jobs, _ := store.LoadJobs(p.Jobs)
+		var keys []string
+		sessions := map[string]bool{}
+		for _, j := range jobs {
+			if daemon.SelectorMatches(j, sel) && !sessions[j.Harness+j.SessionID] {
+				sessions[j.Harness+j.SessionID] = true
+				keys = append(keys, shortKey(j))
+			}
+		}
+		if len(keys) > 1 {
+			sort.Strings(keys)
+			return fmt.Errorf("%q matches more than one session (%s); give more of the id", args[0], strings.Join(keys, ", "))
+		}
+		if len(keys) == 0 {
+			fmt.Printf("note: no resume matches %q yet (see `continuum list`)\n", args[0])
+		}
 	}
 	if daemonRunning(p) {
 		if err := core.SpoolEvent(p, core.Event{Kind: "control", Message: action + " " + sel, Source: "cli"}); err != nil {
 			return err
 		}
-		fmt.Printf("asked the daemon to %s %s\n", action, args[0])
+		fmt.Printf("asked Continuum to %s %s\n", action, args[0])
 		return nil
 	}
-	// No daemon: apply directly and start one so resume-now happens.
+	// Nothing running: apply the change to the saved state directly.
 	d, err := daemon.New(p)
 	if err != nil {
 		return err
@@ -413,6 +441,14 @@ func cmdControl(action string, args []string) error {
 	}
 	fmt.Printf("%s %s: done\n", action, args[0])
 	if action == "resume-now" {
+		if rec, inst := daemon.LoadInstall(p); inst && rec.Standalone {
+			fmt.Println("Continuum runs standalone: it resumes as soon as `continuum watch` is running.")
+			return nil
+		}
+		if stoppedByUser(p) {
+			fmt.Println("Continuum is stopped: it resumes once you run `continuum start` (or `continuum watch`).")
+			return nil
+		}
 		return cmdStart()
 	}
 	return nil
@@ -516,6 +552,17 @@ func copySelf(dst string) error {
 	}
 	if err := out.Close(); err != nil {
 		return err
+	}
+	if runtime.GOOS == "windows" {
+		// Windows can't replace a program that is running (the daemon), but
+		// it can rename it: move it aside first.
+		old := dst + ".old"
+		_ = os.Remove(old)
+		if _, err := os.Stat(dst); err == nil {
+			if err := os.Rename(dst, old); err != nil {
+				return err
+			}
+		}
 	}
 	return os.Rename(tmp, dst)
 }
@@ -702,6 +749,8 @@ func printAgentTable(r *rules.Rules) {
 			by = append(by, "hooks", "transcripts", "session list")
 		case "codex":
 			by = append(by, "hooks", "rollout files", "process scan")
+		case "grok":
+			by = append(by, "hooks", "session list")
 		}
 		if len(h.ProcessNames) > 0 || len(h.ProcessArgPatterns) > 0 {
 			by = append(by, "screen (wrapper, tmux)")

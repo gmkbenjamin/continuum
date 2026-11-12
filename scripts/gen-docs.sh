@@ -7,7 +7,7 @@ BIN=$(mktemp -d)/continuum
 (cd "$ROOT" && go build -o "$BIN" ./cmd/continuum)
 export CONTINUUM_HOME=$(mktemp -d)
 
-cmds=$("$BIN" -h | awk '/^Usage:/ {g=0; next} /^[A-Z][a-z].*:$/ {g=1; next} g && /^  [a-z]/ {print $1} /^Getting started/ {exit}')
+cmds=$("$BIN" -h | awk '/^Getting started/ {exit} /^Usage:/ {g=0; next} /^[A-Z][a-z].*:$/ {g=1; next} g && /^  [a-z]/ {print $1}')
 {
   echo "# Command reference"
   echo
@@ -51,12 +51,19 @@ Every agent above gets:
   its multiplexer pane, after checking that the agent still shows its input box and no
   menu or approval prompt is open.
 - **No copies**: an agent's own CLI is only used to continue a session that is known
-  to be closed (Claude Code and Codex, which report their sessions).
+  to be closed (Claude Code, Codex and Grok Build, which report their sessions).
 - **Recognition under interpreters**: agents that run under Node, Bun or Python (where
   tmux only reports `node` or `python`) are recognised by their command line.
 
 Claude Code and Codex additionally report stalls through their hooks and session files,
-so they are covered even outside a wrapper or pane, including the desktop apps.
+so they are covered even outside a wrapper or pane, including the desktop apps. Grok
+Build reports them through its hooks (Continuum adds `~/.grok/hooks/continuum.json`;
+Grok runs it in folders you have trusted) and lists its open sessions, so a closed Grok
+session can be continued with `grok --resume`.
+
+Print-mode and SDK runs (`claude -p`, Agent SDK scripts, `codex exec`, Codex subagent
+threads), and agents started by another agent's tool, are left alone: nobody types into
+them, and continuing one would start work nobody asked for.
 
 ## Shell hook: "default" and "opt-in"
 
@@ -100,9 +107,11 @@ upstream.
 
 ## Not covered
 
-Agents that live inside an editor or desktop app window (Cursor and Windsurf editors,
-VS Code Copilot Chat, Cline and Roo in VS Code, Zed's agent, Claude and ChatGPT desktop
-chats) have no terminal Continuum can type into. Claude Code and Codex sessions in their
+Agents that live inside an editor or desktop app window (the Cursor and Windsurf editors'
+own agents, VS Code Copilot Chat, Cline and Roo in VS Code, Zed's agent, the Antigravity
+editor, Claude and ChatGPT desktop chats) have no terminal Continuum can type into. Their
+command-line agents are covered: Cursor CLI (`cursor-agent`), Antigravity CLI (`agy`),
+and any agent you run in an editor's built-in terminal. Claude Code and Codex sessions in their
 desktop apps are the exception. Codex app sessions are continued inside the app,
 through its local server. Claude Desktop sessions are continued by themselves as soon
 as Desktop lets go of them, never copied while it may still hold them. See

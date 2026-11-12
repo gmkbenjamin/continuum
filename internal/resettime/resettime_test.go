@@ -93,3 +93,18 @@ func TestOldMessageUsesItsOwnTimestamp(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+func TestWeekdayResetEarlierTodayMeansNextWeek(t *testing.T) {
+	syd, _ := time.LoadLocation("Australia/Sydney")
+	mon7pm := time.Date(2026, 11, 16, 19, 0, 0, 0, syd)
+	got, ok := Parse("You've hit your weekly limit · resets Mon 6pm", mon7pm, syd)
+	want := time.Date(2026, 11, 23, 18, 0, 0, 0, syd)
+	if !ok || !got.Equal(want) {
+		t.Fatalf("got %v ok=%v, want %v", got, ok, want)
+	}
+	// Later the same day is still today.
+	got, _ = Parse("resets Mon 9pm", mon7pm, syd)
+	if want := time.Date(2026, 11, 16, 21, 0, 0, 0, syd); !got.Equal(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}

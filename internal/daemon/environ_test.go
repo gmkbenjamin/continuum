@@ -5,6 +5,7 @@ package daemon
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -22,7 +23,14 @@ func TestMain(m *testing.M) {
 // A session started before Continuum's hooks has no recorded location; the
 // agent process's environment still says which pane it runs in.
 func TestPaneFoundFromTheAgentsEnvironment(t *testing.T) {
-	agent := exec.Command(os.Args[0])
+	// The stand-in runs under the agent's name, as Continuum checks that a
+	// recorded pid is still the agent before trusting it.
+	self, _ := os.ReadFile(os.Args[0])
+	bin := filepath.Join(t.TempDir(), "claude")
+	if err := os.WriteFile(bin, self, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agent := exec.Command(bin)
 	agent.Env = append(os.Environ(), "CONTINUUM_AGENT_HELPER=1", "TMUX=/tmp/tmux-1/default,1,0", "TMUX_PANE=%9")
 	if err := agent.Start(); err != nil {
 		t.Fatal(err)

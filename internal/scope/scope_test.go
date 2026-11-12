@@ -1,6 +1,8 @@
 package scope
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/continuum-dev/continuum/internal/core"
@@ -51,5 +53,25 @@ func TestCovers(t *testing.T) {
 	}
 	if _, changed := Add(ch.Chosen, Entry{Session: "4f2c1d9e"}); changed {
 		t.Fatal("duplicate added")
+	}
+}
+
+// A folder chosen or excluded through a symlink (or /tmp on macOS) matches
+// the physical path the agent records.
+func TestFolderMatchesThroughSymlinks(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real", "proj")
+	os.MkdirAll(real, 0o700)
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(filepath.Join(base, "real"), link); err != nil {
+		t.Skip(err)
+	}
+	phys, _ := filepath.EvalSymlinks(real)
+	e := Entry{Dir: filepath.Join(link, "proj")}
+	if !e.Matches(&core.Job{Cwd: filepath.Join(phys, "sub")}) {
+		t.Fatalf("%s doesn't match %s", e.Dir, phys)
+	}
+	if e.Matches(&core.Job{Cwd: filepath.Join(base, "real", "other")}) {
+		t.Fatal("matched a sibling folder")
 	}
 }

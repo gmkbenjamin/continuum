@@ -156,6 +156,7 @@ func Run(o Options) (int, error) {
 	var (
 		mu         sync.Mutex
 		ring       = ansi.NewRing(16 * 1024)
+		sinceInput = ansi.NewRing(16 * 1024) // output since the user last typed
 		lastOutput time.Time
 		changed    bool
 		writeMu    sync.Mutex
@@ -173,6 +174,10 @@ func Run(o Options) (int, error) {
 			n, err := o.Stdin.Read(buf)
 			if n > 0 {
 				write(buf[:n])
+				// A menu shown before this was answered (or dismissed) by it.
+				mu.Lock()
+				sinceInput = ansi.NewRing(16 * 1024)
+				mu.Unlock()
 			}
 			if err != nil {
 				return
@@ -191,6 +196,7 @@ func Run(o Options) (int, error) {
 				_, _ = o.Stdout.Write(buf[:n])
 				mu.Lock()
 				ring.Write(buf[:n])
+				sinceInput.Write(buf[:n])
 				lastOutput = time.Now()
 				changed = true
 				mu.Unlock()
@@ -220,8 +226,16 @@ func Run(o Options) (int, error) {
 			for _, req := range readInbox(inbox) {
 				mu.Lock()
 				screen := ansi.Strip(ring.String())
+				recent := ansi.Strip(sinceInput.String())
 				mu.Unlock()
-				if dialog := r.BlockingDialog(screen); dialog != "" {
+				// The bottom of the screen, and anything shown since the user
+				// last typed: a menu stays open until answered, even when
+				// later redraws (a spinner, a timer) push it out of the tail.
+				dialog := r.BlockingDialog(screen)
+				if dialog == "" {
+					dialog = r.BlockingDialogAnywhere(recent)
+				}
+				if dialog != "" {
 					// Write the note before removing the request: the daemon
 					// treats a vanished request without a note as delivered.
 					note := fmt.Sprintf("a menu or prompt is open (%q); not typing into it", dialog)
@@ -237,6 +251,7 @@ func Run(o Options) (int, error) {
 				// the old message may still be on screen and must not count again.
 				mu.Lock()
 				ring = ansi.NewRing(16 * 1024)
+				sinceInput = ansi.NewRing(16 * 1024)
 				changed = false
 				mu.Unlock()
 			}
@@ -266,7 +281,7 @@ func Run(o Options) (int, error) {
 			reported[sig] = now
 			ev := core.Event{
 				Harness: harness, Kind: m.Kind, Message: m.Text, At: now, Source: "wrapper",
-				Location: &core.Location{Kind: "wrapper", Target: id}, Cwd: cwd,
+				Location: &core.Location{Kind: "wrapper", Target: id}, Cwd: cwd, Hit: m.Hit,
 			}
 			if h.NeverResume(m.Text) {
 				ev.Kind = core.KindNeverResume

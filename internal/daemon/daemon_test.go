@@ -37,6 +37,9 @@ func setup(t *testing.T) *harnessT {
 	os.MkdirAll(filepath.Join(h.claude, "projects", "-work-app"), 0o700)
 	os.MkdirAll(filepath.Join(h.codex, "sessions", "2026", "11", "11"), 0o700)
 	t.Setenv("CONTINUUM_HOME", filepath.Join(home, "continuum"))
+	// Never run the real agents from tests.
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
 	p := core.GetPaths()
 	cfg := `{"claude_home": "` + h.claude + `", "codex_home": "` + h.codex + `", "notify": false, "scan_panes": false, "poll_seconds": 1}`
 	os.MkdirAll(p.Home, 0o700)
@@ -420,15 +423,15 @@ func TestBaselineDoesNotReviveHistory(t *testing.T) {
 func TestCodexRolloutEndToEnd(t *testing.T) {
 	h := setup(t)
 	h.advance(time.Second) // baseline
-	path := filepath.Join(h.codex, "sessions", "2026", "11", "11", "rollout-2026-11-11T09-00-00-01a1a5e1-093f-7213-9184-4ca49bda5024.jsonl")
+	path := filepath.Join(h.codex, "sessions", "2026", "11", "11", "rollout-2026-11-11T09-00-00-0c0de000-0000-7000-8000-000000000024.jsonl")
 	reset := h.now.Add(2 * time.Hour).Unix()
-	content := `{"timestamp":"` + h.now.Format(time.RFC3339) + `","type":"session_meta","payload":{"id":"01a1a5e1-093f-7213-9184-4ca49bda5024","cwd":"/work/api","originator":"Codex Desktop"}}
+	content := `{"timestamp":"` + h.now.Format(time.RFC3339) + `","type":"session_meta","payload":{"id":"0c0de000-0000-7000-8000-000000000024","cwd":"/work/api","originator":"Codex Desktop"}}
 {"timestamp":"` + h.now.Format(time.RFC3339) + `","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":100,"window_minutes":300,"resets_at":` + itoa(reset) + `}}}}
 {"timestamp":"` + h.now.Format(time.RFC3339) + `","type":"event_msg","payload":{"type":"task_complete","error":{"message":"You've hit your usage limit. Try again at 11:00 AM.","codex_error_info":"usage_limit_exceeded"}}}
 `
 	os.WriteFile(path, []byte(content), 0o600)
 	h.advance(time.Second)
-	j := h.d.Jobs["codex:01a1a5e1-093f-7213-9184-4ca49bda5024"]
+	j := h.d.Jobs["codex:0c0de000-0000-7000-8000-000000000024"]
 	if j == nil || j.Entrypoint != "Codex Desktop" || j.ResetAt.Unix() != reset || j.Cwd != "/work/api" {
 		t.Fatalf("job %+v", j)
 	}

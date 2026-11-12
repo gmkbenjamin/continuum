@@ -11,6 +11,7 @@ The details behind the [README](../README.md): how stalls are found, what is che
   Claude transcripts  ~/.claude/projects    │   one job per stalled      2. multiplexer pane
   Codex rollouts      ~/.codex/sessions     ├─▶ session: scope, reset ─▶    tmux · screen · zellij · herdr
   Codex hooks (SessionStart, Stop)          │   time, "is it open?",        Rex · WezTerm · kitty
+  Grok Build hooks, active_sessions.json    │
   wrapper (screen of any wrapped agent)     │   activity check, retries  3. agent commands, same session:
   tmux pane scan (any agent)                ┘                               open background session → claude attach
                                                                             closed session → claude --bg --resume <id>
@@ -24,8 +25,19 @@ one doesn't stop Continuum:
   `error: "rate_limit"`) and fires a `StopFailure` hook.
 - Codex records `usage_limit_exceeded`, plus the exact `resets_at` of the exhausted
   window, in its rollout file.
+- Grok Build fires the same hooks (`StopFailure` with `rate_limit`, `server_error`, …),
+  from `~/.grok/hooks/continuum.json`, and lists its open sessions in
+  `~/.grok/active_sessions.json`. Grok also runs Claude Code's hooks; Continuum tells
+  the two apart by the `GROK_*` variables Grok sets, so a Grok session is never taken
+  for a Claude one.
 - The wrapper and the tmux pane scanner read the bottom of the agent's screen. That's
-  how every other agent is covered.
+  how every other agent is covered. A turn that ends normally with a reply that only
+  *mentions* a limit ("the client now prints 'usage limit reached'") is not a stall:
+  the `Stop` hook reports the reply, and limit text on screen that is part of it is
+  ignored.
+- Print-mode and SDK runs (`claude -p`, Agent SDK scripts, `codex exec`, Codex subagent
+  threads) and agents started by another agent's tool are left alone. They inherit the
+  pane of the session that started them, and nobody types into them.
 - The desktop apps write the same transcript and rollout files, so Claude Desktop and
   Codex app sessions are seen too.
 
@@ -41,9 +53,18 @@ streams) get a short backoff.
    resumed it. So does Claude reporting the session busy since after the limit hit.
 2. **It's still the conversation that stalled.** If the agent's window has moved on to
    another conversation (`/clear`, `/resume`), Continuum leaves the old one alone.
-3. **The pane still shows the agent.** It checks the foreground process, or the agent's
-   own screen markers, so a prompt never lands in a shell.
-4. **No menu or approval prompt is open.** Enter or a typed letter could pick an option.
+3. **The pane still runs this session's agent, in front.** Every process in a pane
+   carries the pane's id in its environment (`TMUX_PANE`, `REX_BLOCK`, …). Continuum
+   finds the agent's process that way and checks that it's the session's own process
+   (or, if none was recorded, one that was already running when the session stalled),
+   that it's in the foreground, and that it isn't suspended. If the agent quit and a
+   shell, an editor or a new session now has the pane, nothing is typed. Where
+   processes can't be checked (Windows, or macOS's own programs, whose environment is
+   hidden), it falls back to the pane's foreground program and the agent's own screen
+   markers. After a session ends, its pane is forgotten.
+4. **No menu or approval prompt is open,** at the bottom of the screen, or (in the
+   wrapper) anywhere in what the agent has shown since you last typed. Enter or a typed
+   letter could pick an option.
    In testing, Codex showed an "Update available" menu where Enter means *Update now*.
    Grok's folder-trust screen takes a single `y`, and a Claude background session
    showed "Resume this conversation?". Continuum refuses all of these, then uses another
@@ -58,8 +79,8 @@ Continuum only ever continues the original session:
   `claude attach` in a hidden terminal, types, and closes that terminal. The session
   keeps running.
 - **The session is closed** (the agent exited, or a background session isn't running):
-  Continuum continues it under its own id with `claude --bg --resume <id>` or
-  `codex queue --thread <id> --resume`. It's the same conversation, and nothing else
+  Continuum continues it under its own id with `claude --bg --resume <id>`,
+  `codex queue --thread <id> --resume` or `grok --resume <id> --single <message>`. It's the same conversation, and nothing else
   has it open, so nothing is copied.
 - **It's open somewhere Continuum can't type**, such as an agent started in a plain
   terminal before the shell hook was installed, or a session open in a desktop app.
@@ -67,8 +88,10 @@ Continuum only ever continues the original session:
   becomes reachable.
 
 Continuum learns whether a session is open from the agent itself. It uses
-`claude agents --json`, the running-session files Claude keeps, the process recorded by
-the hook, and a process scan for the other agents. If none of these can answer,
+`claude agents --json`, the running-session files Claude keeps, Grok Build's
+`active_sessions.json`, the process recorded by the hook, and a process scan for the
+other agents. On Windows, which doesn't say which folder a process runs in, any running
+process of the agent counts as possibly holding the session. If none of these can answer,
 Continuum assumes the session is open. Set `"allow_copies": true` to allow the CLI route
 anyway.
 
@@ -138,10 +161,11 @@ that came due while asleep run as soon as the computer wakes.
 - **Closed sessions from before installation are never revived.** Sessions that are
   open and stalled are picked up. After the daemon has been off, at most 12 hours
   (`catch_up_hours`) are caught up.
-- **No unsafe typing.** It never types into menus, approval prompts or plain shells, and
-  never starts a copy of an open session.
+- **No unsafe typing.** It types only into the session's own agent process: never into
+  menus, approval prompts, shells, editors or another session, and it never starts a
+  copy of an open session.
 - **Billing stops for you.** Billing, credit, spend-cap, sign-in and API-key errors are
-  marked **needs you** and never retried.
+  marked **needs you** and never retried, not even by `continuum resume-now`.
 - **One stall, one resume,** even when the hook, transcript and screen all report it.
   It never types twice into the same pane for one stall.
 - **Limits on retries.** It gives up after 8 attempts (`max_attempts`), and doesn't

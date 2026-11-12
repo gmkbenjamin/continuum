@@ -138,7 +138,15 @@ func (m *Messages) Resolve(j *core.Job, outage bool, cfg core.Config, r *rules.R
 	} else {
 		c.Text, c.Source = r.Harness(j.Harness).Prompt(r.Defaults), "built-in"
 	}
-	c.Text = fill(c.Text, j, r)
+	// Every message is typed as one line, wherever it came from (an older
+	// config.json, a hand-edited messages.json, a folder name in {folder}).
+	if t, err := Clean(fill(c.Text, j, r)); err == nil {
+		c.Text = t
+	} else if outage {
+		c.Text, c.Source = BuiltInOutage, "built-in"
+	} else {
+		c.Text, c.Source = r.Harness(j.Harness).Prompt(r.Defaults), "built-in"
+	}
 	return c
 }
 

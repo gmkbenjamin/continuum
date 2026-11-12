@@ -207,6 +207,7 @@ func installPlanItems(o installOptions, p core.Paths, cfg core.Config, r *rules.
 		purpose := map[string]string{
 			"claude": "lets Claude Code (terminal, IDE and Desktop) tell Continuum when a session stalls on a limit, and where it runs",
 			"codex":  "lets Codex tell Continuum when a session starts and stops, and where it runs",
+			"grok":   "lets Grok Build tell Continuum when a session stalls on a limit, and where it runs (a file of Continuum's own; Grok asks you to trust a folder before its hooks run there)",
 		}[t.Harness]
 		if purpose == "" {
 			purpose = "lets " + h.DisplayName + " tell Continuum about its sessions"

@@ -9,12 +9,12 @@ import (
 func TestRedactor(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	red := redactor()
-	in := home + "/Documents/app 9a010a4e-9b20-411d-bf5d-6fe97fdc9e38 done"
+	in := home + "/Documents/app 5e551011-0000-4000-8000-000000000001 done"
 	out := red(in)
 	if strings.Contains(out, home) || !strings.HasPrefix(out, "~/Documents/app") {
 		t.Fatalf("home not shortened: %s", out)
 	}
-	if strings.Contains(out, "9b20-411d") || !strings.Contains(out, "9a010a4e…") {
+	if strings.Contains(out, "9b20-411d") || !strings.Contains(out, "5e551011…") {
 		t.Fatalf("session id not shortened: %s", out)
 	}
 }

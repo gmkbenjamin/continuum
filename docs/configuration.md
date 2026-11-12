@@ -20,9 +20,10 @@
 | `notify` | `true` | Desktop notifications. |
 | `watch_transcripts` | `true` | Read Claude transcripts and Codex rollouts. |
 | `scan_panes` | `true` | Scan tmux panes for other agents. |
+| `scan_tmux_socket` | your default tmux server | The tmux server (socket path) the pane scanner watches. |
 | `poll_seconds` | `5` | How often the daemon checks. |
 | `binaries` | from `PATH` | Agent executables: `{"claude": "/opt/claude"}`. |
-| `claude_home`, `codex_home` | `~/.claude`, `~/.codex` | Where the agents keep their files. |
+| `claude_home`, `codex_home` | `~/.claude`, `~/.codex` | Where the agents keep their files. Grok Build's is `$GROK_HOME`, else `~/.grok`. |
 | `reset_hints_command` | none | A command printing `{"claude": "<RFC3339>"}`, used when a message gives no reset time. |
 | `autostart_daemon` | `true` | Start the daemon from hooks and `run` if it isn't running. `false` in standalone mode. |
 | `log_level` | `info` | `debug` also logs why: every event, check and delivery route, and hooks write to `hooks.log`. Also: `error`, `warn`. `CONTINUUM_DEBUG=1` turns on debug for one run. |
@@ -43,7 +44,9 @@ Everything is in `~/.continuum`; set `CONTINUUM_HOME` to move it.
 | `jobs.json`, `sessions.json`, `offsets.json` | Scheduler state |
 | `history.jsonl` | Every scheduled, delivered, skipped and failed resume |
 | `daemon.log`, `daemon.log.1` | Daemon log (rotates at 5 MB); `continuum logs -f` follows it |
-| `hooks.log` | One line per hook call, when debug logging is on |
+| `hooks.log`, `hooks.log.1` | One line per hook call, when debug logging is on (rotates at 2 MB) |
+| `history.jsonl.1` | The previous resume history, once `history.jsonl` passes 5 MB |
+| `stopped` | Left by `continuum stop`, so hooks don't start the daemon again; removed by `continuum start` and at login |
 | `daemon.stderr.log` | Crash output of the background daemon, if any |
 | `wrappers/` | One folder per running `continuum run` |
 | `install.json` | What `install` set up and your choices, for `update` and for restoring hooks |

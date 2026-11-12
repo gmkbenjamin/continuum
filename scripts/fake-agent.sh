@@ -4,11 +4,16 @@
 # Claude Code or Codex would, then waits for someone to type into it.
 #
 #   fake-agent.sh HARNESS SESSION MARKER_FILE [HOOK_EVENT]
-harness=$1 session=$2 marker=$3 event=${4:-Stop}
+harness=$1 session=$2 marker=$3 event=${4:-StopFailure}
 msg=${FAKE_MSG:-"You've hit your usage limit. Try again in 4 seconds."}
 
 echo "› working on the task"
 echo "■ $msg"
+# The agent's own status line, as the real ones show it.
+case "$harness" in
+  claude) echo "  ? for shortcuts" ;;
+  codex) echo "  100% context left" ;;
+esac
 if [ "$event" = "StopFailure" ]; then
   payload=$(printf '{"hook_event_name":"StopFailure","session_id":"%s","cwd":"%s","error":"rate_limit","last_assistant_message":"%s"}' "$session" "$PWD" "$msg")
 else

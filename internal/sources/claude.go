@@ -71,6 +71,21 @@ func errString(raw json.RawMessage) string {
 	return ""
 }
 
+// notAPrompt: a user line that doesn't continue the conversation: metadata,
+// a local slash command (/usage, /status) or its output, or a `!` shell
+// command. Typing one of those after a limit doesn't mean the session went on.
+func notAPrompt(cl claudeLine, text string) bool {
+	if cl.IsMeta {
+		return true
+	}
+	for _, tag := range []string{"<local-command-", "<command-name>", "<command-message>", "<bash-input>", "<bash-stdout>", "<bash-stderr>"} {
+		if strings.Contains(text, tag) {
+			return true
+		}
+	}
+	return false
+}
+
 // ParseClaude turns new transcript lines into events.
 func ParseClaude(r *rules.Rules, path string, lines []Line, local *time.Location) []core.Event {
 	h := r.Harness("claude")
@@ -102,6 +117,9 @@ func ParseClaude(r *rules.Rules, path string, lines []Line, local *time.Location
 			text = ContentText(cl.Content)
 		}
 
+		if h.IgnoredEntrypoint(cl.Entrypoint) {
+			continue // print mode or an SDK script: nobody types into it
+		}
 		switch {
 		case cl.Type == "assistant" && cl.IsAPIErrorMessage:
 			ev := base
@@ -136,7 +154,7 @@ func ParseClaude(r *rules.Rules, path string, lines []Line, local *time.Location
 			ev.Kind = core.KindNativeGaveUp
 			ev.Message = text
 			events = append(events, ev)
-		case cl.Type == "user" || cl.Type == "assistant":
+		case cl.Type == "assistant" || cl.Type == "user" && !notAPrompt(cl, text):
 			ev := base
 			ev.Kind = core.KindActivity
 			lastActivity = &ev

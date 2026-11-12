@@ -5,12 +5,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 )
 
-var Version = "0.7.1"
+var Version = "0.8.0"
 
 // Location says where an agent is running so input can be delivered to it
 // without focusing any window.
@@ -41,6 +42,10 @@ const (
 	KindActivity     = "activity"      // the session did something after a limit
 	KindNativeGaveUp = "native_gaveup" // the agent says it will not resume by itself
 	KindNeverResume  = "never_resume"  // needs a human (billing, auth, spend cap)
+	// KindReply: a turn ended normally, and the reply mentions limits or
+	// errors (Message is the reply). Limit text read off the screen that is
+	// part of such a reply is not a stall.
+	KindReply = "reply"
 )
 
 // Event is something an observer saw. Hooks, transcript tailers, the PTY
@@ -60,6 +65,8 @@ type Event struct {
 	PID            int       `json:"pid,omitempty"`
 	Entrypoint     string    `json:"entrypoint,omitempty"` // cli, desktop, ide, ...
 	TranscriptSize int64     `json:"transcript_size,omitempty"`
+	// Hit is the exact limit text matched on screen (wrapper and pane events).
+	Hit string `json:"hit,omitempty"`
 }
 
 // Job states.
@@ -104,6 +111,8 @@ type Job struct {
 	// WaitingOpen: the session is open somewhere Continuum can't type; it is
 	// re-checked every couple of minutes (the user was told once).
 	WaitingOpen bool `json:"waiting_open,omitempty"`
+	// Hit is the limit text matched on screen, when the job came from there.
+	Hit string `json:"hit,omitempty"`
 }
 
 // Paths are Continuum's files under its home directory.
@@ -166,18 +175,21 @@ func (p Paths) Ensure() error {
 // Config is the user's configuration (~/.continuum/config.json). Every field
 // is optional.
 type Config struct {
-	Enabled           *bool             `json:"enabled,omitempty"`
-	DryRun            bool              `json:"dry_run,omitempty"`
-	Harnesses         map[string]bool   `json:"harnesses,omitempty"` // enable/disable per harness
-	ResumePrompts     map[string]string `json:"resume_prompts,omitempty"`
-	DelayAfterReset   *int              `json:"delay_after_reset_seconds,omitempty"`
-	NativeGrace       map[string]int    `json:"native_grace_seconds,omitempty"`
-	MaxWaitHours      *int              `json:"max_wait_hours,omitempty"`
-	CatchUpHours      *int              `json:"catch_up_hours,omitempty"`
-	Strategies        []string          `json:"strategies,omitempty"` // order: wrapper, multiplexer, terminal-app, native
-	AllowHeadless     *bool             `json:"allow_headless,omitempty"`
-	WatchTranscripts  *bool             `json:"watch_transcripts,omitempty"`
-	ScanPanes         *bool             `json:"scan_panes,omitempty"`
+	Enabled          *bool             `json:"enabled,omitempty"`
+	DryRun           bool              `json:"dry_run,omitempty"`
+	Harnesses        map[string]bool   `json:"harnesses,omitempty"` // enable/disable per harness
+	ResumePrompts    map[string]string `json:"resume_prompts,omitempty"`
+	DelayAfterReset  *int              `json:"delay_after_reset_seconds,omitempty"`
+	NativeGrace      map[string]int    `json:"native_grace_seconds,omitempty"`
+	MaxWaitHours     *int              `json:"max_wait_hours,omitempty"`
+	CatchUpHours     *int              `json:"catch_up_hours,omitempty"`
+	Strategies       []string          `json:"strategies,omitempty"` // order: wrapper, multiplexer, terminal-app, native
+	AllowHeadless    *bool             `json:"allow_headless,omitempty"`
+	WatchTranscripts *bool             `json:"watch_transcripts,omitempty"`
+	ScanPanes        *bool             `json:"scan_panes,omitempty"`
+	// ScanTmuxSocket: the tmux server the pane scanner watches (default:
+	// your default tmux server).
+	ScanTmuxSocket    string            `json:"scan_tmux_socket,omitempty"`
 	Notify            *bool             `json:"notify,omitempty"`
 	PollSeconds       int               `json:"poll_seconds,omitempty"`
 	ClaudeHome        string            `json:"claude_home,omitempty"`
@@ -288,6 +300,21 @@ func (c Config) CodexDir() string {
 	return filepath.Join(home, ".codex")
 }
 
+// GrokDir is Grok Build's home ($GROK_HOME, else ~/.grok).
+func (c Config) GrokDir() string {
+	if v := os.Getenv("GROK_HOME"); v != "" {
+		return v
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".grok")
+}
+
+// Homes are the agents' home folders, for {claude_home}-style placeholders
+// in the rules.
+func (c Config) Homes() map[string]string {
+	return map[string]string{"claude_home": c.ClaudeDir(), "codex_home": c.CodexDir(), "grok_home": c.GrokDir()}
+}
+
 // NewID returns a short random id.
 func NewID() string {
 	var buf [8]byte
@@ -297,6 +324,18 @@ func NewID() string {
 
 // WriteFileAtomic writes data to path via a temp file and rename.
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+	// A symlinked file (a dotfiles manager's link) is written where it
+	// points, so the link stays a link.
+	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		target, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return fmt.Errorf("%s is a symlink Continuum can't follow: %w", path, err)
+		}
+		path = target
+	}
+	if fi, err := os.Stat(path); err == nil && fi.Mode().IsRegular() {
+		perm = fi.Mode().Perm() // keep the file's own permissions
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err

@@ -60,3 +60,6 @@ opencode.jsonc
 
 # Project docs that share a name with agent files
 !/docs/agents.md
+
+# Files agents write when tests run them
+backups/

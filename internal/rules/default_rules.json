@@ -64,9 +64,12 @@
       "_process_name_patterns": "The native installer runs Claude Code from a binary named after its version (e.g. 2.1.322), which is what tmux reports.",
       "native_grace_seconds": 300,
       "_native_grace": "Claude Code tries to resume by itself after a reset while its process is alive. Continuum gives it this long past the reset first, so the two don't both continue the session, then acts only if the session shows no new activity. Change it with `continuum grace claude <minutes|off>`.",
+      "ignore_entrypoints": ["^sdk", "^mcp$"],
+      "_ignore_entrypoints": "Print mode (claude -p) and Agent SDK scripts report these entrypoints. Nobody types into them, and continuing one would start work nobody asked for, so Continuum leaves them alone.",
       "desktop_apps": [
         {"name": "Claude Desktop", "entrypoints": ["claude-desktop", "desktop"],
-         "process_patterns": ["(?i)/Claude\\.app/Contents/MacOS/Claude(?:\\s|$)", "(?i)\\\\Claude\\\\Claude\\.exe", "(?i)(?:^|/)claude-desktop(?:\\s|$)"],
+         "process_patterns": ["(?i)/Claude\\.app/Contents/MacOS/Claude(?:\\s|$)", "(?i)\\\\Claude\\\\Claude\\.exe", "(?i)\\\\AnthropicClaude\\\\", "(?i)(?:^|/)claude-desktop(?:\\s|$)", "(?i)^claude\\.exe$"],
+         "_process_patterns": "Windows lists programs by name only, and the Claude app and Claude Code's CLI are both claude.exe: while either runs, a session the app may hold counts as open there.",
          "version_dir": "{app_support}/Claude/claude-code", "guard_unknown": true}
       ],
       "_desktop_apps": "Claude Desktop runs Claude Code sessions without a terminal. While the app runs, a session it may hold is treated as open (Continuum never starts a copy of it) unless Claude's own session list, already seen to include Desktop sessions for this app version, says it is closed.",
@@ -99,7 +102,7 @@
       "native_wait_patterns": ["(?i)continuing\\s+automatically"],
       "native_gave_up_patterns": ["(?i)will\\s+not\\s+resume\\s+on\\s+its\\s+own", "(?i)did\\s+not\\s+resume\\s+on\\s+its\\s+own", "(?i)continue\\s+cancelled"],
       "never_resume_patterns": ["(?i)credit\\s+balance\\s+is\\s+too\\s+low", "(?i)out\\s+of\\s+usage\\s+credits", "(?i)spend\\s+limit", "(?i)add\\s+funds", "(?i)authentication_failed", "(?i)billing_error", "(?i)please\\s+run\\s+/login"],
-      "ui_markers": ["(?i)esc to (?:cancel|interrupt)", "(?i)\\? for shortcuts", "(?i)/rate-limit-options", "(?i)resets\\s", "╭", "❯"],
+      "ui_markers": ["(?i)esc to (?:cancel|interrupt)", "(?i)\\? for shortcuts", "(?i)/rate-limit-options", "╭", "❯"],
       "native_commands": [
         {"name": "claude-attach", "when": "background", "pty": true, "requires_help": ["attach"], "args": ["{bin}", "attach", "{short_id}"], "cwd": "{cwd}"},
         {"name": "claude-bg-resume", "when": "stopped", "requires_help": ["--bg", "--resume"], "args": ["{bin}", "--bg", "--resume", "{session}", "{prompt}"], "cwd": "{cwd}"},
@@ -116,7 +119,7 @@
       "native_grace_seconds": 30,
       "desktop_apps": [
         {"name": "Codex Desktop", "entrypoints": ["Codex Desktop", "codex-desktop", "desktop"],
-         "process_patterns": ["(?i)/Codex\\.app/Contents/MacOS/", "(?i)/ChatGPT\\.app/Contents/MacOS/ChatGPT(?:\\s|$)", "(?i)\\\\Codex\\.exe"],
+         "process_patterns": ["(?i)/Codex\\.app/Contents/MacOS/", "(?i)/ChatGPT\\.app/Contents/MacOS/ChatGPT(?:\\s|$)", "(?i)\\\\Codex\\.exe", "(?i)^codex\\.exe$", "(?i)^chatgpt\\.exe$"],
          "guard_unknown": false}
       ],
       "_desktop_apps": "The Codex app runs threads on the local Codex app server. codex queue delivers to that same server, so it reaches a thread the app has open (reaches_desktop).",
@@ -139,7 +142,7 @@
       "native_wait_patterns": [],
       "native_gave_up_patterns": [],
       "never_resume_patterns": ["(?i)credit\\s+balance\\s+is\\s+too\\s+low", "(?i)out\\s+of\\s+credits", "(?i)spend\\s+cap", "(?i)request\\s+a\\s+limit\\s+increase", "(?i)send\\s+a\\s+request\\s+to\\s+your\\s+admin"],
-      "ui_markers": ["(?i)esc to interrupt", "(?i)context left", "(?i)try again at", "›", "▌"],
+      "ui_markers": ["(?i)esc to interrupt", "(?i)context left", "›", "▌"],
       "native_commands": [
         {"name": "codex-queue", "when": "stopped", "reaches_desktop": true, "requires_help": ["queue"], "requires_subcommand_help": {"queue": ["--thread", "--message", "--resume"]}, "args": ["{bin}", "queue", "--thread", "{session}", "--message", "{prompt}", "--resume"], "cwd": "{cwd}"},
         {"name": "codex-exec-resume", "when": "stopped", "requires_help": ["exec"], "requires_subcommand_help": {"exec": ["resume"]}, "args": ["{bin}", "exec", "resume", "{session}", "{prompt}"], "cwd": "{cwd}", "detach": true}
@@ -207,17 +210,34 @@
     },
 
     "grok": {
-      "display_name": "Grok CLI",
+      "display_name": "Grok Build",
       "homepage": "https://x.ai",
       "binary": "grok",
       "process_names": ["grok"],
+      "_hook_env": "Grok Build runs Claude Code's hooks (~/.claude/settings.json) and sets these variables for every hook, so those runs are reported as Grok's.",
+      "hook_env": ["GROK_SESSION_ID", "GROK_HOOK_EVENT"],
+      "stop_failure_kinds": {
+        "rate_limit": "usage_limit",
+        "server_error": "transient",
+        "unknown": "transient"
+      },
       "use_common_patterns": true,
-      "patterns": [],
-      "never_resume_patterns": [],
+      "patterns": [
+        {"kind": "usage_limit", "regex": "(?i)you[’']?ve\\s+reached\\s+your\\s+free\\s+grok\\s+build\\s+usage\\s+limit"},
+        {"kind": "usage_limit", "regex": "(?i)you[’']?ve\\s+hit\\s+the\\s+rate\\s+limit\\s+for\\s+your\\s+plan"},
+        {"kind": "usage_limit", "regex": "(?i)you[’']?ve\\s+hit\\s+your\\s+team[’']?s\\s+api\\s+rate\\s+limit"},
+        {"kind": "transient", "regex": "(?i)grok\\s+is\\s+temporarily\\s+overloaded"},
+        {"kind": "transient", "regex": "(?i)something\\s+went\\s+wrong\\s+on\\s+(?:the\\s+server|our\\s+side)"},
+        {"kind": "transient", "regex": "(?i)connection\\s+to\\s+grok\\s+timed\\s+out"}
+      ],
+      "never_resume_patterns": ["(?i)sign-in\\s+was\\s+rejected", "(?i)run\\s+`?grok\\s+login`?", "(?i)deployment\\s+key\\s+was\\s+rejected"],
       "ui_markers": ["(?i)esc\\s+to\\s+(?:interrupt|cancel)", "(?i)shift\\+tab", "(?i)grok\\s+build"],
       "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--single", "--version", "--prompt-file", "--prompt-json", "--output-format"], "passthrough_subcommands": ["agent", "clone", "completions", "doctor", "du", "disk-usage", "export", "help", "inspect", "leader", "login", "logout", "mcp", "memory", "models", "plugin", "sessions", "setup", "trace", "update", "usage", "version", "v", "worker", "worktree", "wrap"]},
-      "live_sessions": {"scan_processes": true, "process_exclude_args": ["agent", "leader", "worker", "mcp", "doctor", "sessions", "usage", "update"]},
-      "native_commands": []
+      "_live_sessions": "Grok Build lists its open sessions (session_id, pid, cwd) in active_sessions.json.",
+      "live_sessions": {"registry_file": "{grok_home}/active_sessions.json", "scan_processes": true, "process_exclude_args": ["agent", "leader", "worker", "mcp", "doctor", "sessions", "usage", "update", "host-server"]},
+      "native_commands": [
+        {"name": "grok-headless-resume", "when": "stopped", "requires_help": ["--resume", "--single"], "args": ["{bin}", "--resume", "{session}", "--single", "{prompt}"], "cwd": "{cwd}", "detach": true}
+      ]
     },
 
     "amp": {
@@ -257,12 +277,37 @@
       "binary": "cursor-agent",
       "process_names": ["cursor-agent"],
       "process_arg_patterns": ["cursor-agent", "[/\\\\]\\.cursor[/\\\\]agent"],
+      "_hook_env": "Cursor sets CURSOR_VERSION for every hook it runs, including hooks it borrows from other agents.",
+      "hook_env": ["CURSOR_VERSION"],
       "use_common_patterns": true,
-      "patterns": [{"kind": "usage_limit", "regex": "(?i)you[’']?ve\\s+(?:hit|reached)\\s+your\\s+usage\\s+limit"}],
-      "never_resume_patterns": [],
-      "ui_markers": ["(?i)ctrl\\+c\\s+to\\s+stop", "(?i)/\\s*for\\s+commands", "(?i)cursor\\s+agent"],
+      "patterns": [
+        {"kind": "usage_limit", "regex": "(?i)you[’']?ve\\s+(?:hit|reached)\\s+your\\s+(?:[a-z-]+\\s+)?usage\\s+limit"},
+        {"kind": "usage_limit", "regex": "(?i)usage\\s+limit\\s+(?:reached|exceeded)"}
+      ],
+      "never_resume_patterns": ["(?i)usage-based\\s+pricing", "(?i)on-demand\\s+usage\\s+(?:is\\s+)?(?:off|disabled|limit)", "(?i)upgrade\\s+to\\s+(?:pro|ultra)"],
+      "ui_markers": ["(?i)ctrl\\+c\\s+to\\s+stop", "(?i)/\\s*for\\s+commands", "(?i)cursor\\s+agent", "(?i)add\\s+a\\s+follow-up"],
       "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--print", "--version", "--output-format"], "passthrough_subcommands": ["login", "logout", "status", "whoami", "mcp", "update", "upgrade", "ls", "install-shell-integration", "uninstall-shell-integration", "generate-rule", "create-chat", "about", "help"]},
       "live_sessions": {"scan_processes": true, "process_exclude_args": ["mcp", "login", "status", "update"]},
+      "native_commands": []
+    },
+
+    "antigravity": {
+      "display_name": "Antigravity CLI",
+      "homepage": "https://antigravity.google",
+      "binary": "agy",
+      "process_names": ["agy"],
+      "use_common_patterns": true,
+      "patterns": [
+        {"kind": "usage_limit", "regex": "(?i)you\\s+have\\s+exhausted\\s+your\\s+quota"},
+        {"kind": "usage_limit", "regex": "(?i)individual\\s+quota\\s+reached"},
+        {"kind": "usage_limit", "regex": "(?i)\\bquota\\s+exhausted\\b"},
+        {"kind": "transient", "regex": "\\bMODEL_CAPACITY_EXHAUSTED\\b"},
+        {"kind": "transient", "regex": "(?i)overloaded\\s+prefill\\s+queue|\\bPREFILL_QUEUE_OVERLOADED\\b"}
+      ],
+      "never_resume_patterns": ["(?i)ai\\s+credits\\s+balance\\s+is\\s+too\\s+low", "(?i)not\\s+logged\\s+into\\s+antigravity"],
+      "ui_markers": ["(?i)\\?\\s+for\\s+shortcuts", "(?i)esc\\s+to\\s+cancel"],
+      "wrap": {"passthrough_flags": ["-h", "-p", "--help", "--print", "--prompt", "--version", "--output-format", "--input-format"], "passthrough_subcommands": ["acp", "agent", "agents", "changelog", "help", "install", "mcp", "mic-serve", "models", "plugin", "plugins", "remote-control", "update"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": ["acp", "mcp", "remote-control", "mic-serve", "update", "install"]},
       "native_commands": []
     },
 

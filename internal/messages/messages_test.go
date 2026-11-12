@@ -11,7 +11,7 @@ import (
 func TestMostSpecificWins(t *testing.T) {
 	r, _ := rules.Load("")
 	cfg := core.Config{}
-	j := &core.Job{Harness: "claude", SessionID: "9a010a4e-1111", Cwd: "/w/shop/api"}
+	j := &core.Job{Harness: "claude", SessionID: "5e551011-1111", Cwd: "/w/shop/api"}
 	m := &Messages{Agents: map[string]Pair{}}
 
 	if c := m.Resolve(j, false, cfg, r); c.Source != "built-in" || c.Text == "" {
@@ -37,7 +37,7 @@ func TestMostSpecificWins(t *testing.T) {
 	if c := m.Resolve(j, false, cfg, r); c.Text != "inner folder" {
 		t.Fatalf("deepest folder: %+v", c)
 	}
-	m.Set(scope.Entry{Session: "9a010a4e"}, Pair{Text: "this session"})
+	m.Set(scope.Entry{Session: "5e551011"}, Pair{Text: "this session"})
 	if c := m.Resolve(j, false, cfg, r); c.Text != "this session" || c.Source != "session" {
 		t.Fatalf("session: %+v", c)
 	}
@@ -46,14 +46,14 @@ func TestMostSpecificWins(t *testing.T) {
 	if c := m.Resolve(j, true, cfg, r); c.Text != BuiltInOutage {
 		t.Fatalf("outage: %+v", c)
 	}
-	m.Set(scope.Entry{Session: "9a010a4e"}, Pair{Outage: "retry please"})
+	m.Set(scope.Entry{Session: "5e551011"}, Pair{Outage: "retry please"})
 	if c := m.Resolve(j, true, cfg, r); c.Text != "retry please" {
 		t.Fatalf("session outage: %+v", c)
 	}
 	if c := m.Resolve(j, false, cfg, r); c.Text != "this session" {
 		t.Fatal("setting the outage message replaced the main one")
 	}
-	if !m.Clear(scope.Entry{Session: "9a01"}, false) {
+	if !m.Clear(scope.Entry{Session: "5e55"}, false) {
 		t.Fatal("clear by prefix")
 	}
 	if c := m.Resolve(j, false, cfg, r); c.Text != "inner folder" {

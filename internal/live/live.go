@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -62,6 +63,9 @@ type State struct {
 	// OnlyDesktop: open only in the sense that the desktop app may hold it;
 	// no process of the agent is known to.
 	OnlyDesktop bool `json:"only_desktop,omitempty"`
+	// Authoritative: the answer comes from the agent's own list of open
+	// sessions, so "not open" really means closed.
+	Authoritative bool `json:"authoritative,omitempty"`
 }
 
 // Query identifies the session to look up.
@@ -128,6 +132,11 @@ func (f *Finder) List(h *rules.Harness, q Query) ([]Session, bool) {
 			all, ok = mergeSessions(all, list), true
 		}
 	}
+	if ls.RegistryFile != "" {
+		if list, good := f.fromRegistryFile(expand(ls.RegistryFile, q)); good {
+			all, ok = mergeSessions(all, list), true
+		}
+	}
 	return all, ok
 }
 
@@ -145,6 +154,15 @@ func (f *Finder) Lookup(h *rules.Harness, q Query) State {
 		}
 		if ls.RegistryDir != "" {
 			if list, ok := f.fromRegistry(expand(ls.RegistryDir, q)); ok {
+				if !st.Checked {
+					st.Source = "registry"
+				}
+				st.Checked = true
+				all = mergeSessions(all, list)
+			}
+		}
+		if ls.RegistryFile != "" {
+			if list, ok := f.fromRegistryFile(expand(ls.RegistryFile, q)); ok {
 				if !st.Checked {
 					st.Source = "registry"
 				}
@@ -191,6 +209,7 @@ func (f *Finder) Lookup(h *rules.Harness, q Query) State {
 		}
 	}
 	f.applyDesktop(h, q, &st)
+	st.Authoritative = st.Source == "command" || st.Source == "registry"
 	if st.Session != nil && ls != nil {
 		st.Busy = contains(ls.BusyStates, st.Session.Status)
 		st.Background = contains(ls.BackgroundKinds, st.Session.Kind)
@@ -252,6 +271,40 @@ func (f *Finder) fromRegistry(dir string) ([]Session, bool) {
 	return list, true
 }
 
+// fromRegistryFile reads a JSON array of open sessions. A missing file means
+// no session is open; an unreadable one means nothing is known.
+func (f *Finder) fromRegistryFile(path string) ([]Session, bool) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, true
+	}
+	if err != nil {
+		return nil, false
+	}
+	var rows []map[string]any
+	if json.Unmarshal(data, &rows) != nil {
+		var wrapped struct {
+			Sessions []map[string]any `json:"sessions"`
+		}
+		if json.Unmarshal(data, &wrapped) != nil {
+			return nil, false
+		}
+		rows = wrapped.Sessions
+	}
+	var list []Session
+	for _, m := range rows {
+		s := fromMap(m)
+		if s.SessionID == "" || s.PID <= 0 || (f.Alive != nil && !f.Alive(s.PID)) {
+			continue // a stale row left by a crashed process
+		}
+		if s.Kind == "" {
+			s.Kind = "interactive"
+		}
+		list = append(list, s)
+	}
+	return list, true
+}
+
 // fromProcesses finds an agent process that holds the session: one whose
 // command line names the session id, or else one running in the session's
 // directory (it may hold the session; Continuum then assumes it does).
@@ -276,11 +329,23 @@ func (f *Finder) fromProcesses(h *rules.Harness, q Query) (Session, bool, bool) 
 	}
 	if q.Cwd != "" && f.Cwd != nil {
 		want := filepath.Clean(q.Cwd)
+		unknown := 0
 		for _, p := range inDir {
-			if c := f.Cwd(p.PID); c != "" && filepath.Clean(c) == want {
+			c := f.Cwd(p.PID)
+			if c != "" && filepath.Clean(c) == want {
 				return Session{SessionID: q.SessionID, PID: p.PID, Cwd: c, Kind: "interactive"}, true, true
 			}
+			if c == "" && unknown == 0 && runtime.GOOS == "windows" {
+				unknown = p.PID
+			}
 		}
+		if unknown > 0 {
+			// Windows doesn't say which folder a process runs in: it may hold
+			// the session, so it counts as open. Never a copy.
+			return Session{SessionID: q.SessionID, PID: unknown, Cwd: q.Cwd, Kind: "interactive"}, true, true
+		}
+	} else if len(inDir) > 0 && f.Cwd == nil {
+		return Session{SessionID: q.SessionID, PID: inDir[0].PID, Cwd: q.Cwd, Kind: "interactive"}, true, true
 	}
 	return Session{}, false, true
 }

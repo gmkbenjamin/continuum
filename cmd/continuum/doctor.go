@@ -125,7 +125,7 @@ func cmdDoctor() int {
 			warn("  no CLI resume route: only sessions in a pane or `continuum run` can be resumed")
 		}
 		if h.LiveSessions != nil {
-			q := live.Query{Bin: bin, Homes: map[string]string{"claude_home": cfg.ClaudeDir(), "codex_home": cfg.CodexDir()}}
+			q := live.Query{Bin: bin, Homes: cfg.Homes()}
 			if list, good := live.Default().List(h, q); good {
 				ok("  can tell which sessions are open (%d open now), so it never starts a copy", len(list))
 			} else if h.LiveSessions.ScanProcesses {
@@ -153,7 +153,8 @@ func cmdDoctor() int {
 	fmt.Println("\nDesktop apps")
 	compat := daemon.LoadCompat(p)
 	procs, _ := proc.List()
-	homes := map[string]string{"claude_home": cfg.ClaudeDir(), "codex_home": cfg.CodexDir(), "app_support": daemon.AppSupport()}
+	homes := cfg.Homes()
+	homes["app_support"] = daemon.AppSupport()
 	for _, name := range r.HarnessNames() {
 		h := r.Harness(name)
 		for _, a := range h.DesktopApps {

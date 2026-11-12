@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -111,3 +112,18 @@ func TTY(pid int) string { return "" }
 
 // ForegroundCommand is not available on Windows.
 func ForegroundCommand(tty string) string { return "" }
+
+// State is not available on Windows.
+func State(pid int) string { return "" }
+
+// StartTime is not available on Windows.
+func StartTime(pid int) (time.Time, bool) { return time.Time{}, false }
+
+// Node is one process in Tree.
+type Node struct {
+	PPID int
+	Name string
+}
+
+// Tree is not used on Windows.
+func Tree() map[int]Node { return nil }

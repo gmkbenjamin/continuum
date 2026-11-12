@@ -143,3 +143,52 @@ func ForegroundCommand(tty string) string {
 	}
 	return last
 }
+
+// State returns ps's STAT field for pid, e.g. "S+" (sleeping, in the
+// foreground of its terminal) or "T" (stopped, as after Ctrl+Z). "" when
+// unknown.
+func State(pid int) string {
+	out, err := Run(2*time.Second, "", "ps", "-o", "stat=", "-p", strconv.Itoa(pid))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// StartTime returns when pid started (to the second).
+func StartTime(pid int) (time.Time, bool) {
+	out, err := Run(2*time.Second, "", "ps", "-o", "lstart=", "-p", strconv.Itoa(pid))
+	if err != nil {
+		return time.Time{}, false
+	}
+	t, err := time.ParseInLocation("Mon Jan 2 15:04:05 2006", strings.Join(strings.Fields(out), " "), time.Local)
+	return t, err == nil
+}
+
+// Node is one process in Tree.
+type Node struct {
+	PPID int
+	Name string
+}
+
+// Tree returns every process's parent and command name, from one ps call.
+func Tree() map[int]Node {
+	out, err := Run(5*time.Second, "", "ps", "-axo", "pid=,ppid=,comm=")
+	if err != nil {
+		return nil
+	}
+	tree := map[int]Node{}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 {
+			continue
+		}
+		pid, err1 := strconv.Atoi(f[0])
+		ppid, err2 := strconv.Atoi(f[1])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		tree[pid] = Node{PPID: ppid, Name: filepath.Base(strings.Join(f[2:], " "))}
+	}
+	return tree
+}

@@ -10,12 +10,16 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/continuum-dev/continuum/internal/core"
+	"github.com/continuum-dev/continuum/internal/deliver"
 	"github.com/continuum-dev/continuum/internal/messages"
+	"github.com/continuum-dev/continuum/internal/mux"
+	"github.com/continuum-dev/continuum/internal/proc"
 	"github.com/continuum-dev/continuum/internal/rules"
 	"github.com/continuum-dev/continuum/internal/scope"
 	"github.com/continuum-dev/continuum/internal/store"
@@ -46,7 +50,8 @@ func sessionRows(window time.Duration, includeClosed bool) []sessionRow {
 	jobs, _ := store.LoadJobs(p.Jobs)
 	now := time.Now()
 	var rows []sessionRow
-	for _, s := range knownSessions() {
+	known := knownSessions()
+	for _, s := range known {
 		j := jobs[s.Harness+":"+s.ID]
 		pendingish := j != nil && (j.State == core.StatePending || j.State == core.StateNeedsUser)
 		if !s.Open && !pendingish && (now.Sub(s.LastSeen) > window || !includeClosed && !s.Open) {
@@ -65,7 +70,92 @@ func sessionRows(window time.Duration, includeClosed bool) []sessionRow {
 		row.Where = sessionWhere(s, r)
 		rows = append(rows, row)
 	}
+	return append(rows, wrapperRows(p, r, sc, jobs, known, now)...)
+}
+
+// wrapperRows lists agents running in Continuum's wrapper that no session
+// list knows of (agents without one: Antigravity, Cursor, Gemini, ...).
+func wrapperRows(p core.Paths, r *rules.Rules, sc scope.Scope, jobs map[string]*core.Job, known []knownSession, now time.Time) []sessionRow {
+	seen := map[string]bool{}
+	for _, s := range known {
+		if s.Location != nil && s.Location.Kind == "wrapper" {
+			seen[s.Location.Target] = true
+		}
+	}
+	entries, _ := os.ReadDir(p.Wrappers)
+	var rows []sessionRow
+	for _, e := range entries {
+		id := e.Name()
+		if !e.IsDir() || seen[id] || !deliver.WrapperAlive(p, id) {
+			continue
+		}
+		var meta struct {
+			Harness string    `json:"harness"`
+			Cwd     string    `json:"cwd"`
+			Started time.Time `json:"started"`
+		}
+		data, _ := os.ReadFile(filepath.Join(p.Wrappers, id, "meta.json"))
+		if json.Unmarshal(data, &meta) != nil || meta.Harness == "" {
+			continue
+		}
+		loc := &core.Location{Kind: "wrapper", Target: id}
+		probe := &core.Job{Harness: meta.Harness, Cwd: meta.Cwd, Location: loc}
+		covered, _ := sc.Covers(probe)
+		row := sessionRow{Agent: meta.Harness, Folder: meta.Cwd, Open: true, Covered: covered, LastSeen: meta.Started,
+			State: "active", Detail: "open (in Continuum's wrapper)"}
+		if h := r.Harness(meta.Harness); h != nil && h.DisplayName != "" {
+			row.Agent = h.DisplayName
+		}
+		if j := jobs[meta.Harness+"@"+loc.String()]; j != nil {
+			if st, detail := sessionState(knownSession{Open: true}, j, covered, now); st != "active" {
+				row.State, row.Detail = st, detail
+			}
+		}
+		pid, _ := strconv.Atoi(strings.TrimSpace(readSmall(filepath.Join(p.Wrappers, id, "pid"))))
+		row.Where = sessionWhere(knownSession{Open: true, Location: loc, Host: hostFromEnv(r, proc.Environ(pid))}, r)
+		rows = append(rows, row)
+	}
 	return rows
+}
+
+func readSmall(path string) string {
+	data, _ := os.ReadFile(path)
+	return string(data)
+}
+
+// terminalApps names terminal apps from TERM_PROGRAM.
+var terminalApps = map[string]string{
+	"apple_terminal": "Terminal", "iterm.app": "iTerm2", "ghostty": "Ghostty", "wezterm": "WezTerm",
+	"vscode": "VS Code", "warpterminal": "Warp", "hyper": "Hyper", "tabby": "Tabby", "zed": "Zed",
+	"rio": "Rio", "kitty": "kitty", "alacritty": "Alacritty", "tmux": "tmux", "rex": "Rex",
+}
+
+// hostFromEnv names where a process runs from its environment: the
+// multiplexer pane it is in, else the terminal app.
+func hostFromEnv(r *rules.Rules, env map[string]string) string {
+	if len(env) == 0 {
+		return ""
+	}
+	if r != nil {
+		if loc := mux.LocateFromEnv(r, env); loc != nil {
+			if name, ok := muxNames[loc.Kind]; ok {
+				return name
+			}
+			return loc.Kind
+		}
+	}
+	switch {
+	case env["CURSOR_TRACE_ID"] != "" && strings.EqualFold(env["TERM_PROGRAM"], "vscode"):
+		return "Cursor"
+	case env["KITTY_WINDOW_ID"] != "":
+		return "kitty"
+	case env["ALACRITTY_WINDOW_ID"] != "":
+		return "Alacritty"
+	}
+	if name, ok := terminalApps[strings.ToLower(env["TERM_PROGRAM"])]; ok {
+		return name
+	}
+	return ""
 }
 
 // sessionState says what a session is doing, most important first: what
@@ -155,7 +245,11 @@ func sessionWhere(s knownSession, r *rules.Rules) string {
 	if s.Location != nil && s.Location.Kind != "" {
 		switch s.Location.Kind {
 		case "wrapper":
-			return "terminal (via Continuum)"
+			host := s.Host
+			if host == "" {
+				host = "terminal"
+			}
+			return host + " (via Continuum)"
 		case "tmux":
 			return "tmux " + s.Location.Target
 		}
@@ -169,6 +263,9 @@ func sessionWhere(s knownSession, r *rules.Rules) string {
 	}
 	if s.Kind == "background" {
 		return "background"
+	}
+	if s.Open && s.Host != "" {
+		return s.Host
 	}
 	if s.Open {
 		return "terminal"

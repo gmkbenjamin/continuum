@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -112,4 +113,16 @@ func AugmentedPATH() string {
 		out = append(out, p)
 	}
 	return strings.Join(out, string(os.PathListSeparator))
+}
+
+var environOnce struct {
+	sync.Once
+	ok bool
+}
+
+// EnvironSupported reports whether Environ can read processes' environments
+// on this system.
+func EnvironSupported() bool {
+	environOnce.Do(func() { environOnce.ok = len(Environ(os.Getpid())) > 0 })
+	return environOnce.ok
 }

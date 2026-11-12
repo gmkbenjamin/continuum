@@ -38,12 +38,20 @@ func sandboxHome(t *testing.T) string {
 	t.Setenv("ZDOTDIR", "")
 	t.Setenv("SHELL", "/bin/zsh")
 	t.Setenv("CONTINUUM_HOME", "")
-	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	t.Setenv("CODEX_HOME", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+	t.Setenv("GROK_HOME", filepath.Join(home, ".grok"))
 	os.MkdirAll(filepath.Join(home, ".claude"), 0o700)
 	os.MkdirAll(filepath.Join(home, ".codex"), 0o700)
 	os.MkdirAll(filepath.Join(home, ".local", "bin"), 0o700)
-	t.Setenv("PATH", filepath.Join(home, ".local", "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// Stand-ins for the agents: tests never run the real ones (they would
+	// write files of their own, and depend on what is installed here).
+	stubs := filepath.Join(home, "stub-bin")
+	os.MkdirAll(stubs, 0o700)
+	for _, name := range []string{"claude", "codex"} {
+		os.WriteFile(filepath.Join(stubs, name), []byte("#!/bin/sh\ncase \"$*\" in *--version*) echo '0.0.0 (test stand-in)';; *agents*) echo '[]';; esac\nexit 0\n"), 0o755)
+	}
+	t.Setenv("PATH", filepath.Join(home, ".local", "bin")+string(os.PathListSeparator)+stubs+string(os.PathListSeparator)+"/usr/bin:/bin:/usr/sbin:/sbin")
 	os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte("{\n  \"model\": \"opus\"\n}\n"), 0o600)
 	os.WriteFile(filepath.Join(home, ".zshrc"), []byte("export EDITOR=vim\n"), 0o600)
 	return home

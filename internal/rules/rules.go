@@ -116,6 +116,9 @@ type LiveSessions struct {
 	RequiresHelp []string `json:"requires_help"`
 	// RegistryDir holds one JSON file per running session, keyed by pid.
 	RegistryDir string `json:"registry_dir"`
+	// RegistryFile is one JSON array of the open sessions (session id, pid,
+	// cwd), as Grok Build keeps in ~/.grok/active_sessions.json.
+	RegistryFile string `json:"registry_file"`
 	// Process scan: processes named like the agent, minus helper processes.
 	ScanProcesses      bool     `json:"scan_processes"`
 	ProcessExcludeArgs []string `json:"process_exclude_args"`
@@ -198,9 +201,16 @@ type Harness struct {
 	Homepage  string `json:"homepage"`
 	// DesktopApps that can hold this agent's sessions.
 	DesktopApps []*DesktopApp `json:"desktop_apps"`
+	// IgnoreEntrypoints match entrypoints of runs nobody types into (print
+	// mode, SDK scripts): Continuum never schedules a resume for them.
+	IgnoreEntrypoints []string `json:"ignore_entrypoints"`
+	// HookEnv: environment variables this agent sets when it runs a hook. A
+	// hook installed for another agent (which this one also runs) is then
+	// recognised as this agent's.
+	HookEnv []string `json:"hook_env"`
 
-	nativeWait, nativeGaveUp, neverResume, uiMarkers, processRes, argRes []*regexp.Regexp
-	commonMerged                                                         bool
+	nativeWait, nativeGaveUp, neverResume, uiMarkers, processRes, argRes, ignoreEntry []*regexp.Regexp
+	commonMerged                                                                      bool
 }
 
 // InShellHook reports whether the shell hook wraps this agent by default.
@@ -425,6 +435,9 @@ func (r *Rules) compile() error {
 		if h.neverResume, err = compileAll(h.NeverResumePatterns); err != nil {
 			return fmt.Errorf("harness %s: %w", name, err)
 		}
+		if h.ignoreEntry, err = compileAll(h.IgnoreEntrypoints); err != nil {
+			return fmt.Errorf("harness %s: %w", name, err)
+		}
 		if h.uiMarkers, err = compileAll(h.UIMarkers); err != nil {
 			return fmt.Errorf("harness %s: %w", name, err)
 		}
@@ -522,7 +535,8 @@ func (h *Harness) Grace(d Defaults) int {
 // Match is one detection hit.
 type Match struct {
 	Kind string // usage_limit | transient
-	Text string // the matched line
+	Text string // the matched line, with a line of context either side
+	Hit  string // the text the pattern matched
 }
 
 // Classify scans text for limit messages. Only the last tailLines non-empty
@@ -545,7 +559,7 @@ func (h *Harness) Classify(text string, tailLines int) *Match {
 				if i > 0 {
 					ctx = lines[i-1] + "\n" + ctx
 				}
-				return &Match{Kind: p.Kind, Text: strings.TrimSpace(ctx)}
+				return &Match{Kind: p.Kind, Text: strings.TrimSpace(ctx), Hit: p.re.FindString(line)}
 			}
 		}
 	}
@@ -565,6 +579,45 @@ func (h *Harness) NeverResume(text string) bool   { return h != nil && anyMatch(
 func (h *Harness) NativeWaiting(text string) bool { return h != nil && anyMatch(h.nativeWait, text) }
 func (h *Harness) NativeGaveUp(text string) bool  { return h != nil && anyMatch(h.nativeGaveUp, text) }
 func (h *Harness) HasUIMarker(text string) bool   { return h != nil && anyMatch(h.uiMarkers, text) }
+
+// HookHarness returns the agent whose hook variables are set in env (an
+// agent that runs another agent's hooks), or "".
+func (r *Rules) HookHarness(env map[string]string) string {
+	for _, n := range r.HarnessNames() {
+		for _, v := range r.Harness(n).HookEnv {
+			if env[v] != "" {
+				return n
+			}
+		}
+	}
+	return ""
+}
+
+// IgnoredEntrypoint reports whether runs with this entrypoint (print mode, an
+// SDK script) are left alone.
+func (h *Harness) IgnoredEntrypoint(ep string) bool {
+	return h != nil && ep != "" && anyMatch(h.ignoreEntry, ep)
+}
+
+// HasStrongUIMarker is HasUIMarker without the one-symbol markers (a prompt
+// character or a box corner), which a shell prompt or an editor can show too.
+func (h *Harness) HasStrongUIMarker(text string) bool {
+	if h == nil {
+		return false
+	}
+	for i, re := range h.uiMarkers {
+		letters := 0
+		for _, c := range h.UIMarkers[i] {
+			if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' {
+				letters++
+			}
+		}
+		if letters >= 4 && re.MatchString(text) {
+			return true
+		}
+	}
+	return false
+}
 
 // IsHarnessProcess reports whether a process name belongs to this harness.
 func (h *Harness) IsHarnessProcess(name string) bool {
@@ -589,6 +642,19 @@ func (h *Harness) IsHarnessProcess(name string) bool {
 // waiting for input. Typing there could pick an option, so callers must not.
 func (r *Rules) BlockingDialog(screen string) string {
 	for _, l := range TailLines(screen, 12) {
+		for _, re := range r.blocking {
+			if re.MatchString(l) {
+				return strings.TrimSpace(l)
+			}
+		}
+	}
+	return ""
+}
+
+// BlockingDialogAnywhere is BlockingDialog over all of text, for output
+// whose last lines may be partial redraws rather than the whole screen.
+func (r *Rules) BlockingDialogAnywhere(text string) string {
+	for _, l := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
 		for _, re := range r.blocking {
 			if re.MatchString(l) {
 				return strings.TrimSpace(l)

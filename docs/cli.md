@@ -291,8 +291,8 @@ Usage:
              API error · retrying, resumed 10:55 by Continuum, needs you
              (billing, sign-in), not resuming (excluded or not chosen),
              closed
-    WHERE    where it runs: tmux, Rex, a terminal via Continuum, Claude
-             Desktop, background, ...
+    WHERE    where it runs: tmux, Rex, iTerm2, Claude Desktop, background...
+             "(via Continuum)": through Continuum's wrapper
     COVERED  whether Continuum will resume it (see `continuum scope`)
 
   New sessions appear by themselves within seconds of starting; nothing needs
@@ -381,7 +381,7 @@ Usage:
   continuum cancel ID|all
 
 Arguments:
-  ID         a resume from `continuum list` (or a session id prefix)
+  ID         a resume from `continuum list`, a session id, or its first 4+ characters (it must name one session)
   all        every pending resume
 
 Options:
@@ -402,10 +402,12 @@ Usage:
   (also: now)
 
   Useful when you bought extra usage or the limit was lifted early. The usual
-  safety checks (still stalled, no menu open, never a copy) still apply.
+  safety checks (still stalled, no menu open, never a copy) still apply. Naming a
+  session also retries one that finished (resumed, skipped, cancelled, failed);
+  `all` covers pending resumes only. A billing or sign-in stop is never resumed.
 
 Arguments:
-  ID         a resume from `continuum list` (or a session id prefix)
+  ID         a resume from `continuum list`, a session id, or its first 4+ characters (it must name one session)
   all        every pending resume
 
 Options:
@@ -761,7 +763,8 @@ continuum stop - Stop the background daemon
 Usage:
   continuum stop
 
-  If the login item is installed, the daemon starts again at the next login.
+  It stays stopped (hooks don't start it again) until `continuum start`, or until
+  your next login if the login item is installed.
 
 Options:
   -h, --help             Show this help.
@@ -781,208 +784,4 @@ Options:
   --once                 Run one pass (collect events, resume what is due) and
                          exit.
   -h, --help             Show this help.
-```
-
-## continuum
-
-```text
-continuum: no help for "continuum"
-
-continuum - work never loses its momentum
-
-Keeps AI coding agents (Claude Code, Codex, Gemini CLI, opencode, Aider, Cursor,
-Copilot and more) working through usage limits and API outages. When an agent
-stalls, Continuum waits for the limit to reset and continues the same session,
-in place: never a copy, never a new session. Works in any terminal, with the
-window unfocused or the screen locked.
-
-Usage:
-  continuum                     the interactive menu (in a terminal)
-  continuum <command> [options] [arguments]
-  continuum <command> -h        help for a command
-
-Set up:
-  install      Hook Continuum into your agents, shell and login items
-  update       Apply this version: refresh hooks, shell hook and login item
-  uninstall    Remove everything Continuum added
-  doctor       Check agents, hooks, terminals and rules
-  diagnose     Write a report for troubleshooting or a bug report
-  interactive  A menu for everything Continuum does
-  status       Show the daemon, hooks, and every session and its state
-  version      Print the version
-
-Sessions and resumes:
-  sessions     List sessions with their state, and which message each gets
-  list         Show scheduled and recent resumes
-  cancel       Cancel scheduled resumes
-  resume-now   Resume now instead of waiting for the reset
-
-All or chosen sessions:
-  scope        Resume every session, or only the ones you choose
-  choose       Choose sessions to resume (scope "chosen")
-  unchoose     Remove sessions from the chosen list
-  exclude      Never resume these sessions, whatever the scope
-  include      Undo exclude
-
-Tuning:
-  grace        How long to let an agent resume by itself first
-  message      What Continuum types to continue a session
-  detect       Show what Continuum makes of a message
-  rules        Print the effective rules
-
-Running agents:
-  run          Run an agent under Continuum's terminal wrapper
-  shell-init   Print the shell functions that wrap installed agents
-
-Background daemon:
-  watch        Run Continuum in this terminal, showing what it does
-  logs         Show or follow what the background daemon is doing
-  start        Start the background daemon
-  stop         Stop the background daemon
-  daemon       Run the daemon in the foreground (for debugging)
-
-Getting started:
-  continuum install --dry-run     see what install would change
-  continuum install               set everything up
-  continuum doctor                check it
-
-Files live in ~/.continuum (set CONTINUUM_HOME to move them): config.json,
-scope.json, rules.json (overrides), history.jsonl, daemon.log.
-Documentation: README.md, and docs/ in the source repository.
-```
-
-## continuum
-
-```text
-continuum: no help for "continuum"
-
-continuum - work never loses its momentum
-
-Keeps AI coding agents (Claude Code, Codex, Gemini CLI, opencode, Aider, Cursor,
-Copilot and more) working through usage limits and API outages. When an agent
-stalls, Continuum waits for the limit to reset and continues the same session,
-in place: never a copy, never a new session. Works in any terminal, with the
-window unfocused or the screen locked.
-
-Usage:
-  continuum                     the interactive menu (in a terminal)
-  continuum <command> [options] [arguments]
-  continuum <command> -h        help for a command
-
-Set up:
-  install      Hook Continuum into your agents, shell and login items
-  update       Apply this version: refresh hooks, shell hook and login item
-  uninstall    Remove everything Continuum added
-  doctor       Check agents, hooks, terminals and rules
-  diagnose     Write a report for troubleshooting or a bug report
-  interactive  A menu for everything Continuum does
-  status       Show the daemon, hooks, and every session and its state
-  version      Print the version
-
-Sessions and resumes:
-  sessions     List sessions with their state, and which message each gets
-  list         Show scheduled and recent resumes
-  cancel       Cancel scheduled resumes
-  resume-now   Resume now instead of waiting for the reset
-
-All or chosen sessions:
-  scope        Resume every session, or only the ones you choose
-  choose       Choose sessions to resume (scope "chosen")
-  unchoose     Remove sessions from the chosen list
-  exclude      Never resume these sessions, whatever the scope
-  include      Undo exclude
-
-Tuning:
-  grace        How long to let an agent resume by itself first
-  message      What Continuum types to continue a session
-  detect       Show what Continuum makes of a message
-  rules        Print the effective rules
-
-Running agents:
-  run          Run an agent under Continuum's terminal wrapper
-  shell-init   Print the shell functions that wrap installed agents
-
-Background daemon:
-  watch        Run Continuum in this terminal, showing what it does
-  logs         Show or follow what the background daemon is doing
-  start        Start the background daemon
-  stop         Stop the background daemon
-  daemon       Run the daemon in the foreground (for debugging)
-
-Getting started:
-  continuum install --dry-run     see what install would change
-  continuum install               set everything up
-  continuum doctor                check it
-
-Files live in ~/.continuum (set CONTINUUM_HOME to move them): config.json,
-scope.json, rules.json (overrides), history.jsonl, daemon.log.
-Documentation: README.md, and docs/ in the source repository.
-```
-
-## continuum
-
-```text
-continuum: no help for "continuum"
-
-continuum - work never loses its momentum
-
-Keeps AI coding agents (Claude Code, Codex, Gemini CLI, opencode, Aider, Cursor,
-Copilot and more) working through usage limits and API outages. When an agent
-stalls, Continuum waits for the limit to reset and continues the same session,
-in place: never a copy, never a new session. Works in any terminal, with the
-window unfocused or the screen locked.
-
-Usage:
-  continuum                     the interactive menu (in a terminal)
-  continuum <command> [options] [arguments]
-  continuum <command> -h        help for a command
-
-Set up:
-  install      Hook Continuum into your agents, shell and login items
-  update       Apply this version: refresh hooks, shell hook and login item
-  uninstall    Remove everything Continuum added
-  doctor       Check agents, hooks, terminals and rules
-  diagnose     Write a report for troubleshooting or a bug report
-  interactive  A menu for everything Continuum does
-  status       Show the daemon, hooks, and every session and its state
-  version      Print the version
-
-Sessions and resumes:
-  sessions     List sessions with their state, and which message each gets
-  list         Show scheduled and recent resumes
-  cancel       Cancel scheduled resumes
-  resume-now   Resume now instead of waiting for the reset
-
-All or chosen sessions:
-  scope        Resume every session, or only the ones you choose
-  choose       Choose sessions to resume (scope "chosen")
-  unchoose     Remove sessions from the chosen list
-  exclude      Never resume these sessions, whatever the scope
-  include      Undo exclude
-
-Tuning:
-  grace        How long to let an agent resume by itself first
-  message      What Continuum types to continue a session
-  detect       Show what Continuum makes of a message
-  rules        Print the effective rules
-
-Running agents:
-  run          Run an agent under Continuum's terminal wrapper
-  shell-init   Print the shell functions that wrap installed agents
-
-Background daemon:
-  watch        Run Continuum in this terminal, showing what it does
-  logs         Show or follow what the background daemon is doing
-  start        Start the background daemon
-  stop         Stop the background daemon
-  daemon       Run the daemon in the foreground (for debugging)
-
-Getting started:
-  continuum install --dry-run     see what install would change
-  continuum install               set everything up
-  continuum doctor                check it
-
-Files live in ~/.continuum (set CONTINUUM_HOME to move them): config.json,
-scope.json, rules.json (overrides), history.jsonl, daemon.log.
-Documentation: README.md, and docs/ in the source repository.
 ```

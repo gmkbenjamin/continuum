@@ -9,11 +9,19 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/continuum-it.XXXXXX")}
 export CONTINUUM_HOME="$WORK/home"
 export CONTINUUM_BIN="$WORK/continuum"
+# The test's own tmux server: the pane scanner watches only this one, never
+# yours.
+IT_TMUX_SOCKET="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/continuum-it"
 FAKE="$ROOT/scripts/fake-agent.sh"
 mkdir -p "$CONTINUUM_HOME" "$WORK/claude/projects" "$WORK/codex/sessions" "$WORK/markers"
 chmod +x "$FAKE"
 
 (cd "$ROOT" && go build -o "$CONTINUUM_BIN" ./cmd/continuum) || exit 1
+# Stand-ins for Claude Code and Codex: real programs of those names, as the
+# agents are (Continuum checks which program runs in a pane before typing).
+mkdir -p "$WORK/bin"
+(cd "$ROOT" && go build -o "$WORK/bin/claude" ./scripts/fakeagent) || exit 1
+cp "$WORK/bin/claude" "$WORK/bin/codex"
 
 cat > "$CONTINUUM_HOME/config.json" <<EOF
 {
@@ -23,8 +31,10 @@ cat > "$CONTINUUM_HOME/config.json" <<EOF
   "delay_after_reset_seconds": 1,
   "native_grace_seconds": {"claude": 0, "codex": 0},
   "strategies": ["wrapper", "multiplexer"],
+  "binaries": {"claude": "$WORK/no-such-claude", "codex": "$WORK/no-such-codex"},
   "poll_seconds": 1,
-  "scan_panes": true
+  "scan_panes": true,
+  "scan_tmux_socket": "$IT_TMUX_SOCKET"
 }
 EOF
 
@@ -36,13 +46,12 @@ have() { command -v "$1" >/dev/null 2>&1; }
 agent_cmd() { # harness session [event]
   # env -u: the fake agents must not inherit the pid of a real Claude session
   # running this script (Continuum would rightly refuse to touch it).
-  printf 'env -u CLAUDE_PID -u CLAUDECODE CONTINUUM_HOME=%q CONTINUUM_BIN=%q bash %q %q %q %q %q' \
-    "$CONTINUUM_HOME" "$CONTINUUM_BIN" "$FAKE" "$1" "$2" "$WORK/markers/$2" "${3:-Stop}"
+  printf 'env -u CLAUDE_PID -u CLAUDECODE CONTINUUM_HOME=%q CONTINUUM_BIN=%q %q %q %q %q' \
+    "$CONTINUUM_HOME" "$CONTINUUM_BIN" "$WORK/bin/$1" "$2" "$WORK/markers/$2" "${3:-StopFailure}"
 }
 
 cleanup() {
   have tmux && tmux -L continuum-it kill-server 2>/dev/null
-  [ -n "${NODE_IT:-}" ] && tmux kill-session -t continuum-it-node 2>/dev/null
   have screen && screen -S continuum-it -X quit >/dev/null 2>&1
   have zellij && zellij delete-session --force continuum-it >/dev/null 2>&1
   have rex && [ -n "${REX_IT:-}" ] && rex kill "$REX_IT" >/dev/null 2>&1
@@ -63,6 +72,12 @@ else skipped+=(tmux); fi
 # --- safety: an approval menu is open, Continuum must NOT type into it ---
 if have tmux; then
   tmux -L continuum-it new-window -d -t it "FAKE_DIALOG=1 $(agent_cmd codex it-dialog)"
+fi
+
+# --- safety: the agent quit after its limit and another program now runs in
+# the pane (the old screen still shows the agent): Continuum must NOT type ---
+if have tmux; then
+  tmux -L continuum-it new-window -d -t it "FAKE_EXIT=1 $(agent_cmd claude it-exited); exec cat > $WORK/typed-into-cat"
 fi
 
 # --- GNU screen (detached) ---
@@ -102,7 +117,7 @@ else skipped+=(rex); fi
 # --- an agent running under node, no hooks, found by the pane scanner ---
 # tmux only reports "node" for it; Continuum must recognise Gemini CLI from the
 # command line, see the limit on screen and type into the pane. The scanner
-# watches the default tmux server, so this uses its own session there.
+# watches the test's own tmux server (scan_tmux_socket).
 if have tmux && have node; then
   GEM="$WORK/node_modules/@google/gemini-cli/dist"
   mkdir -p "$GEM"
@@ -116,8 +131,7 @@ process.stdin.on('data', d => {
   if (i >= 0) { fs.writeFileSync(marker, 'RESUMED: ' + buf.slice(0, i) + '\n'); setTimeout(() => process.exit(0), 120000); }
 });
 JS
-  tmux new-session -d -s continuum-it-node -x 160 -y 40 "node $GEM/index.js $WORK/markers/it-node"
-  NODE_IT=1
+  tmux -L continuum-it new-session -d -s it-node -x 160 -y 40 "node $GEM/index.js $WORK/markers/it-node"
   NAMES+=(it-node)
 else skipped+=(node-agent); fi
 
@@ -149,6 +163,23 @@ if have tmux; then
     pass=$((pass + 1))
   else
     echo "✗ safety: no refusal recorded for the approval menu"
+    fail=$((fail + 1))
+  fi
+fi
+if have tmux; then
+  # Its resume was due with the others; give it a moment to be tried.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    "$CONTINUUM_BIN" list --json | grep -q '"it-exited".*"attempts": *[1-9]\|it-exited.*no longer runs\|it-exited.*runs cat' && break
+    sleep 1
+  done
+  if [ -s "$WORK/typed-into-cat" ]; then
+    echo "✗ safety: typed into the program that replaced the agent"
+    fail=$((fail + 1))
+  elif "$CONTINUUM_BIN" list --json | grep -q 'no longer runs Claude Code\|runs cat, not Claude Code'; then
+    echo "✓ safety: refused to type into a pane the agent had left"
+    pass=$((pass + 1))
+  else
+    echo "✗ safety: no refusal recorded for the pane the agent had left"
     fail=$((fail + 1))
   fi
 fi

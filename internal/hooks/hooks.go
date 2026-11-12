@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/continuum-dev/continuum/internal/core"
 	"github.com/continuum-dev/continuum/internal/mux"
@@ -70,6 +71,9 @@ func BuildEvent(r *rules.Rules, harness string, in Input, env map[string]string,
 	if v := env["CLAUDE_CODE_ENTRYPOINT"]; v != "" && harness == "claude" {
 		ev.Entrypoint = v
 	}
+	if h.IgnoredEntrypoint(ev.Entrypoint) {
+		return ev, false // print mode or an SDK script: nobody types into it
+	}
 	if pid, err := strconv.Atoi(env["CLAUDE_PID"]); err == nil && harness == "claude" {
 		ev.PID = pid
 	}
@@ -104,15 +108,15 @@ func BuildEvent(r *rules.Rules, harness string, in Input, env map[string]string,
 				ev.ResetAt = t
 			}
 		}
-	case "stop", "userpromptsubmit", "posttooluse":
-		// A turn ended normally (or the user typed): if the last message is a
-		// limit message treat it as one, otherwise it is activity.
-		if m := h.Classify(in.LastAssistantMessage, 8); m != nil {
-			ev.Kind = m.Kind
-			ev.Message = in.LastAssistantMessage
-			if t, ok := resettime.Parse(in.LastAssistantMessage, now, time.Local); ok {
-				ev.ResetAt = t
-			}
+	case "stop":
+		// A turn ended normally. Real limits and API errors arrive through
+		// StopFailure (and the transcript), so this is activity, unless the
+		// reply reads like a limit message: then it is reported as a reply,
+		// which neither starts nor cancels a resume, and tells the daemon
+		// that the same text read off the screen is not a stall.
+		if h.Classify(in.LastAssistantMessage, 8) != nil {
+			ev.Kind = core.KindReply
+			ev.Message = clip(in.LastAssistantMessage, 8000)
 		} else {
 			ev.Kind = core.KindActivity
 		}
@@ -123,6 +127,91 @@ func BuildEvent(r *rules.Rules, harness string, in Input, env map[string]string,
 		ev.PID = findAncestor(h)
 	}
 	return ev, true
+}
+
+func clip(s string, n int) string {
+	if len(s) > n {
+		return s[len(s)-n:]
+	}
+	return s
+}
+
+func grokHasOwnHook() bool {
+	cfg, _ := core.LoadConfig(core.GetPaths().Config)
+	data, err := os.ReadFile(GrokHookFile(cfg))
+	return err == nil && isOurs(string(data))
+}
+
+// ProcTree lists processes for the checks below. Tests replace it.
+var ProcTree = proc.Tree
+
+// cliAgent returns the agent a process name belongs to. Desktop apps (named
+// with a capital, like "Claude" or "Cursor") don't count.
+func cliAgent(r *rules.Rules, name string) string {
+	if name == "" || unicode.IsUpper([]rune(name)[0]) {
+		return ""
+	}
+	for _, n := range r.HarnessNames() {
+		if r.Harness(n).IsHarnessProcess(name) {
+			return n
+		}
+	}
+	return ""
+}
+
+// nearestAgent is the agent running the hook: the closest ancestor of pid
+// that is an agent's CLI ("" when none is).
+func nearestAgent(r *rules.Rules, tree map[int]proc.Node, pid int) string {
+	for steps := 0; pid > 1 && steps < 30; steps++ {
+		n, ok := tree[pid]
+		if !ok {
+			return ""
+		}
+		if a := cliAgent(r, n.Name); a != "" {
+			return a
+		}
+		pid = n.PPID
+	}
+	return ""
+}
+
+// nested walks up from pid: past the agent running the hook (and helper
+// processes of the same name), looking for another agent further up.
+// Desktop apps (named with a capital, like "Claude") don't count: they host
+// sessions people work in.
+func nested(r *rules.Rules, tree map[int]proc.Node, pid int) bool {
+	if len(tree) == 0 {
+		return false
+	}
+	isAgent := func(name string) bool { return cliAgent(r, name) != "" }
+	steps := 0
+	for ; pid > 1 && steps < 30; steps++ {
+		n, ok := tree[pid]
+		if !ok {
+			return false
+		}
+		if isAgent(n.Name) {
+			break
+		}
+		pid = n.PPID
+	}
+	if pid <= 1 || steps >= 30 {
+		return false
+	}
+	own := tree[pid].Name
+	for pid = tree[pid].PPID; pid > 1 && tree[pid].Name == own; pid = tree[pid].PPID {
+	}
+	for ; pid > 1 && steps < 60; steps++ {
+		n, ok := tree[pid]
+		if !ok {
+			return false
+		}
+		if isAgent(n.Name) {
+			return true
+		}
+		pid = n.PPID
+	}
+	return false
 }
 
 // findAncestor returns the pid of the nearest ancestor process that is the
@@ -160,9 +249,29 @@ func Handle(harness string, stdin io.Reader, environ []string) {
 	if r == nil {
 		return
 	}
-	ev, ok := BuildEvent(r, harness, in, mux.EnvMap(environ), time.Now())
+	env := mux.EnvMap(environ)
+	tree := ProcTree()
+	if other := r.HookHarness(env); other != "" && other != harness {
+		// Another agent ran this agent's hook (Grok Build runs Claude Code's),
+		// unless the variable was only inherited by this agent.
+		if a := nearestAgent(r, tree, os.Getppid()); a == "" || a == other {
+			if other == "grok" && grokHasOwnHook() {
+				return // Grok runs Continuum's own Grok hook too; that one reports
+			}
+			debugHook(p, harness, "run by "+other+"; reporting it as "+other)
+			harness = other
+		}
+	}
+	ev, ok := BuildEvent(r, harness, in, env, time.Now())
 	if !ok {
 		debugHook(p, harness, in.HookEventName+": nothing to report")
+		return
+	}
+	if nested(r, tree, os.Getppid()) {
+		// An agent another agent started (a `claude -p` from a Bash tool,
+		// a script): it inherited its parent's pane or wrapper, and nobody
+		// types into it.
+		debugHook(p, harness, in.HookEventName+": started by another agent; ignored")
 		return
 	}
 	debugHook(p, harness, fmt.Sprintf("%s: %s session=%s where=%s", in.HookEventName, ev.Kind, ev.SessionID, ev.Location.String()))
@@ -190,8 +299,14 @@ func Targets(c core.Config) []Target {
 	return []Target{
 		{Harness: "claude", Path: filepath.Join(c.ClaudeDir(), "settings.json"), Events: []string{"SessionStart", "StopFailure", "Stop", "SessionEnd"}, Timeout: 10},
 		{Harness: "codex", Path: filepath.Join(c.CodexDir(), "hooks.json"), Events: []string{"SessionStart", "Stop"}, Timeout: 10},
+		// Grok Build reads every JSON file in ~/.grok/hooks; this one is
+		// Continuum's own, removed whole on uninstall.
+		{Harness: "grok", Path: GrokHookFile(c), Events: []string{"SessionStart", "StopFailure", "Stop", "SessionEnd"}, Timeout: 10},
 	}
 }
+
+// GrokHookFile is Continuum's hook file for Grok Build.
+func GrokHookFile(c core.Config) string { return filepath.Join(c.GrokDir(), "hooks", "continuum.json") }
 
 func quote(path string) string {
 	if strings.ContainsAny(path, " \t'\"()&;") {
@@ -575,6 +690,15 @@ func write(path string, root *object, original []byte, dryRun bool) (bool, error
 // backup (two changes in the same second get -2, -3, ...), so the copy of the
 // user's original file is never lost.
 func SaveBackup(path string, data []byte) error {
+	// One copy of each version is enough (the daemon re-adds hooks a
+	// dotfiles tool keeps removing; that must not pile up backups).
+	if list, _ := filepath.Glob(path + ".continuum-backup-*"); len(list) > 0 {
+		for _, b := range list {
+			if old, err := os.ReadFile(b); err == nil && string(old) == string(data) {
+				return nil
+			}
+		}
+	}
 	base := path + ".continuum-backup-" + time.Now().Format("20060102-150405")
 	name := base
 	for i := 2; i < 1000; i++ {

@@ -182,6 +182,10 @@ func parseSegment(seg string, ref time.Time, local *time.Location) (time.Time, b
 		}
 	case dayShift >= 0:
 		t = t.AddDate(0, 0, dayShift)
+		// "resets Mon 6pm" seen on Monday after 6pm means next Monday.
+		if t.Before(ref.Add(-5 * time.Minute)) {
+			t = t.AddDate(0, 0, 7)
+		}
 	default:
 		// Time of day only: the next occurrence after the message appeared.
 		if t.Before(ref.Add(-5 * time.Minute)) {

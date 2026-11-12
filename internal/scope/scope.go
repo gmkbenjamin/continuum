@@ -11,6 +11,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -128,8 +129,28 @@ func (e Entry) Matches(j *core.Job) bool {
 	return false
 }
 
+// within reports whether path is dir or inside it. Both are compared as
+// given and with symlinks resolved (an agent records the physical path, so
+// /tmp/x is /private/tmp/x on macOS); on macOS and Windows, ignoring case.
 func within(path, dir string) bool {
+	if inside(path, dir) {
+		return true
+	}
+	return inside(resolve(path), resolve(dir))
+}
+
+func resolve(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return p
+}
+
+func inside(path, dir string) bool {
 	path, dir = filepath.Clean(path), filepath.Clean(dir)
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		path, dir = strings.ToLower(path), strings.ToLower(dir)
+	}
 	if path == dir {
 		return true
 	}

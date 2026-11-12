@@ -110,7 +110,9 @@ func appSupport() string {
 }
 
 func (d *Daemon) homes() map[string]string {
-	return map[string]string{"claude_home": d.Config.ClaudeDir(), "codex_home": d.Config.CodexDir(), "app_support": appSupport()}
+	m := d.Config.Homes()
+	m["app_support"] = appSupport()
+	return m
 }
 
 // bundledVersion returns the newest version folder of a desktop app's

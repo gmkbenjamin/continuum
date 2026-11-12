@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -49,6 +50,10 @@ func runDaemon(o daemonOptions) error {
 		return err
 	}
 	defer lock.Close()
+	if launchedByService() {
+		// Started at login: `continuum stop` lasted until now.
+		_ = os.Remove(stoppedPath(p))
+	}
 	_ = os.WriteFile(p.PID, []byte(strconv.Itoa(os.Getpid())), 0o600)
 	defer os.Remove(p.PID)
 	_ = os.WriteFile(p.BinRecord, []byte(self()), 0o600)
@@ -84,7 +89,14 @@ func runDaemon(o daemonOptions) error {
 	stop := make(chan struct{})
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	go func() { <-sig; close(stop) }()
+	// Give Ctrl+C back afterwards (the interactive menu runs watch, then
+	// carries on).
+	defer signal.Stop(sig)
+	go func() {
+		if _, ok := <-sig; ok {
+			close(stop)
+		}
+	}()
 	d.Run(stop)
 	if o.Watch {
 		fmt.Printf("\nStopped. Limits that reset while Continuum isn't running are caught up the next\ntime it runs (up to %d hours back).\n", int(cfg.CatchUp().Hours()))
@@ -202,7 +214,7 @@ func ensureDaemon() {
 	defer func() { _ = recover() }()
 	p := core.GetPaths()
 	cfg, _ := core.LoadConfig(p.Config)
-	if !cfg.AutostartEnabled() || daemonRunning(p) {
+	if !cfg.AutostartEnabled() || stoppedByUser(p) || daemonRunning(p) {
 		return
 	}
 	_, _ = proc.StartDetached([]string{self(), "daemon"}, p.Home, deliver.CleanEnv(os.Environ()), p.Home+"/daemon.stderr.log")
@@ -211,4 +223,19 @@ func ensureDaemon() {
 func rulesOrNil(p core.Paths) *rules.Rules {
 	r, _ := rules.Cached(p.Rules)
 	return r
+}
+
+// `continuum stop` leaves a note so that hooks don't start the daemon again
+// straight away. `continuum start`, and the start at the next login, remove it.
+func stoppedPath(p core.Paths) string { return filepath.Join(p.Home, "stopped") }
+
+func stoppedByUser(p core.Paths) bool {
+	_, err := os.Stat(stoppedPath(p))
+	return err == nil
+}
+
+// launchedByService: started by launchd or systemd (at login), not by hand.
+func launchedByService() bool {
+	return strings.Contains(os.Getenv("XPC_SERVICE_NAME"), "continuum") ||
+		(os.Getenv("INVOCATION_ID") != "" && os.Getppid() == 1)
 }
