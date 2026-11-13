@@ -86,6 +86,10 @@ func main() {
 		err = cmdStart()
 	case "stop":
 		err = cmdStop()
+	case "this", "self":
+		err = cmdThis(args)
+	case "agent-guide":
+		err = cmdAgentGuide(args)
 	case "disable":
 		err = cmdDisable(args)
 	case "enable":
@@ -399,7 +403,13 @@ func cmdControl(action string, args []string) error {
 		return fmt.Errorf("usage: continuum %s ID|all", action)
 	}
 	sel := args[0]
-	if i := strings.IndexByte(sel, ':'); i >= 0 && !strings.Contains(sel, "@") {
+	if isThis(sel) {
+		h, err := thisSession()
+		if err != nil {
+			return err
+		}
+		sel = h.selector()
+	} else if i := strings.IndexByte(sel, ':'); i >= 0 && !strings.Contains(sel, "@") {
 		sel = sel[i+1:] // accept the harness:id form shown by list
 	}
 	if sel == "" {
@@ -609,7 +619,14 @@ func linkIntoPath(bin string, dry bool) {
 		fmt.Println("link:      would link", tildePath(link))
 		return
 	}
-	if err := os.Symlink(bin, link); err == nil {
+	// The folder is on PATH but may not exist yet.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		fmt.Println("link:      not created:", err)
+		return
+	}
+	if err := os.Symlink(bin, link); err != nil {
+		fmt.Println("link:      not created:", err)
+	} else {
 		fmt.Println("link:     ", tildePath(link))
 	}
 }
@@ -644,28 +661,49 @@ func cmdDetect(args []string) error {
 	if *harness != "" {
 		names = []string{*harness}
 	}
-	found := false
+	// Agents that read the message the same way are listed together.
+	type verdict struct{ kind, matched, resets string }
+	var order []verdict
+	who := map[verdict][]string{}
+	missed := 0
 	for _, n := range names {
 		h := r.Harness(n)
 		m := h.Classify(text, r.Defaults.TailLines)
+		if m == nil && h.NeverResume(text) {
+			// Billing or sign-in wording without a limit phrase: also never resumed.
+			m = &rules.Match{Kind: core.KindNeverResume, Text: strings.TrimSpace(text)}
+		}
 		if m == nil {
+			missed++
 			continue
 		}
-		found = true
-		kind := m.Kind
-		if h.NeverResume(m.Text) {
-			kind = core.KindNeverResume + " (needs you)"
+		v := verdict{kind: m.Kind, matched: strings.ReplaceAll(m.Text, "\n", " ⏎ "), resets: "unknown (Continuum would retry with backoff)"}
+		if m.Kind == core.KindNeverResume || h.NeverResume(m.Text) {
+			v.kind = core.KindNeverResume + " (needs you)"
+			v.resets = "never retried: it needs you (billing, credits, sign-in)"
+		} else if t, ok := resettime.Parse(m.Text, time.Now(), time.Local); ok {
+			v.resets = t.Local().Format("Mon 2 Jan 15:04:05 MST") + " (" + inDuration(time.Until(t)) + ")"
 		}
-		fmt.Printf("%-8s %s\n", n+":", kind)
-		fmt.Printf("         matched: %s\n", strings.ReplaceAll(m.Text, "\n", " ⏎ "))
-		if t, ok := resettime.Parse(m.Text, time.Now(), time.Local); ok {
-			fmt.Printf("         resets:  %s (%s)\n", t.Local().Format("Mon 2 Jan 15:04:05 MST"), inDuration(time.Until(t)))
-		} else {
-			fmt.Println("         resets:  unknown (Continuum would retry with backoff)")
+		if who[v] == nil {
+			order = append(order, v)
 		}
+		who[v] = append(who[v], n)
 	}
-	if !found {
+	if len(order) == 0 {
 		fmt.Println("no limit message detected")
+		return nil
+	}
+	for _, v := range order {
+		agents := strings.Join(who[v], ", ")
+		if len(who[v]) == len(names) && len(names) > 1 {
+			agents = "every agent"
+		}
+		fmt.Printf("%s: %s\n", agents, v.kind)
+		fmt.Printf("  matched: %s\n", v.matched)
+		fmt.Printf("  resets:  %s\n", v.resets)
+	}
+	if missed > 0 && *harness == "" {
+		fmt.Printf("(%d other agents don't read it as a limit)\n", missed)
 	}
 	return nil
 }
@@ -739,6 +777,10 @@ func helpFor(name string) {
 			err = cmdRules([]string{"-h"})
 		case "daemon":
 			err = cmdDaemon([]string{"-h"})
+		case "this":
+			err = cmdThis([]string{"-h"})
+		case "agent-guide":
+			err = cmdAgentGuide([]string{"-h"})
 		case "disable":
 			err = cmdDisable([]string{"-h"})
 		case "enable":

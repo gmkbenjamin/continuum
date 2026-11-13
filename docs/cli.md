@@ -6,8 +6,8 @@ prints this help itself with `-h` or `--help`.
 ```text
 continuum - work never loses its momentum
 
-Keeps AI coding agents (Claude Code, Codex, Gemini CLI, opencode, Aider, Cursor,
-Copilot and more) working through usage limits and API outages. When an agent
+Keeps AI coding agents (Claude Code, Codex, Grok Build, Gemini CLI, Antigravity,
+Cursor, opencode, Aider and more) working through usage limits and API outages. When an agent
 stalls, Continuum waits for the limit to reset and continues the same session,
 in place: never a copy, never a new session. Works in any terminal, with the
 window unfocused or the screen locked.
@@ -58,6 +58,10 @@ Background daemon:
   disable      Turn auto-start off: nothing starts the daemon by itself
   enable       Turn auto-start back on (at login, and whenever an agent needs it)
   daemon       Run the daemon in the foreground (for debugging)
+
+For agents:
+  this         The agent session running this command: its state and settings
+  agent-guide  Print a short guide for agents on controlling Continuum
 
 Getting started:
   continuum install --dry-run     see what install would change
@@ -110,6 +114,9 @@ Options:
   --no-shell             Do not add the shell hook. Without it, agents in plain
                          terminals (no tmux etc.) can only be resumed if started
                          with `continuum run`.
+  --no-skill             Don't add the Continuum skill, which lets agents
+                         (Claude Code, Codex, Antigravity) check and control
+                         Continuum for their own session.
   --only AGENTS          Comma-separated AGENTS to add hooks for, e.g.
                          claude,codex (default: every installed agent that has
                          hooks).
@@ -385,6 +392,7 @@ Usage:
 
 Arguments:
   ID         a resume from `continuum list`, a session id, or its first 4+ characters (it must name one session)
+  this       the agent session running this command (for agents)
   all        every pending resume
 
 Options:
@@ -392,6 +400,7 @@ Options:
 
 Examples:
   continuum cancel claude:4f2c1d9e
+  continuum cancel this
   continuum cancel all
 ```
 
@@ -411,6 +420,7 @@ Usage:
 
 Arguments:
   ID         a resume from `continuum list`, a session id, or its first 4+ characters (it must name one session)
+  this       the agent session running this command (for agents)
   all        every pending resume
 
 Options:
@@ -825,5 +835,45 @@ Options:
                          daemon.log, and to this terminal if there is one.
   --once                 Run one pass (collect events, resume what is due) and
                          exit.
+  -h, --help             Show this help.
+```
+
+## this
+
+```text
+continuum this - The agent session running this command: its state and settings
+
+Usage:
+  continuum this [options]
+  (also: self)
+
+  For agents, through their shell tool. Wherever a command takes a session
+  (`exclude`, `include`, `choose`, `unchoose`, `message --session`, `cancel`,
+  `resume-now`), `this` means the agent's own session. Continuum finds it from the
+  agent's environment, its process, or the wrapper or pane it runs in.
+
+Options:
+  --json                 Print it as JSON.
+  -h, --help             Show this help.
+
+Examples:
+  continuum this
+  continuum this --json
+  continuum exclude this
+  continuum message set --session this "Re-run the tests, then continue."
+```
+
+## agent-guide
+
+```text
+continuum agent-guide - Print a short guide for agents on controlling Continuum
+
+Usage:
+  continuum agent-guide
+
+  The same guide install gives Claude Code, Codex and Antigravity as a skill. Tell
+  any other agent to run it.
+
+Options:
   -h, --help             Show this help.
 ```

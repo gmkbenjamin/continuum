@@ -2,6 +2,43 @@
 
 All notable changes to Continuum. Versions follow [Semantic Versioning](https://semver.org).
 
+## [0.10.0] - 2026-11-13
+
+### Added
+- **Agents can control Continuum.** Wherever a command takes a session, `this` means
+  the agent session running the command: `continuum exclude this`,
+  `continuum message set --session this "…"`, `continuum cancel this`,
+  `continuum resume-now this`. `continuum this` shows the session's state, where it
+  runs, whether it's covered and the message it would get (`--json` for scripts).
+  Continuum finds the session from the variable the agent sets (Claude Code, Grok
+  Build, Antigravity), else from the agent's process, wrapper or pane.
+- `install` gives Claude Code, Codex and Antigravity a short Continuum skill (Grok
+  Build reads Claude's), so you can just ask your agent, for example "don't
+  auto-resume this session". `--no-skill` leaves it out; uninstall removes it.
+  `continuum agent-guide` prints the same guide for any other agent.
+
+### Changed
+- `update` leaves a daemon you stopped with `continuum stop` stopped. The login item
+  is refreshed without starting it; it starts at your next login, or with
+  `continuum start`.
+- The README is short and for users; install details, what runs in the background,
+  troubleshooting and agent control moved to [How it works](docs/how-it-works.md).
+- `continuum detect` lists agents that read a message the same way together, and
+  says when wording means "needs you" (billing, credits, sign-in) even without a
+  limit phrase.
+
+### Fixed
+Found by testing the whole app by hand, in a sandbox, with real Claude Code, Grok
+Build and Antigravity CLI sessions:
+- Installing the skill reported "no such file or directory" although it was written.
+- The `~/.local/bin/continuum` link the install plan listed wasn't made when that
+  folder (on your PATH) didn't exist yet.
+- `doctor` listed Grok Build twice.
+- `uninstall` said "remove its hooks from …" after removing them, and left an empty
+  `skills` folder it had made.
+- `continuum message` showed folders as full paths instead of `~/…`.
+- Install, update and uninstall output now lines up.
+
 ## [0.9.1] - 2026-11-13
 
 A second independent review found the issues fixed below.
@@ -274,6 +311,7 @@ First public release.
   sign-in errors.
 - Help for every command (`-h`), `doctor`, and docs in `docs/`.
 
+[0.10.0]: ../../releases/tag/v0.10.0
 [0.9.1]: ../../releases/tag/v0.9.1
 [0.9.0]: ../../releases/tag/v0.9.0
 [0.8.0]: ../../releases/tag/v0.8.0

@@ -210,9 +210,13 @@ func cmdDoctor() int {
 		hookCmds[a.Command] = true
 	}
 	others := 0
+	withHooks := map[string]bool{} // listed above, under Agents
+	for _, t := range hooks.Targets(cfg) {
+		withHooks[t.Harness] = true
+	}
 	for _, name := range r.HarnessNames() {
 		h := r.Harness(name)
-		if name == "claude" || name == "codex" || name == "generic" || h.Binary == "" {
+		if withHooks[name] || name == "generic" || h.Binary == "" {
 			continue
 		}
 		bin, err := proc.LookPath(h.Binary)

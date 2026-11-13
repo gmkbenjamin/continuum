@@ -48,7 +48,7 @@ func (e Entry) String() string {
 		}
 		return s
 	case e.Dir != "":
-		return "every session in " + e.Dir
+		return "every session in " + tilde(e.Dir)
 	case e.Wrapper != "":
 		s := "continuum run " + e.Wrapper
 		if e.Label != "" {
@@ -215,3 +215,18 @@ func (s *Scope) PruneWrappers(alive func(id string) bool) bool {
 }
 
 var ErrAmbiguous = errors.New("matches more than one session")
+
+// tilde shortens a path in the home folder to ~/…, for display.
+func tilde(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if p == home {
+		return "~"
+	}
+	if rel, err := filepath.Rel(home, p); err == nil && !strings.HasPrefix(rel, "..") {
+		return filepath.Join("~", rel)
+	}
+	return p
+}

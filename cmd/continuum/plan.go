@@ -254,6 +254,19 @@ func installPlanItems(o installOptions, p core.Paths, cfg core.Config, r *rules.
 		}
 	}
 
+	if !o.NoSkill && r != nil {
+		for _, t := range skillTargets(cfg, r) {
+			act := "create"
+			switch {
+			case ourSkill(t.Dir):
+				act = "replace"
+			case exists(skillFile(t.Dir)):
+				continue // a skill of the user's with that name: left alone
+			}
+			items = append(items, planItem{Action: act, What: "agent skill", Path: skillFile(t.Dir),
+				Purpose: "lets " + t.Agent + " check and control Continuum for its own session when you ask it to (`continuum this`, `continuum exclude this`, ...)"})
+		}
+	}
 	if o.Service {
 		plan, err := service.MakePlan(bin, p)
 		switch {
@@ -294,6 +307,11 @@ func installPlanItems(o installOptions, p core.Paths, cfg core.Config, r *rules.
 			items = append(items, planItem{Action: "none", What: "background daemon",
 				Purpose: "auto-start is off (`continuum disable`), so it isn't started; `continuum start` runs it"})
 		}
+		return items
+	}
+	if o.Update && stoppedByUser(p) && !daemonRunning(p) {
+		items = append(items, planItem{Action: "none", What: "background daemon",
+			Purpose: "left stopped, as you stopped it; `continuum start` starts it (it also starts at your next login)"})
 		return items
 	}
 	items = append(items, planItem{Action: "start", What: "background daemon", Path: bin + " daemon",
@@ -342,6 +360,11 @@ func uninstallPlanItems(p core.Paths, cfg core.Config, purge bool) []planItem {
 		items = append(items, planItem{Action: "change", What: name + " hooks", Path: t.Path,
 			Purpose: "removes every Continuum hook from this file",
 			Notes:   []string{"your own settings and hooks stay; if nothing else changed since install, the file goes back to its exact original bytes"}})
+	}
+	for _, dir := range allSkillDirs(cfg) {
+		if ourSkill(dir) {
+			items = append(items, planItem{Action: "remove", What: "agent skill", Path: skillFile(dir), Purpose: "the Continuum skill install added"})
+		}
 	}
 	for _, rc := range allRCs() {
 		if data, err := os.ReadFile(rc.Path); err == nil && strings.Contains(string(data), blockStart) {

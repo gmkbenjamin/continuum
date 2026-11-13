@@ -176,6 +176,94 @@ that came due while asleep run as soon as the computer wakes.
 - **Hooks can't break an agent.** They take about 4 ms, print nothing, and always exit
   0, even on malformed input.
 
+## What install sets up
+
+Everything is under your user account. Nothing needs admin rights, and nothing is sent
+over the network.
+
+| What | Where | Why |
+|---|---|---|
+| The program | `~/.continuum/bin/continuum` | Run by everything below. |
+| Command link | `~/.local/bin/continuum` (only if that folder is on your `PATH`) | So `continuum` works in any terminal. |
+| Data folder | `~/.continuum/` | Settings (`config.json`, `scope.json`), scheduled resumes, `history.jsonl`, `daemon.log`, and a record of what was installed. |
+| Claude Code hooks | `~/.claude/settings.json`: `SessionStart`, `StopFailure`, `Stop`, `SessionEnd` | Claude Code reports stalls and where each session runs. This also covers Claude Desktop. |
+| Codex hooks | `~/.codex/hooks.json`: `SessionStart`, `Stop` | Codex reports where each session runs. |
+| Grok Build hooks | `~/.grok/hooks/continuum.json`, a file of Continuum's own | Grok Build reports stalls and where each session runs. Grok runs hooks in folders you have trusted. |
+| Agent skill | `~/.claude/skills/continuum`, `~/.codex/skills/continuum`, `~/.gemini/config/skills/continuum` (for the agents you have) | Lets agents check and control Continuum for their own session (see [below](#agents-controlling-continuum)). `install --no-skill` leaves it out. |
+| Shell hook | A marked block in `~/.zshrc`, `~/.bashrc` or fish's `conf.d/continuum.fish` | Runs interactive `claude`, `codex` and other installed agents under the wrapper, so Continuum can type into them. |
+| Login item (background mode only) | macOS: `~/Library/LaunchAgents/dev.continuum.daemon.plist`. Linux: `~/.config/systemd/user/continuum.service`. Windows: scheduled task "Continuum". | Starts the background daemon when you log in. |
+| Backups | `<file>.continuum-backup-<date-time>` next to each file it changes | Your file as it was before Continuum touched it. |
+
+Each hook is one line that runs the program by its full path, for example
+`/bin/sh -c '"/Users/you/.continuum/bin/continuum" hook claude 2>/dev/null || true'`.
+Your other settings and hooks are left alone. `continuum uninstall` removes
+all of this, and `--purge` also removes the data folder and the backups.
+
+## What runs in the background
+
+In standalone mode, nothing does: the work happens while `continuum watch` is open, and
+hooks only queue events for it. In background mode:
+
+- **One daemon**, `continuum daemon`, started at login. It uses about 25 MB of memory
+  and well under 1% of one CPU core. It:
+  - collects events from hooks every 5 seconds;
+  - reads new lines of the agents' session files every 10 seconds;
+  - looks at tmux panes running other agents every 15 seconds;
+  - checks the hooks are intact, and whether an agent was updated, every 10 minutes.
+
+  It types or runs anything only when a resume is due.
+- **Hooks**, run by Claude Code, Codex and Grok Build on session events. Each takes a few
+  milliseconds, drops a small event file in `~/.continuum/spool/`, and starts the
+  daemon if it isn't running.
+- **The wrapper**, around each agent started from your shell: two small processes,
+  `continuum run` and `continuum __pty-helper`, which pass everything through. They
+  exit when the agent does.
+- **Keep-awake**, only while a resume is less than 8 hours away or a resumed session is
+  still working. On macOS it's a `caffeinate` process, on Linux `systemd-inhibit`, and
+  on Windows a system flag. It's released as soon as nothing is pending.
+
+Check on it with `continuum status`, `continuum list` and `continuum logs -f`.
+
+## Agents controlling Continuum
+
+Agents run Continuum through their shell tool. Wherever a command takes a session,
+`this` means the agent's own session:
+
+```sh
+continuum this                    # this session: state, where it runs, its message
+continuum exclude this            # don't auto-resume it (include this: undo)
+continuum message set --session this "Re-run the failing tests, then continue."
+continuum cancel this             # cancel its scheduled resume
+continuum resume-now this         # resume it now
+```
+
+Continuum finds the session from the variable the agent sets for its commands
+(Claude Code's `CLAUDE_CODE_SESSION_ID`, Grok Build's `GROK_SESSION_ID`,
+Antigravity's `ANTIGRAVITY_CONVERSATION_ID`), else from the agent's process, or the
+wrapper or pane it runs in, matched against what its hooks reported. Run outside an
+agent, `this` is an error.
+
+`install` gives agents that read skills a short Continuum skill, so you can simply ask
+("don't auto-resume this session", "when you resume, re-run the tests first"):
+`~/.claude/skills/continuum` (Claude Code, and Grok Build, which reads Claude's skills),
+`~/.codex/skills/continuum` and `~/.gemini/config/skills/continuum` (Antigravity).
+`install --no-skill` leaves them out. `continuum agent-guide` prints the same guide for
+any other agent.
+
+## Troubleshooting
+
+```sh
+continuum doctor                   # checks everything and says what to fix
+continuum watch --debug            # run in this terminal and show every decision
+continuum logs -f                  # follow the background daemon's log
+continuum diagnose -o report.md    # a report for a bug report, personal details removed
+```
+
+For detailed logs from the background daemon, add `"log_level": "debug"` to
+`~/.continuum/config.json`. The daemon then records why it did each thing: every event,
+every check, and every delivery route tried. Hooks also log one line per call to
+`~/.continuum/hooks.log`. `daemon.log` rotates at 5 MB and `hooks.log` at 2 MB.
+
 ## Staying compatible with agent updates
 
 Nothing can promise that a future agent release won't change something. Continuum is

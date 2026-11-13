@@ -24,7 +24,7 @@ type helpEntry struct {
 	Hidden   bool
 }
 
-var groups = []string{"Set up", "Sessions and resumes", "All or chosen sessions", "Tuning", "Running agents", "Background daemon", "Internal"}
+var groups = []string{"Set up", "Sessions and resumes", "All or chosen sessions", "Tuning", "Running agents", "Background daemon", "For agents", "Internal"}
 
 var helpEntries = []helpEntry{
 	{
@@ -178,14 +178,25 @@ and those finished in the last 24 hours. States:
 	{
 		Name: "cancel", Group: "Sessions and resumes", Args: "ID|all",
 		Summary:  "Cancel scheduled resumes",
-		ArgsHelp: [][2]string{{"ID", "a resume from `continuum list`, a session id, or its first 4+ characters (it must name one session)"}, {"all", "every pending resume"}},
-		Examples: []string{"continuum cancel claude:4f2c1d9e", "continuum cancel all"},
+		ArgsHelp: [][2]string{{"ID", "a resume from `continuum list`, a session id, or its first 4+ characters (it must name one session)"}, {"this", "the agent session running this command (for agents)"}, {"all", "every pending resume"}},
+		Examples: []string{"continuum cancel claude:4f2c1d9e", "continuum cancel this", "continuum cancel all"},
 	},
 	{
 		Name: "resume-now", Aliases: []string{"now"}, Group: "Sessions and resumes", Args: "ID|all",
 		Summary:  "Resume now instead of waiting for the reset",
 		Detail:   "Useful when you bought extra usage or the limit was lifted early. The usual\nsafety checks (still stalled, no menu open, never a copy) still apply. Naming a\nsession also retries one that finished (resumed, skipped, cancelled, failed);\n`all` covers pending resumes only. A billing or sign-in stop is never resumed.",
-		ArgsHelp: [][2]string{{"ID", "a resume from `continuum list`, a session id, or its first 4+ characters (it must name one session)"}, {"all", "every pending resume"}},
+		ArgsHelp: [][2]string{{"ID", "a resume from `continuum list`, a session id, or its first 4+ characters (it must name one session)"}, {"this", "the agent session running this command (for agents)"}, {"all", "every pending resume"}},
+	},
+	{
+		Name: "this", Aliases: []string{"self"}, Group: "For agents", Args: "[options]",
+		Summary:  "The agent session running this command: its state and settings",
+		Detail:   "For agents, through their shell tool. Wherever a command takes a session\n(`exclude`, `include`, `choose`, `unchoose`, `message --session`, `cancel`,\n`resume-now`), `this` means the agent's own session. Continuum finds it from the\nagent's environment, its process, or the wrapper or pane it runs in.",
+		Examples: []string{"continuum this", "continuum this --json", "continuum exclude this", "continuum message set --session this \"Re-run the tests, then continue.\""},
+	},
+	{
+		Name: "agent-guide", Group: "For agents",
+		Summary: "Print a short guide for agents on controlling Continuum",
+		Detail:  "The same guide install gives Claude Code, Codex and Antigravity as a skill. Tell\nany other agent to run it.",
 	},
 	{
 		Name: "scope", Group: "All or chosen sessions", Args: "[all|chosen]",
@@ -383,8 +394,8 @@ func usageText() string {
 	var b strings.Builder
 	b.WriteString(`continuum - work never loses its momentum
 
-Keeps AI coding agents (Claude Code, Codex, Gemini CLI, opencode, Aider, Cursor,
-Copilot and more) working through usage limits and API outages. When an agent
+Keeps AI coding agents (Claude Code, Codex, Grok Build, Gemini CLI, Antigravity,
+Cursor, opencode, Aider and more) working through usage limits and API outages. When an agent
 stalls, Continuum waits for the limit to reset and continues the same session,
 in place: never a copy, never a new session. Works in any terminal, with the
 window unfocused or the screen locked.
@@ -557,7 +568,7 @@ func parseFlags(fs *flag.FlagSet, args []string) error {
 }
 
 // flagCommands lists the commands that parse options; their help shows them.
-var flagCommands = map[string]bool{"disable": true, "enable": true, "status": true, "sessions": true, "diagnose": true, "watch": true, "logs": true, "install": true, "update": true, "uninstall": true, "run": true, "list": true, "detect": true, "rules": true, "daemon": true}
+var flagCommands = map[string]bool{"this": true, "agent-guide": true, "disable": true, "enable": true, "status": true, "sessions": true, "diagnose": true, "watch": true, "logs": true, "install": true, "update": true, "uninstall": true, "run": true, "list": true, "detect": true, "rules": true, "daemon": true}
 
 // subcommandCommands have subcommands with their own options; their help
 // text documents every option.

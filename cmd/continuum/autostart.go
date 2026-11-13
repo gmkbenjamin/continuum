@@ -124,7 +124,7 @@ func cmdEnable(args []string) error {
 	if bin == "" {
 		bin = self()
 	}
-	if plan, err := serviceInstall(bin, p); err != nil {
+	if plan, err := serviceInstall(bin, p, true); err != nil {
 		fmt.Println("login:     couldn't add the login item:", err)
 	} else {
 		where := plan.File

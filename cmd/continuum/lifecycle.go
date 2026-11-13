@@ -34,6 +34,7 @@ type installOptions struct {
 	Copy, Shell, Service, Dry bool
 	Standalone                bool // no background daemon: `continuum watch` only
 	NoAutostart               bool // `continuum disable`: background mode, started by hand only
+	NoSkill                   bool // don't give agents the Continuum skill
 	Only                      string
 	Update                    bool // re-applying a previous install
 }
@@ -44,6 +45,7 @@ func cmdInstall(args []string) error {
 	noCopy := fs.Bool("no-copy", false, "Use this binary where it is instead of copying it to ~/.continuum/bin.")
 	dry := fs.Bool("dry-run", false, "Show what would change, and change nothing.")
 	only := fs.String("only", "", "Comma-separated `AGENTS` to add hooks for, e.g. claude,codex (default: every installed agent that has hooks).")
+	noSkill := fs.Bool("no-skill", false, "Don't add the Continuum skill, which lets agents (Claude Code, Codex, Antigravity) check and control Continuum for their own session.")
 	noShell := fs.Bool("no-shell", false, "Do not add the shell hook. Without it, agents in plain terminals (no tmux etc.) can only be resumed if started with `continuum run`.")
 	standalone := fs.Bool("standalone", false, "Don't run in the background: no login item, and hooks never start a daemon. Continuum works while `continuum watch` is open in a terminal.")
 	background := fs.Bool("background", false, "Run in the background, started at login (the default; skips the question).")
@@ -55,7 +57,7 @@ func cmdInstall(args []string) error {
 	if *standalone && *background {
 		return errors.New("choose either --standalone or --background")
 	}
-	o := installOptions{Copy: !*noCopy, Shell: !*noShell, Service: !*noService, Only: *only, Standalone: *standalone}
+	o := installOptions{Copy: !*noCopy, Shell: !*noShell, Service: !*noService, Only: *only, Standalone: *standalone, NoSkill: *noSkill}
 	if !*standalone && !*background && !*yes && !*dry && stdinIsTerminal() {
 		s, err := askMode(os.Stdin)
 		if err != nil {
@@ -93,7 +95,7 @@ func planAndInstall(o installOptions, dry, yes bool, title, question string) err
 func installOptionsFromRecord(rec *daemon.Install) installOptions {
 	return installOptions{Copy: rec.Copy || rec.Version == "", Shell: rec.Shell || rec.Version == "",
 		Service: (rec.Service || rec.Version == "") && !rec.Standalone && !rec.NoAutostart, Only: rec.Only, Update: true,
-		Standalone: rec.Standalone, NoAutostart: rec.NoAutostart && !rec.Standalone}
+		Standalone: rec.Standalone, NoAutostart: rec.NoAutostart && !rec.Standalone, NoSkill: rec.NoSkill}
 }
 
 func cmdUpdate(args []string) error {
@@ -162,13 +164,13 @@ func doInstall(o installOptions) error {
 		_, binErr := deliver.Binary(cfg, r.Harness(t.Harness))
 		_, dirErr := os.Stat(filepath.Dir(t.Path))
 		if binErr != nil && dirErr != nil && len(want) == 0 {
-			fmt.Printf("%-9s not found, skipped\n", t.Harness+":")
+			fmt.Printf("%-10s not found, skipped\n", t.Harness+":")
 			continue
 		}
 		before, _ := hooks.Status(t, bin)
 		changed, err := hooks.Install(t, bin, o.Dry)
 		if err != nil {
-			fmt.Printf("%-9s %v\n", t.Harness+":", err)
+			fmt.Printf("%-10s %v\n", t.Harness+":", err)
 			continue
 		}
 		hooked = append(hooked, t.Harness)
@@ -178,7 +180,7 @@ func doInstall(o installOptions) error {
 		} else if o.Dry {
 			verb = "would have " + verb
 		}
-		fmt.Printf("%-9s %s %s\n", t.Harness+":", verb, tildePath(t.Path))
+		fmt.Printf("%-10s %s %s\n", t.Harness+":", verb, tildePath(t.Path))
 	}
 
 	if o.Shell && runtime.GOOS != "windows" {
@@ -186,11 +188,19 @@ func doInstall(o installOptions) error {
 			fmt.Println(line)
 		}
 	}
+	if !o.NoSkill && r != nil {
+		for _, line := range installSkills(cfg, r, bin, o.Dry) {
+			fmt.Println(line)
+		}
+	}
 	wasRunning := false
+	// You stopped the daemon (`continuum stop`): an update keeps it stopped,
+	// until you start it or log in again. A fresh install starts it.
+	keepStopped := o.Update && stoppedByUser(p) && !daemonRunning(p)
 	if !o.Dry {
 		rec, _ := json.MarshalIndent(daemon.Install{
 			Bin: bin, Hooks: hooked, At: time.Now(), Version: core.Version,
-			Shell: o.Shell, Service: o.Service, Copy: o.Copy, Only: o.Only, Standalone: o.Standalone, NoAutostart: o.NoAutostart,
+			Shell: o.Shell, Service: o.Service, Copy: o.Copy, Only: o.Only, Standalone: o.Standalone, NoAutostart: o.NoAutostart, NoSkill: o.NoSkill,
 		}, "", "  ")
 		_ = core.WriteFileAtomic(daemon.InstallPath(p), append(rec, '\n'), 0o600)
 		// A daemon still running an older binary would keep old behaviour:
@@ -219,7 +229,7 @@ func doInstall(o installOptions) error {
 	} else if o.NoAutostart {
 		// started by hand only: keep it running if it was
 		if wasRunning && !o.Dry {
-			_ = cmdStart()
+			_ = startDaemon()
 		}
 	} else if o.Service {
 		if o.Dry {
@@ -228,12 +238,14 @@ func doInstall(o installOptions) error {
 				fmt.Println("service:  ", err)
 			} else if plan.File != "" {
 				fmt.Println("service:   would write", plan.File)
-			} else {
+			} else if len(plan.Commands) > 0 {
 				fmt.Println("service:   would run", strings.Join(plan.Commands[0], " "))
 			}
-		} else if plan, err := service.Install(bin, p); err != nil {
+		} else if plan, err := service.Install(bin, p, !keepStopped); err != nil {
 			fmt.Println("service:   not installed:", err)
-			_ = cmdStart()
+			if !keepStopped {
+				_ = startDaemon()
+			}
 		} else {
 			where := plan.File
 			if where == "" {
@@ -241,8 +253,11 @@ func doInstall(o installOptions) error {
 			}
 			fmt.Println("service:   starts at login via", tildePath(where))
 		}
-	} else if !o.Dry {
-		_ = cmdStart()
+	} else if !o.Dry && !keepStopped {
+		_ = startDaemon()
+	}
+	if keepStopped && !o.Dry {
+		fmt.Println("daemon:    left stopped, as you stopped it (`continuum start` starts it)")
 	}
 	if o.Dry {
 		return nil
@@ -304,11 +319,11 @@ func pinAgentHomes(p core.Paths, cfg core.Config) core.Config {
 			continue // the default: nothing to note
 		}
 		if err := setConfigKey(p, a.key, dir); err != nil {
-			fmt.Printf("%-9s %v\n", "settings:", err)
+			fmt.Printf("%-10s %v\n", "settings:", err)
 			continue
 		}
 		*a.set = dir
-		fmt.Printf("%-9s %s's folder is %s ($%s); noted in config.json for the daemon\n", "settings:", a.name, tildePath(dir), a.env)
+		fmt.Printf("%-10s %s's folder is %s ($%s); noted in config.json for the daemon\n", "settings:", a.name, tildePath(dir), a.env)
 	}
 	return cfg
 }
@@ -367,7 +382,7 @@ func cmdUninstall(args []string) error {
 		}
 		return err
 	}
-	say := func(what, msg string) { fmt.Printf("%-9s %s\n", what+":", msg) }
+	say := func(what, msg string) { fmt.Printf("%-10s %s\n", what+":", msg) }
 	would := func(s string) string {
 		if *dry {
 			return "would " + s
@@ -400,8 +415,12 @@ func cmdUninstall(args []string) error {
 			restoreFailed = true
 			say(t.Harness, err.Error())
 		case changed:
-			say(t.Harness, would("remove its hooks from ")+tildePath(t.Path))
+			say(t.Harness, map[bool]string{true: "would remove its hooks from ", false: "removed its hooks from "}[*dry]+tildePath(t.Path))
 		}
+	}
+	// The agents' Continuum skill.
+	for _, line := range uninstallSkills(cfg, *dry) {
+		fmt.Println(line)
 	}
 	// 3. Shell hook blocks, in every shell's startup file.
 	for _, line := range uninstallShell(*dry) {
@@ -417,7 +436,7 @@ func cmdUninstall(args []string) error {
 		if !*dry {
 			os.Remove(link)
 		}
-		say("link", would("remove ")+tildePath(link))
+		say("link", map[bool]string{true: "would remove ", false: "removed "}[*dry]+tildePath(link))
 	}
 	if !*dry {
 		os.Remove(daemon.InstallPath(p))
@@ -544,6 +563,11 @@ func leftovers(p core.Paths, cfg core.Config, purged bool) []string {
 	}
 	if service.Installed(p) {
 		out = append(out, "login item")
+	}
+	for _, dir := range allSkillDirs(cfg) {
+		if ourSkill(dir) {
+			out = append(out, "the Continuum skill in "+dir)
+		}
 	}
 	if daemonRunning(p) {
 		out = append(out, "a running daemon")

@@ -164,17 +164,24 @@ func cliAgent(r *rules.Rules, name string) string {
 // nearestAgent is the agent running the hook: the closest ancestor of pid
 // that is an agent's CLI ("" when none is).
 func nearestAgent(r *rules.Rules, tree map[int]proc.Node, pid int) string {
+	a, _ := NearestAgent(r, tree, pid)
+	return a
+}
+
+// NearestAgent returns the agent pid runs under: the closest ancestor (or
+// pid itself) that is an agent's CLI, and that process's pid.
+func NearestAgent(r *rules.Rules, tree map[int]proc.Node, pid int) (string, int) {
 	for steps := 0; pid > 1 && steps < 30; steps++ {
 		n, ok := tree[pid]
 		if !ok {
-			return ""
+			return "", 0
 		}
 		if a := cliAgent(r, n.Name); a != "" {
-			return a
+			return a, pid
 		}
 		pid = n.PPID
 	}
-	return ""
+	return "", 0
 }
 
 // nested walks up from pid: past the agent running the hook (and helper

@@ -25,7 +25,7 @@ func stubService(t *testing.T) *fakeService {
 	t.Cleanup(func() {
 		serviceInstall, serviceUninstall, serviceInstalled, startDaemon, stopRunning = oi, ou, on, os_, ost
 	})
-	serviceInstall = func(bin string, p core.Paths) (service.Plan, error) {
+	serviceInstall = func(bin string, p core.Paths, start bool) (service.Plan, error) {
 		f.loginItem = 1
 		return service.Plan{File: "/fake/LaunchAgents/dev.continuum.daemon.plist"}, nil
 	}
@@ -216,5 +216,36 @@ func TestUpdatePlanWithAutostartOff(t *testing.T) {
 		if it.What == "login item" && it.Action != "remove" {
 			t.Fatalf("the plan adds a login item: %+v", it)
 		}
+	}
+}
+
+// `continuum update` leaves a daemon you stopped stopped; it starts one that
+// wasn't stopped by you.
+func TestUpdateKeepsAStoppedDaemonStopped(t *testing.T) {
+	sandboxHome(t)
+	f := stubService(t)
+	p := writeInstall(t, daemon.Install{Bin: "/x/continuum", Version: core.Version})
+	setConfigKey(p, "scan_panes", false)
+	os.WriteFile(stoppedPath(p), []byte("x"), 0o600)
+	o := installOptions{Update: true}
+	capture(t, func() {
+		if err := doInstall(o); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if f.started != 0 {
+		t.Fatal("update started a daemon you had stopped")
+	}
+	r, _ := rules.Load("")
+	items := installPlanItems(o, p, core.Config{}, r)
+	for _, it := range items {
+		if it.What == "background daemon" && it.Action != "none" {
+			t.Fatalf("plan says %s for a stopped daemon", it.Action)
+		}
+	}
+	os.Remove(stoppedPath(p))
+	capture(t, func() { doInstall(o) })
+	if f.started != 1 {
+		t.Fatalf("update didn't start the daemon (started %d)", f.started)
 	}
 }

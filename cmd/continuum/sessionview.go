@@ -35,6 +35,7 @@ type sessionRow struct {
 	Where    string    `json:"where"`
 	Open     bool      `json:"open"`
 	Covered  bool      `json:"covered"`
+	Wrapper  string    `json:"wrapper,omitempty"` // Continuum's wrapper it runs in
 	Message  string    `json:"message_from"`
 	LastSeen time.Time `json:"last_seen,omitempty"`
 }
@@ -68,6 +69,9 @@ func sessionRows(window time.Duration, includeClosed bool) []sessionRow {
 		}
 		row.State, row.Detail = sessionState(s, j, covered, now)
 		row.Where = sessionWhere(s, r)
+		if s.Location != nil && s.Location.Kind == "wrapper" {
+			row.Wrapper = s.Location.Target
+		}
 		rows = append(rows, row)
 	}
 	return append(rows, wrapperRows(p, r, sc, jobs, known, now)...)
@@ -101,7 +105,7 @@ func wrapperRows(p core.Paths, r *rules.Rules, sc scope.Scope, jobs map[string]*
 		loc := &core.Location{Kind: "wrapper", Target: id}
 		probe := &core.Job{Harness: meta.Harness, Cwd: meta.Cwd, Location: loc}
 		covered, _ := sc.Covers(probe)
-		row := sessionRow{Agent: meta.Harness, Folder: meta.Cwd, Open: true, Covered: covered, LastSeen: meta.Started,
+		row := sessionRow{Agent: meta.Harness, Folder: meta.Cwd, Open: true, Covered: covered, LastSeen: meta.Started, Wrapper: id,
 			State: "active", Detail: "open (in Continuum's wrapper)"}
 		if h := r.Harness(meta.Harness); h != nil && h.DisplayName != "" {
 			row.Agent = h.DisplayName

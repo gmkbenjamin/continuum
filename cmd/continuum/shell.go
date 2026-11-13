@@ -239,29 +239,29 @@ func installShell(bin string, dry bool) []string {
 		}
 		old, _ := os.ReadFile(rc.Path)
 		if !blockIntact(string(old)) {
-			out = append(out, fmt.Sprintf("%-9s %s has a damaged Continuum block (a %q line without its %q line, or the reverse); left alone. Remove those lines and run install again", "shell:", tildePath(rc.Path), blockStart, blockEnd))
+			out = append(out, fmt.Sprintf("%-10s %s has a damaged Continuum block (a %q line without its %q line, or the reverse); left alone. Remove those lines and run install again", "shell:", tildePath(rc.Path), blockStart, blockEnd))
 			continue
 		}
 		next := replaceBlock(string(old), snip)
 		if next == string(old) {
-			out = append(out, fmt.Sprintf("%-9s already set up in %s", "shell:", tildePath(rc.Path)))
+			out = append(out, fmt.Sprintf("%-10s already set up in %s", "shell:", tildePath(rc.Path)))
 			continue
 		}
 		if dry {
-			out = append(out, fmt.Sprintf("%-9s would add the agent hook to %s", "shell:", tildePath(rc.Path)))
+			out = append(out, fmt.Sprintf("%-10s would add the agent hook to %s", "shell:", tildePath(rc.Path)))
 			continue
 		}
 		if len(old) > 0 {
 			if err := hooks.SaveBackup(rc.Path, old); err != nil {
-				out = append(out, fmt.Sprintf("%-9s %s: backup failed, left alone: %v", "shell:", rc.Path, err))
+				out = append(out, fmt.Sprintf("%-10s %s: backup failed, left alone: %v", "shell:", rc.Path, err))
 				continue
 			}
 		}
 		if err := core.WriteFileAtomic(rc.Path, []byte(next), filePerm(rc.Path)); err != nil {
-			out = append(out, fmt.Sprintf("%-9s %s: %v", "shell:", rc.Path, err))
+			out = append(out, fmt.Sprintf("%-10s %s: %v", "shell:", rc.Path, err))
 			continue
 		}
-		out = append(out, fmt.Sprintf("%-9s agent hook added to %s (new terminals)", "shell:", tildePath(rc.Path)))
+		out = append(out, fmt.Sprintf("%-10s agent hook added to %s (new terminals)", "shell:", tildePath(rc.Path)))
 	}
 	return out
 }
@@ -300,7 +300,7 @@ func uninstallShell(dry bool) []string {
 			continue
 		}
 		if !blockIntact(string(old)) {
-			out = append(out, fmt.Sprintf("%-9s %s has a damaged Continuum block (a %q line without its %q line, or the reverse); left alone. Remove those lines by hand", "shell:", tildePath(rc.Path), blockStart, blockEnd))
+			out = append(out, fmt.Sprintf("%-10s %s has a damaged Continuum block (a %q line without its %q line, or the reverse); left alone. Remove those lines by hand", "shell:", tildePath(rc.Path), blockStart, blockEnd))
 			continue
 		}
 		next := replaceBlock(string(old), "")
@@ -310,16 +310,16 @@ func uninstallShell(dry bool) []string {
 			next = string(b)
 		}
 		if dry {
-			out = append(out, fmt.Sprintf("%-9s would remove the hook from %s", "shell:", rc.Path))
+			out = append(out, fmt.Sprintf("%-10s would remove the hook from %s", "shell:", rc.Path))
 			continue
 		}
 		if rc.Shell == "fish" && strings.TrimSpace(next) == "" {
 			os.Remove(rc.Path)
 		} else if err := core.WriteFileAtomic(rc.Path, []byte(next), filePerm(rc.Path)); err != nil {
-			out = append(out, fmt.Sprintf("%-9s %s: %v", "shell:", rc.Path, err))
+			out = append(out, fmt.Sprintf("%-10s %s: %v", "shell:", rc.Path, err))
 			continue
 		}
-		out = append(out, fmt.Sprintf("%-9s hook removed from %s", "shell:", tildePath(rc.Path)))
+		out = append(out, fmt.Sprintf("%-10s hook removed from %s", "shell:", tildePath(rc.Path)))
 	}
 	return out
 }

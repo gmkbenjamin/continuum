@@ -70,6 +70,8 @@ type Install struct {
 	// the daemon by itself (no login item, hooks don't start it); you start
 	// it with `continuum start`. `continuum enable` turns this off.
 	NoAutostart bool `json:"no_autostart,omitempty"`
+	// NoSkill: install --no-skill; agents don't get the Continuum skill.
+	NoSkill bool `json:"no_skill,omitempty"`
 }
 
 func compatPath(p core.Paths) string  { return filepath.Join(p.Home, "compat.json") }

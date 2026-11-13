@@ -24,9 +24,12 @@ const (
 
 // Plan describes what Install will do, for --dry-run and for tests.
 type Plan struct {
-	File     string
-	Content  string
+	File    string
+	Content string
+	// Commands register the login item; Start (re)starts the daemon through
+	// it now. Registering alone leaves a stopped daemon stopped until login.
 	Commands [][]string
+	Start    [][]string
 }
 
 func xmlEsc(s string) string {
@@ -61,7 +64,9 @@ func MakePlan(bin string, p core.Paths) (Plan, error) {
 </plist>
 `
 		uid := strconv.Itoa(os.Getuid())
-		return Plan{File: file, Content: content, Commands: [][]string{
+		// launchd reads the file at the next login by itself; loading it now
+		// (bootstrap) also starts it, as RunAtLoad says.
+		return Plan{File: file, Content: content, Start: [][]string{
 			{"launchctl", "bootout", "gui/" + uid + "/" + label},
 			{"launchctl", "bootstrap", "gui/" + uid, file},
 		}}, nil
@@ -87,12 +92,14 @@ WantedBy=default.target
 		return Plan{File: file, Content: content, Commands: [][]string{
 			{"systemctl", "--user", "daemon-reload"},
 			{"systemctl", "--user", "enable", unitName},
+		}, Start: [][]string{
 			{"systemctl", "--user", "restart", unitName}, // picks up a new binary
 		}}, nil
 	case "windows":
 		tr := `"` + bin + `" daemon`
 		return Plan{Commands: [][]string{
 			{"schtasks", "/Create", "/F", "/TN", taskName, "/SC", "ONLOGON", "/RL", "LIMITED", "/TR", tr},
+		}, Start: [][]string{
 			{"schtasks", "/End", "/TN", taskName}, // stops an older daemon; may fail if none runs
 			{"schtasks", "/Run", "/TN", taskName},
 		}}, nil
@@ -108,8 +115,10 @@ func systemdQuote(s string) string {
 	return s
 }
 
-// Install writes and loads the service.
-func Install(bin string, p core.Paths) (Plan, error) {
+// Install writes and registers the service. start also starts the daemon
+// through it now; without it, a daemon you stopped stays stopped until your
+// next login.
+func Install(bin string, p core.Paths, start bool) (Plan, error) {
 	plan, err := MakePlan(bin, p)
 	if err != nil {
 		return plan, err
@@ -122,10 +131,21 @@ func Install(bin string, p core.Paths) (Plan, error) {
 			return plan, err
 		}
 	}
-	for i, c := range plan.Commands {
+	for _, c := range plan.Commands {
+		if _, err := proc.Run(30*time.Second, "", c...); err != nil {
+			return plan, fmt.Errorf("%s: %w", strings.Join(c, " "), err)
+		}
+	}
+	if !start {
+		return plan, nil
+	}
+	for i, c := range plan.Start {
 		_, err := proc.Run(30*time.Second, "", c...)
-		// The first launchctl command unloads a previous copy and may fail.
-		if err != nil && !(runtime.GOOS == "darwin" && i == 0) {
+		// The first command stops a previous copy, and fails if none runs.
+		if err != nil && i > 0 {
+			return plan, fmt.Errorf("%s: %w", strings.Join(c, " "), err)
+		}
+		if err != nil && i == 0 && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
 			return plan, fmt.Errorf("%s: %w", strings.Join(c, " "), err)
 		}
 	}

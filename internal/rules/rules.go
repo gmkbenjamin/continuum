@@ -204,6 +204,10 @@ type Harness struct {
 	// IgnoreEntrypoints match entrypoints of runs nobody types into (print
 	// mode, SDK scripts): Continuum never schedules a resume for them.
 	IgnoreEntrypoints []string `json:"ignore_entrypoints"`
+	// SessionEnv: variables in which this agent tells the commands it runs
+	// (its shell tool) which session they run in, so `continuum ... this`
+	// can find it.
+	SessionEnv []string `json:"session_env"`
 	// HookEnv: environment variables this agent sets when it runs a hook. A
 	// hook installed for another agent (which this one also runs) is then
 	// recognised as this agent's.

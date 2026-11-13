@@ -65,6 +65,7 @@
       "native_grace_seconds": 300,
       "_native_grace": "Claude Code tries to resume by itself after a reset while its process is alive. Continuum gives it this long past the reset first, so the two don't both continue the session, then acts only if the session shows no new activity. Change it with `continuum grace claude <minutes|off>`.",
       "ignore_entrypoints": ["^sdk", "^mcp$"],
+      "session_env": ["CLAUDE_CODE_SESSION_ID"],
       "_ignore_entrypoints": "Print mode (claude -p) and Agent SDK scripts report these entrypoints. Nobody types into them, and continuing one would start work nobody asked for, so Continuum leaves them alone.",
       "desktop_apps": [
         {"name": "Claude Desktop", "entrypoints": ["claude-desktop", "desktop"],
@@ -216,6 +217,7 @@
       "process_names": ["grok"],
       "_hook_env": "Grok Build runs Claude Code's hooks (~/.claude/settings.json) and sets these variables for every hook, so those runs are reported as Grok's.",
       "hook_env": ["GROK_SESSION_ID", "GROK_HOOK_EVENT"],
+      "session_env": ["GROK_SESSION_ID"],
       "stop_failure_kinds": {
         "rate_limit": "usage_limit",
         "server_error": "transient",
@@ -296,6 +298,7 @@
       "homepage": "https://antigravity.google",
       "binary": "agy",
       "process_names": ["agy"],
+      "session_env": ["ANTIGRAVITY_CONVERSATION_ID"],
       "use_common_patterns": true,
       "patterns": [
         {"kind": "usage_limit", "regex": "(?i)you\\s+have\\s+exhausted\\s+your\\s+quota"},

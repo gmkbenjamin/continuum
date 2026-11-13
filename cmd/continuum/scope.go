@@ -155,6 +155,13 @@ var idLike = regexp.MustCompile(`^[0-9a-fA-F][0-9a-fA-F-]{5,}$`)
 // resolveEntry turns an argument into a scope entry: a directory, or a
 // session found by id, id prefix, short id or name.
 func resolveEntry(arg string, sessions []knownSession) (scope.Entry, error) {
+	if isThis(arg) {
+		h, err := thisSession()
+		if err != nil {
+			return scope.Entry{}, err
+		}
+		return h.entry(), nil
+	}
 	if arg == "." || strings.HasPrefix(arg, "/") || strings.HasPrefix(arg, "~") || strings.HasPrefix(arg, "./") || strings.HasPrefix(arg, "../") {
 		path := arg
 		if strings.HasPrefix(path, "~") {
