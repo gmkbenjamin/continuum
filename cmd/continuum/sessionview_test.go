@@ -1,12 +1,19 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/continuum-dev/continuum/internal/core"
+	"github.com/continuum-dev/continuum/internal/messages"
 	"github.com/continuum-dev/continuum/internal/rules"
+	"github.com/continuum-dev/continuum/internal/scope"
+	"github.com/continuum-dev/continuum/internal/store"
 )
 
 func TestSessionStates(t *testing.T) {
@@ -55,5 +62,85 @@ func TestSessionWhere(t *testing.T) {
 		if got := sessionWhere(s, r); got != want {
 			t.Errorf("got %q want %q", got, want)
 		}
+	}
+}
+
+func TestSessionRowsWindowAndWrapperMessage(t *testing.T) {
+	sandboxHome(t)
+	p := core.GetPaths()
+	if err := p.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := store.SaveJSON(p.Sessions, map[string]*store.Session{
+		"claude:recent-closed": {Harness: "claude", SessionID: "recent-closed", Cwd: "/w/r", LastSeen: now.Add(-2 * time.Hour)},
+		"claude:old-closed":    {Harness: "claude", SessionID: "old-closed", Cwd: "/w/o", LastSeen: now.Add(-20 * time.Hour)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	wdir := filepath.Join(p.Wrappers, "wrap1")
+	if err := os.MkdirAll(wdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wdir, "pid"), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meta, _ := json.Marshal(map[string]any{"harness": "antigravity", "cwd": "/w/ag", "started": now})
+	if err := os.WriteFile(filepath.Join(wdir, "meta.json"), meta, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := messages.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Set(scope.Entry{Harness: "antigravity", Wrapper: "wrap1"}, messages.Pair{Text: "keep working"})
+	if err := m.Save(p); err != nil {
+		t.Fatal(err)
+	}
+
+	// Default `continuum status` (window == 0) only lists open sessions and
+	// pending resumes, never closed sessions.
+	for _, r := range sessionRows(0) {
+		if r.ID == "recent-closed" || r.ID == "old-closed" {
+			t.Fatalf("status default window=0 should not include closed session %q", r.ID)
+		}
+	}
+
+	rows := sessionRows(12 * time.Hour)
+	var gotRecent, gotOld, gotWrapMsg bool
+	for _, r := range rows {
+		switch r.ID {
+		case "recent-closed":
+			gotRecent = true
+		case "old-closed":
+			gotOld = true
+		}
+		if r.Wrapper == "wrap1" && r.Message == "session" {
+			gotWrapMsg = true
+		}
+	}
+	if !gotRecent {
+		t.Fatal("12h window should include closed session active 2h ago")
+	}
+	if gotOld {
+		t.Fatal("12h window should exclude closed session active 20h ago")
+	}
+	if !gotWrapMsg {
+		t.Fatalf("wrapper row missing message source: %+v", rows)
+	}
+
+	openSessions := map[string]bool{"claude:open-1": true}
+	if !jobSessionOpen(p, &core.Job{Harness: "claude", SessionID: "open-1"}, openSessions) {
+		t.Fatal("open session job should be reported as open")
+	}
+	if jobSessionOpen(p, &core.Job{Harness: "claude", SessionID: "recent-closed"}, openSessions) {
+		t.Fatal("closed session job should not be reported as open")
+	}
+	if !jobSessionOpen(p, &core.Job{Harness: "antigravity", Location: &core.Location{Kind: "wrapper", Target: "wrap1"}}, openSessions) {
+		t.Fatal("alive wrapper job should be reported as open")
+	}
+	if jobSessionOpen(p, &core.Job{Harness: "antigravity", Location: &core.Location{Kind: "wrapper", Target: "dead-wrap"}}, openSessions) {
+		t.Fatal("dead wrapper job should not be reported as open")
 	}
 }

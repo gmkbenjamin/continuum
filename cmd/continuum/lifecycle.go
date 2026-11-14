@@ -383,47 +383,39 @@ func cmdUninstall(args []string) error {
 		return err
 	}
 	say := func(what, msg string) { fmt.Printf("%-10s %s\n", what+":", msg) }
-	would := func(s string) string {
-		if *dry {
-			return "would " + s
-		}
-		return s
-	}
 
 	// 1. Stop the daemon and remove the login item first, so nothing re-adds
 	// what is removed next.
-	if !*dry {
-		if service.Installed(p) {
-			if err := service.Uninstall(p); err != nil {
-				say("service", err.Error())
-			} else {
-				say("service", "login item removed")
-			}
+	if service.Installed(p) {
+		if err := service.Uninstall(p); err != nil {
+			say("service", err.Error())
+		} else {
+			say("service", "login item removed")
 		}
-		if daemonRunning(p) {
-			stopDaemon(p)
-			say("daemon", "stopped")
-		}
+	}
+	if daemonRunning(p) {
+		stopDaemon(p)
+		say("daemon", "stopped")
 	}
 
 	// 2. Agent hooks: every Continuum hook, in every event, any version.
 	restoreFailed := false
 	for _, t := range hooks.Targets(cfg) {
-		changed, err := hooks.Uninstall(t, *dry)
+		changed, err := hooks.Uninstall(t, false)
 		switch {
 		case err != nil:
 			restoreFailed = true
 			say(t.Harness, err.Error())
 		case changed:
-			say(t.Harness, map[bool]string{true: "would remove its hooks from ", false: "removed its hooks from "}[*dry]+tildePath(t.Path))
+			say(t.Harness, "removed its hooks from "+tildePath(t.Path))
 		}
 	}
 	// The agents' Continuum skill.
-	for _, line := range uninstallSkills(cfg, *dry) {
+	for _, line := range uninstallSkills(cfg, false) {
 		fmt.Println(line)
 	}
 	// 3. Shell hook blocks, in every shell's startup file.
-	for _, line := range uninstallShell(*dry) {
+	for _, line := range uninstallShell(false) {
 		if strings.Contains(line, "left alone") || strings.Contains(line, ": open ") || strings.Contains(line, "denied") {
 			restoreFailed = true
 		}
@@ -433,14 +425,10 @@ func cmdUninstall(args []string) error {
 	home, _ := os.UserHomeDir()
 	link := filepath.Join(home, ".local", "bin", "continuum")
 	if target, err := os.Readlink(link); err == nil && strings.Contains(target, ".continuum") {
-		if !*dry {
-			os.Remove(link)
-		}
-		say("link", map[bool]string{true: "would remove ", false: "removed "}[*dry]+tildePath(link))
+		os.Remove(link)
+		say("link", "removed "+tildePath(link))
 	}
-	if !*dry {
-		os.Remove(daemon.InstallPath(p))
-	}
+	os.Remove(daemon.InstallPath(p))
 
 	// 5. --purge: backups and Continuum's own folder.
 	if *purge {
@@ -458,22 +446,15 @@ func cmdUninstall(args []string) error {
 			say("backups", fmt.Sprintf("kept %d backup(s) of your settings files, because a file above couldn't be restored", len(backups)))
 		case len(backups) > 0:
 			for _, b := range backups {
-				if !*dry {
-					os.Remove(b)
-				}
+				os.Remove(b)
 			}
-			say("backups", would(fmt.Sprintf("delete %d backup(s) of your settings files", len(backups))))
+			say("backups", fmt.Sprintf("deleted %d backup(s) of your settings files", len(backups)))
 		}
-		if *dry {
-			say("data", would("delete Continuum's files in ")+tildePath(p.Home))
-		} else if err := purgeHome(p.Home); err != nil {
+		if err := purgeHome(p.Home); err != nil {
 			say("data", "not all deleted: "+err.Error())
 		} else {
 			say("data", "deleted "+tildePath(p.Home))
 		}
-	}
-	if *dry {
-		return nil
 	}
 
 	// 6. Check nothing is left behind.
@@ -512,7 +493,8 @@ func safeToPurge(dir string) error {
 // so a CONTINUUM_HOME pointed at a folder with other things in it keeps them.
 var ownFiles = []string{
 	"bin", "bin-path", "spool", "wrappers",
-	"config.json", "rules.json", "scope.json", "messages.json", "install.json", "compat.json",
+	"config.json", "rules.json", "scope.json", "scope.json.lock", "messages.json", "messages.json.lock",
+	"install.json", "compat.json",
 	"jobs.json", "sessions.json", "offsets.json", "history.jsonl", "history.jsonl.1",
 	"daemon.log", "daemon.log.1", "daemon.stderr.log", "daemon.lock", "daemon.pid",
 	"hooks.log", "hooks.log.1", "stopped",
@@ -529,10 +511,12 @@ func purgeHome(dir string) error {
 			errs = append(errs, err.Error())
 		}
 	}
-	// Temporary files Continuum writes next to its own (.tmp-jobs.json-…).
-	if tmp, _ := filepath.Glob(filepath.Join(dir, ".tmp-*")); len(tmp) > 0 {
-		for _, f := range tmp {
-			_ = os.Remove(f)
+	// Temporary and per-attempt log files Continuum writes next to its own.
+	for _, pat := range []string{".tmp-*", "native-*.log"} {
+		if matches, _ := filepath.Glob(filepath.Join(dir, pat)); len(matches) > 0 {
+			for _, f := range matches {
+				_ = os.Remove(f)
+			}
 		}
 	}
 	if err := os.Remove(dir); err != nil && !os.IsNotExist(err) {

@@ -68,9 +68,10 @@ func TestGhosttyRefusals(t *testing.T) {
 		fg int
 		st *live.State
 	}{
-		"menu open":       {me, &live.State{Checked: true, Open: true, Source: "command", Session: &live.Session{PID: me, Status: "waiting", WaitingFor: "dialog open"}}},
-		"another program": {me + 1, &live.State{Checked: true, Open: true, Source: "command", Session: &live.Session{PID: me, Status: "idle"}}},
-		"no agent signal": {me, &live.State{Checked: true, Open: true, Source: "processes", Session: &live.Session{PID: me}}},
+		"menu open":             {me, &live.State{Checked: true, Open: true, Source: "command", Session: &live.Session{PID: me, Status: "waiting", WaitingFor: "dialog open"}}},
+		"another program":       {me + 1, &live.State{Checked: true, Open: true, Source: "command", Session: &live.Session{PID: me, Status: "idle"}}},
+		"no agent signal":       {me, &live.State{Checked: true, Open: true, Source: "processes", Session: &live.Session{PID: me}}},
+		"desktop fallback":      {me, &live.State{Checked: true, Open: true, OnlyDesktop: true, Source: "command+desktop", Session: &live.Session{PID: me}}},
 	}
 	for name, c := range cases {
 		calls := fakeGhostty(t, c.fg)

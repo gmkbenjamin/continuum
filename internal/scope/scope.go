@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/continuum-dev/continuum/internal/core"
+	"github.com/continuum-dev/continuum/internal/store"
 )
 
 const (
@@ -95,6 +96,30 @@ func (s Scope) Save(p core.Paths) error {
 	return core.WriteFileAtomic(Path(p), append(data, '\n'), 0o600)
 }
 
+// Update atomically loads, updates, and saves scope.json under an exclusive
+// file lock. If fn reports changed == false, Save is skipped.
+func Update(p core.Paths, fn func(Scope) (Scope, bool, error)) (Scope, error) {
+	var out Scope
+	err := store.WithLock(Path(p)+".lock", 5*time.Second, func() error {
+		sc, err := Load(p)
+		if err != nil {
+			return err
+		}
+		next, changed, err := fn(sc)
+		if err != nil {
+			return err
+		}
+		if changed {
+			if err := next.Save(p); err != nil {
+				return err
+			}
+		}
+		out = next
+		return nil
+	})
+	return out, err
+}
+
 // Covers reports whether a job is in scope, and why not when it is not.
 func (s Scope) Covers(j *core.Job) (bool, string) {
 	for _, e := range s.Excluded {
@@ -158,8 +183,9 @@ func inside(path, dir string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// same reports whether two entries name the same thing.
-func same(a, b Entry) bool {
+// Same reports whether two entries name the same thing. An empty Harness on
+// either entry matches any harness.
+func Same(a, b Entry) bool {
 	return a.Session == b.Session && a.Dir == b.Dir && a.Wrapper == b.Wrapper && (a.Harness == b.Harness || a.Harness == "" || b.Harness == "")
 }
 
@@ -167,7 +193,7 @@ func same(a, b Entry) bool {
 // whether it changed.
 func Add(list []Entry, e Entry) ([]Entry, bool) {
 	for _, x := range list {
-		if same(x, e) {
+		if Same(x, e) {
 			return list, false
 		}
 	}
@@ -187,7 +213,8 @@ func Remove(list []Entry, e Entry, all bool) ([]Entry, int) {
 	var out []Entry
 	n := 0
 	for _, x := range list {
-		if same(x, e) || (len(e.Session) >= 4 && x.Session != "" && strings.HasPrefix(x.Session, e.Session)) {
+		harnessOK := e.Harness == "" || x.Harness == "" || x.Harness == e.Harness
+		if Same(x, e) || (len(e.Session) >= 4 && x.Session != "" && strings.HasPrefix(x.Session, e.Session) && harnessOK) {
 			n++
 			continue
 		}
@@ -225,7 +252,7 @@ func tilde(p string) string {
 	if p == home {
 		return "~"
 	}
-	if rel, err := filepath.Rel(home, p); err == nil && !strings.HasPrefix(rel, "..") {
+	if rel, err := filepath.Rel(home, p); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return filepath.Join("~", rel)
 	}
 	return p

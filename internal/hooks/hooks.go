@@ -375,7 +375,8 @@ func Install(t Target, bin string, dryRun bool) (bool, error) {
 		}
 		v, _ := hooksObj.get(event)
 		if list, ok := v.([]any); ok {
-			if kept := removeOurs(list); len(kept) != len(list) || countOurs(list) > 0 {
+			had := countOurs(list)
+			if kept := removeOurs(list); len(kept) != len(list) || had > 0 {
 				if len(kept) == 0 {
 					hooksObj.del(event)
 				} else {
@@ -410,26 +411,10 @@ func Uninstall(t Target, dryRun bool) (bool, error) {
 		return false, err
 	}
 	hooksV, _ := root.get("hooks")
-	hooksObj, ok := hooksV.(*object)
-	if !ok {
+	if _, ok := hooksV.(*object); !ok {
 		return false, nil
 	}
-	for _, event := range append([]string(nil), hooksObj.keys...) {
-		v, _ := hooksObj.get(event)
-		list, ok := v.([]any)
-		if !ok {
-			continue
-		}
-		list = removeOurs(list)
-		if len(list) == 0 {
-			hooksObj.del(event)
-		} else {
-			hooksObj.set(event, list)
-		}
-	}
-	if len(hooksObj.keys) == 0 {
-		root.del("hooks")
-	}
+	stripOurs(root)
 	out, err := pretty(root)
 	if err != nil {
 		return false, err
@@ -439,8 +424,9 @@ func Uninstall(t Target, dryRun bool) (bool, error) {
 	// (same formatting, key order and whitespace).
 	if b := matchingBackup(t.Path, out); b != nil {
 		out = b
-	} else if len(root.keys) == 0 && len(Backups(t.Path)) == 0 {
-		// Continuum created this file and nothing else is in it: remove it.
+	} else if len(root.keys) == 0 && onlyOursBackups(t.Path) {
+		// Continuum created this file (any backups came only from updates to
+		// its own hooks) and nothing else is in it: remove it.
 		if dryRun {
 			return true, nil
 		}
@@ -616,6 +602,46 @@ func hooksOf(g any) []*object {
 		}
 	}
 	return out
+}
+
+func stripOurs(root *object) int {
+	hooksV, _ := root.get("hooks")
+	hooksObj, ok := hooksV.(*object)
+	if !ok {
+		return 0
+	}
+	removed := 0
+	for _, event := range append([]string(nil), hooksObj.keys...) {
+		v, _ := hooksObj.get(event)
+		list, ok := v.([]any)
+		if !ok {
+			continue
+		}
+		removed += countOurs(list)
+		list = removeOurs(list)
+		if len(list) == 0 {
+			hooksObj.del(event)
+		} else {
+			hooksObj.set(event, list)
+		}
+	}
+	if len(hooksObj.keys) == 0 {
+		root.del("hooks")
+	}
+	return removed
+}
+
+func onlyOursBackups(path string) bool {
+	for _, b := range Backups(path) {
+		root, _, err := load(b)
+		if err != nil {
+			return false
+		}
+		if stripOurs(root) == 0 || len(root.keys) != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // removeOurs drops Continuum's hook entries, and groups left empty by that.

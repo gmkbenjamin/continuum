@@ -3,6 +3,7 @@ package sources
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -177,5 +178,22 @@ func TestPartialLastLineWaits(t *testing.T) {
 	l := tl.Scan(dir, time.Time{}, 0)[path]
 	if len(l) != 1 || string(l[0].Data) != `{"b":2}` {
 		t.Fatalf("got %v", l)
+	}
+}
+
+func TestClaudeNativeGaveUpDropsPriorActivity(t *testing.T) {
+	r := loadRules(t)
+	path := filepath.Join(t.TempDir(), "s1.jsonl")
+	content := strings.Join([]string{
+		`{"type":"assistant","sessionId":"s1","cwd":"/work/app","timestamp":"2026-11-11T09:00:00Z","message":{"content":[{"type":"text","text":"Working on it"}]}}`,
+		`{"type":"system","sessionId":"s1","cwd":"/work/app","timestamp":"2026-11-11T09:01:00Z","content":"Claude Code exited during the wait, so the task will not resume on its own when the usage limit resets."}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lines := ReadFrom(path, 0)
+	evs := ParseClaude(r, path, lines, time.UTC)
+	if len(evs) != 1 || evs[0].Kind != core.KindNativeGaveUp {
+		t.Fatalf("got events %+v, want single NativeGaveUp without trailing activity", evs)
 	}
 }

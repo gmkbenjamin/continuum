@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/continuum-dev/continuum/internal/core"
+	"github.com/continuum-dev/continuum/internal/daemon"
 	"github.com/continuum-dev/continuum/internal/deliver"
 	"github.com/continuum-dev/continuum/internal/rules"
 )
@@ -74,6 +75,9 @@ func installedBin() string {
 	p := core.GetPaths()
 	if data, err := os.ReadFile(p.BinRecord); err == nil && strings.TrimSpace(string(data)) != "" {
 		return strings.TrimSpace(string(data))
+	}
+	if rec, ok := daemon.LoadInstall(p); ok && strings.TrimSpace(rec.Bin) != "" {
+		return strings.TrimSpace(rec.Bin)
 	}
 	return self()
 }

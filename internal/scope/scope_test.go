@@ -1,8 +1,10 @@
 package scope
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/continuum-dev/continuum/internal/core"
@@ -86,5 +88,56 @@ func TestRemoveNeedsMoreThanACharacter(t *testing.T) {
 	}
 	if out, n := Remove(list, Entry{Session: "1a2b"}, false); n != 1 || len(out) != 1 {
 		t.Fatalf("by prefix: removed %d: %+v", n, out)
+	}
+}
+
+func TestRemovePrefixRespectsHarness(t *testing.T) {
+	list := []Entry{
+		{Harness: "claude", Session: "1a2b3c4d-0000"},
+		{Harness: "codex", Session: "1a2b9999-0000"},
+	}
+	out, n := Remove(list, Entry{Harness: "claude", Session: "1a2b"}, false)
+	if n != 1 || len(out) != 1 || out[0].Harness != "codex" {
+		t.Fatalf("removed %d entries, remaining %+v", n, out)
+	}
+}
+
+func TestTildeAndConcurrentUpdate(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if got := tilde(filepath.Join(home, "..dot")); got != filepath.Join("~", "..dot") {
+		t.Fatalf("tilde(..dot) = %q", got)
+	}
+
+	t.Setenv("CONTINUUM_HOME", t.TempDir())
+	p := core.GetPaths()
+	const workers = 10
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := Update(p, func(sc Scope) (Scope, bool, error) {
+				var changed bool
+				sc.Chosen, changed = Add(sc.Chosen, Entry{Harness: "claude", Session: fmt.Sprintf("sess-%02d", i)})
+				return sc, changed, nil
+			})
+			if err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("Update failed: %v", err)
+	}
+	sc, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sc.Chosen) != workers {
+		t.Fatalf("lost concurrent scope updates: got %d of %d (%+v)", len(sc.Chosen), workers, sc.Chosen)
 	}
 }

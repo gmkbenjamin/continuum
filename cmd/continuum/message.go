@@ -63,7 +63,7 @@ func (t msgTarget) resolve(r *rules.Rules) (string, *scope.Entry, error) {
 		return "", &e, nil
 	case *t.folder != "":
 		f := *t.folder
-		if !strings.HasPrefix(f, "/") && !strings.HasPrefix(f, "~") && !strings.HasPrefix(f, ".") {
+		if !isDirArg(f) {
 			f = "./" + f
 		}
 		e, err := resolveEntry(f, nil)
@@ -97,10 +97,6 @@ func setMessage(args []string) error {
 	}
 	p := core.GetPaths()
 	r, _ := rules.Cached(p.Rules)
-	m, err := messages.Load(p)
-	if err != nil {
-		return fmt.Errorf("%s is unreadable: %v", messages.Path(p), err)
-	}
 	agentName, entry, err := msgTarget{agent, session, folder}.resolve(r)
 	if err != nil {
 		return err
@@ -113,28 +109,35 @@ func setMessage(args []string) error {
 	if *outage {
 		what = "outage message"
 	}
-	switch {
-	case agentName != "":
-		old := m.Agents[agentName]
-		if *outage {
-			old.Outage = text
-		} else {
-			old.Text = text
+	var out string
+	if err := messages.Update(p, func(m *messages.Messages) (bool, error) {
+		switch {
+		case agentName != "":
+			old := m.Agents[agentName]
+			if *outage {
+				old.Outage = text
+			} else {
+				old.Text = text
+			}
+			m.Agents[agentName] = old
+			out = fmt.Sprintf("%s %s set.", r.Harness(agentName).DisplayName, what)
+		case entry != nil:
+			m.Set(*entry, pair)
+			out = fmt.Sprintf("%s set for %s.", strings.ToUpper(what[:1])+what[1:], entry.String())
+		default:
+			if *outage {
+				m.Default.Outage = text
+			} else {
+				m.Default.Text = text
+			}
+			out = fmt.Sprintf("Default %s set.", what)
 		}
-		m.Agents[agentName] = old
-		fmt.Printf("%s %s set.\n", r.Harness(agentName).DisplayName, what)
-	case entry != nil:
-		m.Set(*entry, pair)
-		fmt.Printf("%s set for %s.\n", strings.ToUpper(what[:1])+what[1:], entry.String())
-	default:
-		if *outage {
-			m.Default.Outage = text
-		} else {
-			m.Default.Text = text
-		}
-		fmt.Printf("Default %s set.\n", what)
+		return true, nil
+	}); err != nil {
+		return fmt.Errorf("%s is unreadable: %v", messages.Path(p), err)
 	}
-	return m.Save(p)
+	fmt.Println(out)
+	return nil
 }
 
 func resetMessage(args []string) error {
@@ -149,52 +152,80 @@ func resetMessage(args []string) error {
 	}
 	p := core.GetPaths()
 	r, _ := rules.Cached(p.Rules)
-	m, err := messages.Load(p)
 	if *all {
-		m = &messages.Messages{Agents: map[string]messages.Pair{}}
-		fmt.Println("All messages reset to the built-in ones.")
-		return m.Save(p)
-	}
-	if err != nil {
-		// Saving now would replace every message in the file with nothing.
-		return fmt.Errorf("%s is unreadable, so nothing was changed (fix it, or start over with `continuum message reset --all`): %v", messages.Path(p), err)
-	}
-	agentName, entry, err := msgTarget{agent, session, folder}.resolve(r)
-	if err != nil {
-		if *session == "" {
+		if err := messages.ResetAll(p); err != nil {
 			return err
 		}
-		e := scope.Entry{Session: *session} // a session that is gone
-		entry = &e
+		fmt.Println("All messages reset to the built-in ones.")
+		return nil
 	}
-	switch {
-	case agentName != "":
-		old := m.Agents[agentName]
-		if *outage {
-			old.Outage = ""
-		} else {
-			old = messages.Pair{}
+	var agentName string
+	var entries []scope.Entry
+	if *session != "" && *agent == "" && *folder == "" {
+		es, err := resolveSessionTargets(*session, knownSessions())
+		if err != nil {
+			return err
 		}
-		if old.Text == "" && old.Outage == "" {
-			delete(m.Agents, agentName)
-		} else {
-			m.Agents[agentName] = old
+		entries = es
+	} else {
+		var entry *scope.Entry
+		var err error
+		agentName, entry, err = msgTarget{agent, session, folder}.resolve(r)
+		if err != nil {
+			return err
 		}
-		fmt.Printf("%s message reset.\n", r.Harness(agentName).DisplayName)
-	case entry != nil:
-		if !m.Clear(*entry, *outage) {
-			return fmt.Errorf("no message is set for %s", entry.String())
+		if entry != nil {
+			entries = []scope.Entry{*entry}
 		}
-		fmt.Printf("Message reset for %s.\n", entry.String())
-	default:
-		if *outage {
-			m.Default.Outage = ""
-		} else {
-			m.Default = messages.Pair{}
-		}
-		fmt.Println("Default message reset to the built-in one.")
 	}
-	return m.Save(p)
+	var out string
+	loaded := false
+	err := messages.Update(p, func(m *messages.Messages) (bool, error) {
+		loaded = true
+		switch {
+		case agentName != "":
+			old := m.Agents[agentName]
+			if *outage {
+				old.Outage = ""
+			} else {
+				old = messages.Pair{}
+			}
+			if old.Text == "" && old.Outage == "" {
+				delete(m.Agents, agentName)
+			} else {
+				m.Agents[agentName] = old
+			}
+			out = fmt.Sprintf("%s message reset.", r.Harness(agentName).DisplayName)
+		case len(entries) > 0:
+			cleared := false
+			for _, e := range entries {
+				if m.Clear(e, *outage) {
+					cleared = true
+				}
+			}
+			if !cleared {
+				return false, fmt.Errorf("no message is set for %s", entries[0].String())
+			}
+			out = fmt.Sprintf("Message reset for %s.", entries[0].String())
+		default:
+			if *outage {
+				m.Default.Outage = ""
+			} else {
+				m.Default = messages.Pair{}
+			}
+			out = "Default message reset to the built-in one."
+		}
+		return true, nil
+	})
+	if err != nil {
+		if !loaded {
+			// Saving now when unreadable would replace every message in the file with nothing.
+			return fmt.Errorf("%s is unreadable, so nothing was changed (fix it, or start over with `continuum message reset --all`): %v", messages.Path(p), err)
+		}
+		return err
+	}
+	fmt.Println(out)
+	return nil
 }
 
 func previewMessage(args []string) error {

@@ -5,6 +5,7 @@
 package wrapper
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -67,6 +68,9 @@ func DetectHarness(r *rules.Rules, argv []string) string {
 
 // Run starts the agent and blocks until it exits, returning its exit code.
 func Run(o Options) (int, error) {
+	if len(o.Argv) == 0 {
+		return 1, fmt.Errorf("empty command")
+	}
 	p := core.GetPaths()
 	if err := p.Ensure(); err != nil {
 		return 1, err
@@ -98,17 +102,18 @@ func Run(o Options) (int, error) {
 	}
 	if msg != "" {
 		if text, err := messages.Clean(msg); err == nil {
-			if m, err := messages.Load(p); err == nil {
+			_ = messages.Update(p, func(m *messages.Messages) (bool, error) {
 				m.Set(scope.Entry{Harness: harness, Wrapper: id, Label: filepath.Base(o.Argv[0]) + " in " + cwd}, messages.Pair{Text: text})
-				_ = m.Save(p)
-			}
+				return true, nil
+			})
 		}
 	}
 	if o.Choose || os.Getenv("CONTINUUM_CHOOSE") != "" {
-		if sc, err := scope.Load(p); err == nil {
-			sc.Chosen, _ = scope.Add(sc.Chosen, scope.Entry{Harness: harness, Wrapper: id, Label: filepath.Base(o.Argv[0]) + " in " + cwd})
-			_ = sc.Save(p)
-		}
+		_, _ = scope.Update(p, func(sc scope.Scope) (scope.Scope, bool, error) {
+			var changed bool
+			sc.Chosen, changed = scope.Add(sc.Chosen, scope.Entry{Harness: harness, Wrapper: id, Label: filepath.Base(o.Argv[0]) + " in " + cwd})
+			return sc, changed, nil
+		})
 	}
 
 	env := append(os.Environ(), "CONTINUUM_WRAPPER_ID="+id)
@@ -177,6 +182,11 @@ func Run(o Options) (int, error) {
 				// A menu shown before this was answered (or dismissed) by it.
 				mu.Lock()
 				sinceInput = ansi.NewRing(16 * 1024)
+				if bytes.ContainsAny(buf[:n], "\r\n") {
+					// A submitted prompt starts a new turn; older limit text
+					// on screen must not be re-detected from the ring.
+					ring = ansi.NewRing(16 * 1024)
+				}
 				mu.Unlock()
 			}
 			if err != nil {
@@ -214,6 +224,7 @@ func Run(o Options) (int, error) {
 		defer wg.Done()
 		enterDelay := time.Duration(r.Defaults.EnterDelayMS) * time.Millisecond
 		reported := map[string]time.Time{} // signature -> last report
+		stalled := false
 		tick := time.NewTicker(500 * time.Millisecond)
 		defer tick.Stop()
 		for {
@@ -247,6 +258,7 @@ func Run(o Options) (int, error) {
 				time.Sleep(enterDelay)
 				write([]byte("\r"))
 				os.Remove(req.path)
+				stalled = false
 				// Only output produced after the resume can contain a new limit;
 				// the old message may still be on screen and must not count again.
 				mu.Lock()
@@ -267,8 +279,15 @@ func Run(o Options) (int, error) {
 			if !settled {
 				continue
 			}
-			m := h.Classify(text, r.Defaults.TailLines)
+			m := h.Classify(text, min(r.Defaults.TailLines, 12))
 			if m == nil {
+				if stalled && strings.TrimSpace(text) != "" {
+					stalled = false
+					_ = core.SpoolEvent(p, core.Event{
+						Harness: harness, Kind: core.KindActivity, At: time.Now(), Source: "wrapper",
+						Location: &core.Location{Kind: "wrapper", Target: id}, Cwd: cwd,
+					})
+				}
 				continue
 			}
 			// A screen redraw repeats the same message; report it again only
@@ -279,6 +298,7 @@ func Run(o Options) (int, error) {
 				continue
 			}
 			reported[sig] = now
+			stalled = true
 			ev := core.Event{
 				Harness: harness, Kind: m.Kind, Message: m.Text, At: now, Source: "wrapper",
 				Location: &core.Location{Kind: "wrapper", Target: id}, Cwd: cwd, Hit: m.Hit,

@@ -11,9 +11,10 @@ import (
 )
 
 var (
+	unitPat  = `(?:days?|d|hours?|hrs?|hr|h|minutes?|mins?|min|m|seconds?|secs?|sec|s)`
 	anchorRe = regexp.MustCompile(`(?i)(?:\bresets?|\breset\s+(?:at|on|in)|try\s+again|available\s+(?:again\s+)?(?:at|on|in)|will\s+reset|until|wait\s+until)\b`)
-	relRe    = regexp.MustCompile(`(?i)\b(?:in|after)\s+((?:\d+(?:\.\d+)?\s*(?:days?|d|hours?|hrs?|hr|h|minutes?|mins?|min|m|seconds?|secs?|sec|s)\b[\s,]*(?:and\s+)?)+)`)
-	relPart  = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(days?|d|hours?|hrs?|hr|h|minutes?|mins?|min|m|seconds?|secs?|sec|s)\b`)
+	relRe    = regexp.MustCompile(`(?i)\b(?:in|after)\s+(\d+(?:\.\d+)?\s*` + unitPat + `(?:[\s,]*(?:and\s+)?\d+(?:\.\d+)?\s*` + unitPat + `)*)\b`)
+	relPart  = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(` + unitPat + `)`)
 	tzRe     = regexp.MustCompile(`\(\s*([A-Za-z]+(?:/[A-Za-z0-9_+\-]+)+|UTC|GMT|[A-Z]{3,4})\s*\)|\b(UTC|GMT)\b`)
 	isoRe    = regexp.MustCompile(`\b(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?\s*(Z|[+-]\d{2}:?\d{2})?)?`)
 	months   = `(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)`
@@ -34,8 +35,8 @@ func Parse(text string, ref time.Time, local *time.Location) (time.Time, bool) {
 	}
 	text = strings.ReplaceAll(text, " ", " ")
 	text = strings.ReplaceAll(text, " ", " ")
-	if m := epochRe.FindStringSubmatch(text); m != nil {
-		if n, err := strconv.ParseInt(m[1], 10, 64); err == nil {
+	if matches := epochRe.FindAllStringSubmatch(text, -1); len(matches) > 0 {
+		if n, err := strconv.ParseInt(matches[len(matches)-1][1], 10, 64); err == nil {
 			return time.Unix(n, 0), true
 		}
 	}
@@ -144,9 +145,12 @@ func parseSegment(seg string, ref time.Time, local *time.Location) (time.Time, b
 		haveDate = true
 	}
 	dayShift := -1
+	todayOnly := false
 	if !haveDate {
 		if m := dowRe.FindStringSubmatch(seg); m != nil {
-			dayShift = weekdayShift(strings.ToLower(m[1]), refIn.Weekday())
+			word := strings.ToLower(m[1])
+			todayOnly = word == "today"
+			dayShift = weekdayShift(word, refIn.Weekday())
 		}
 	}
 
@@ -157,20 +161,22 @@ func parseSegment(seg string, ref time.Time, local *time.Location) (time.Time, b
 		if m[2] != "" {
 			minute, _ = strconv.Atoi(m[2])
 		}
-		pm := strings.EqualFold(m[3], "p")
-		if hour == 12 {
-			hour = 0
+		if hour >= 1 && hour <= 12 && minute < 60 {
+			pm := strings.EqualFold(m[3], "p")
+			if hour == 12 {
+				hour = 0
+			}
+			if pm {
+				hour += 12
+			}
+			haveTime = true
 		}
-		if pm {
-			hour += 12
-		}
-		haveTime = hour < 24 && minute < 60
 	} else if m := hhmmRe.FindStringSubmatch(seg); m != nil {
 		hour, _ = strconv.Atoi(m[1])
 		minute, _ = strconv.Atoi(m[2])
 		haveTime = true
 	}
-	if !haveTime && !haveDate && dayShift < 0 {
+	if !haveTime && (!haveDate && dayShift < 0 || todayOnly) {
 		return time.Time{}, false
 	}
 

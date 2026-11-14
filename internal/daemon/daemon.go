@@ -94,6 +94,7 @@ func New(p core.Paths) (*Daemon, error) {
 		d.Log.Warnf("jobs file unreadable, starting empty: %v", err)
 		d.Jobs = map[string]*core.Job{}
 	}
+	d.reconcileLoadedJobs()
 	if err := store.LoadJSON(p.Sessions, &d.Sessions); err != nil || d.Sessions == nil {
 		d.Sessions = map[string]*store.Session{}
 	}
@@ -120,6 +121,38 @@ func New(p core.Paths) (*Daemon, error) {
 		d.Offsets.State = map[string]*sources.CodexState{}
 	}
 	return d, nil
+}
+
+// reconcileLoadedJobs repairs pending jobs loaded from jobs.json whose reset
+// time could not be parsed by an older binary or that matched a user input
+// prompt line.
+func (d *Daemon) reconcileLoadedJobs() {
+	for _, j := range d.Jobs {
+		if j == nil || j.State != core.StatePending || j.Message == "" {
+			continue
+		}
+		if len(j.Sources) == 1 && j.Sources[0] == "wrapper" && d.Rules != nil && d.Rules.Harness(j.Harness).Classify(j.Message, d.Rules.Defaults.TailLines) == nil {
+			j.State = core.StateSkipped
+			j.Result = "ignored user input prompt"
+			j.UpdatedAt = d.Now()
+			d.dirty = true
+			d.logf("·  %s · skipped false-positive wrapper event from user input prompt", d.describe(j))
+			continue
+		}
+		if j.Kind == core.KindUsageLimit && !j.ResetKnown {
+			ref := j.LimitAt
+			if ref.IsZero() {
+				ref = d.Now()
+			}
+			if t, ok := resettime.Parse(j.Message, ref, d.Local); ok {
+				j.ResetAt, j.ResetKnown = t, true
+				d.reschedule(j)
+				j.UpdatedAt = d.Now()
+				d.dirty = true
+				d.logf("⏸  %s · parsed reset %s from saved message · resumes %s", d.describe(j), t.In(d.Local).Format("15:04"), when(j.DueAt, d.Now()))
+			}
+		}
+	}
 }
 
 func (d *Daemon) reload() {
@@ -191,6 +224,7 @@ func (d *Daemon) nextDue() time.Time {
 // Tick runs one pass: ingest, scan, deliver, save.
 func (d *Daemon) Tick() {
 	d.reload()
+	d.reconcileLoadedJobs()
 	d.ingestSpool()
 	now := d.Now()
 	if d.Config.TranscriptsWatched() && now.Sub(d.lastScan) >= 2*d.Config.Poll() {
@@ -209,8 +243,12 @@ func (d *Daemon) Tick() {
 			d.observeDesktop()
 		}
 		if now.Sub(d.lastCompat) >= 10*time.Minute {
-			if d.lastCompat.IsZero() {
-				go d.probeTerminalApps() // may wait for the user's answer
+			if d.lastCompat.IsZero() && d.Rules != nil {
+				apps := make(map[string]*rules.TerminalApp, len(d.Rules.TerminalApps))
+				for k, v := range d.Rules.TerminalApps {
+					apps[k] = v
+				}
+				go d.probeTerminalApps(apps) // may wait for the user's answer
 			}
 			d.lastCompat = now
 			d.checkCompat(false)
@@ -595,6 +633,15 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 		d.debugf("%s: a print-mode or SDK run; not resuming it", key)
 		return
 	}
+	if ev.Source == "wrapper" && ev.Message != "" && d.Rules != nil && d.Rules.Harness(ev.Harness).Classify(ev.Message, d.Rules.Defaults.TailLines) == nil {
+		d.debugf("%s: ignoring wrapper event from user input prompt: %q", key, firstLine(ev.Message))
+		return
+	}
+	if ev.Kind == core.KindUsageLimit && ev.ResetAt.IsZero() && ev.Message != "" {
+		if t, ok := resettime.Parse(ev.Message, ev.At, d.Local); ok {
+			ev.ResetAt = t
+		}
+	}
 	// Where the session runs, as its hooks recorded it: a transcript or
 	// rollout line doesn't say, and without it a wrapper's job could be
 	// matched to another session in the same folder.
@@ -607,8 +654,18 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 			// Re-key the pane/wrapper job under the session it belongs to.
 			delete(d.Jobs, twin.Key)
 			twin.Key, twin.SessionID, twin.Harness = key, ev.SessionID, ev.Harness
-			if old := d.Jobs[key]; old != nil && old.State == core.StatePending {
-				twin.Attempts = old.Attempts
+			if old := d.Jobs[key]; old != nil {
+				if old.State == core.StatePending || recentlyDelivered(old, ev.At) {
+					twin.Attempts = old.Attempts
+				}
+				if recentlyDelivered(old, ev.At) {
+					if staleReset(old, twin.ResetAt) {
+						twin.ResetAt, twin.ResetKnown = time.Time{}, false
+					}
+					if staleReset(old, ev.ResetAt) {
+						ev.ResetAt = time.Time{}
+					}
+				}
 			}
 			d.Jobs[key] = twin
 		}
@@ -622,26 +679,38 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 			d.merge(j, ev)
 			return
 		case (j.State == core.StateDelivered) && !ev.At.After(j.DeliveredAt):
+			d.debugf("%s: ignoring %s from %s at %s (already delivered at %s)", key, ev.Kind, ev.Source, ev.At.Format(time.RFC3339), j.DeliveredAt.Format(time.RFC3339))
 			return // an old line about a limit already handled
 		case j.State == core.StateCancelled && !ev.At.After(j.UpdatedAt):
+			d.debugf("%s: ignoring %s from %s (cancelled at %s)", key, ev.Kind, ev.Source, j.UpdatedAt.Format(time.RFC3339))
 			return
 		case j.State == core.StateNeedsUser && !ev.At.After(j.LimitAt.Add(2*time.Minute)):
+			d.debugf("%s: ignoring %s from %s (already marked needs_user)", key, ev.Kind, ev.Source)
 			return
 		case j.State == core.StateIgnored && !ev.At.After(j.LimitAt.Add(2*time.Minute)):
 			d.merge(j, ev)
 			return
 		case !ev.At.After(j.LimitAt):
+			d.debugf("%s: ignoring older %s from %s (%s <= %s)", key, ev.Kind, ev.Source, ev.At.Format(time.RFC3339), j.LimitAt.Format(time.RFC3339))
 			return
 		}
 	}
 	attempts := 0
 	stale := false
-	if j != nil && j.State == core.StateDelivered && ev.At.Sub(j.DeliveredAt) < 6*time.Hour {
+	if j != nil && j.State == core.StatePending {
+		attempts = j.Attempts
+		if ev.ResetAt.IsZero() && j.ResetKnown && j.ResetAt.After(ev.At) {
+			ev.ResetAt = j.ResetAt
+		}
+	} else if recentlyDelivered(j, ev.At) {
 		attempts = j.Attempts // the resume hit a limit again: keep counting
 		// The same reset time as the limit already resumed means either an old
 		// message seen again (a redraw) or a reset that has not happened yet.
 		// Either way, do not retry straight away.
-		stale = !ev.ResetAt.IsZero() && j.ResetKnown && !ev.ResetAt.After(j.ResetAt)
+		stale = staleReset(j, ev.ResetAt)
+		if stale {
+			d.debugf("%s: reset time %s from %s is not newer than prior delivered reset %s; using retry backoff", key, ev.ResetAt.Format(time.RFC3339), ev.Source, j.ResetAt.Format(time.RFC3339))
+		}
 	}
 	nj := &core.Job{
 		Key: key, Harness: ev.Harness, SessionID: ev.SessionID, Cwd: ev.Cwd,
@@ -675,11 +744,7 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 		d.notify(nj, "Needs you", firstLine(ev.Message))
 		return
 	}
-	if nj.Attempts >= d.Rules.Defaults.MaxAttempts {
-		nj.State = core.StateNeedsUser
-		nj.Result = fmt.Sprintf("stopped after %d attempts", nj.Attempts)
-		d.history("needs_user", nj, nil)
-		d.notify(nj, "Stopped retrying", nj.Result)
+	if d.stopAtMaxAttempts(nj) {
 		return
 	}
 	if stale {
@@ -698,8 +763,26 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 			d.logf("·  %s · %s, not resuming: %s", d.describe(nj), strings.ReplaceAll(nj.Kind, "_", " "), why)
 			return
 		}
-		d.history("scheduled", nj, map[string]any{"due": nj.DueAt.Format(time.RFC3339), "kind": nj.Kind, "source": ev.Source})
-		d.logf("⏸  %s · %s · resumes %s (from %s)", d.describe(nj), strings.ReplaceAll(nj.Kind, "_", " "), when(nj.DueAt, d.Now()), ev.Source)
+		histExtra := map[string]any{
+			"due":         nj.DueAt.Format(time.RFC3339),
+			"kind":        nj.Kind,
+			"source":      ev.Source,
+			"reset_known": nj.ResetKnown,
+			"attempt":     nj.Attempts + 1,
+		}
+		if nj.Hit != "" {
+			histExtra["hit"] = nj.Hit
+		}
+		if nj.ResetKnown {
+			histExtra["reset_at"] = nj.ResetAt.Format(time.RFC3339)
+		}
+		d.history("scheduled", nj, histExtra)
+		if nj.ResetKnown {
+			d.logf("⏸  %s · %s · reset %s · resumes %s (from %s)", d.describe(nj), strings.ReplaceAll(nj.Kind, "_", " "), nj.ResetAt.In(d.Local).Format("15:04"), when(nj.DueAt, d.Now()), ev.Source)
+		} else {
+			d.logf("⏸  %s · %s · reset time unknown (backoff #%d) · resumes %s (from %s, hit %q)", d.describe(nj), strings.ReplaceAll(nj.Kind, "_", " "), nj.Attempts+1, when(nj.DueAt, d.Now()), ev.Source, nj.Hit)
+		}
+		d.debugf("%s: scheduled from %s (hit=%q reset_known=%v message=%q)", nj.Key, ev.Source, nj.Hit, nj.ResetKnown, firstLine(nj.Message))
 		if nj.Kind == core.KindUsageLimit {
 			d.notify(nj, "Paused until reset", "Will continue at "+nj.DueAt.In(d.Local).Format("Mon 3:04 PM"))
 		}
@@ -773,8 +856,32 @@ func (d *Daemon) merge(j *core.Job, ev core.Event) {
 		j.Message = ev.Message
 	}
 	j.UpdatedAt = d.Now()
-	d.reschedule(j)
 	d.dirty = true
+	if j.State == core.StatePending && d.stopAtMaxAttempts(j) {
+		return
+	}
+	d.reschedule(j)
+	d.debugf("%s: merged %s from %s (reset_known=%v due=%s)", j.Key, ev.Kind, ev.Source, j.ResetKnown, j.DueAt.Format(time.RFC3339))
+}
+
+func recentlyDelivered(j *core.Job, at time.Time) bool {
+	return j != nil && j.State == core.StateDelivered && at.Sub(j.DeliveredAt) < 6*time.Hour
+}
+
+func staleReset(prev *core.Job, resetAt time.Time) bool {
+	return !resetAt.IsZero() && prev != nil && prev.ResetKnown && !resetAt.After(prev.ResetAt)
+}
+
+func (d *Daemon) stopAtMaxAttempts(j *core.Job) bool {
+	if j.Attempts < d.Rules.Defaults.MaxAttempts {
+		return false
+	}
+	j.State = core.StateNeedsUser
+	j.Result = fmt.Sprintf("stopped after %d attempts", j.Attempts)
+	d.history("needs_user", j, nil)
+	d.notify(j, "Stopped retrying", j.Result)
+	d.dirty = true
+	return true
 }
 
 func backoff(list []int, attempt int) time.Duration {
@@ -921,12 +1028,13 @@ func (d *Daemon) runJob(j *core.Job) {
 	}
 	// Refresh what we know about where the session lives (not from a session
 	// that has ended: its pane belongs to whatever runs there now).
-	if s := d.Sessions[store.SessionKey(j.Harness, j.SessionID)]; s != nil && !s.Ended {
-		if s.Location != nil && (j.Location == nil || s.LastSeen.After(j.LimitAt)) {
-			j.Location = s.Location
+	sess := d.Sessions[store.SessionKey(j.Harness, j.SessionID)]
+	if sess != nil && !sess.Ended {
+		if sess.Location != nil && (j.Location == nil || sess.LastSeen.After(j.LimitAt)) {
+			j.Location = sess.Location
 		}
-		if s.PID > 0 {
-			j.PID = s.PID
+		if sess.PID > 0 {
+			j.PID = sess.PID
 		}
 	}
 	var st *live.State
@@ -971,7 +1079,9 @@ func (d *Daemon) runJob(j *core.Job) {
 			d.debugf("%s: found its pane from the agent's environment: %s", j.Key, loc.String())
 		}
 	}
-	if j.Location == nil {
+	sessEnded := sess != nil && sess.Ended
+	liveClosed := st != nil && st.Checked && !st.Open && (st.Authoritative || st.Source == "pid")
+	if j.Location == nil && !sessEnded && !liveClosed {
 		j.Location = d.findPane(j)
 	}
 
@@ -1265,8 +1375,9 @@ func (d *Daemon) control(cmd string) {
 }
 
 // SelectorMatches reports whether a `cancel`/`resume-now` selector names job
-// j: "all", its key (claude:<id>), its session id, or the start of the
-// session id (at least 4 characters).
+// j: "all", its key (claude:<id>), harness:<prefix>, location (<kind>:<target>
+// or harness@<kind>:<target>), its session id, or the start of the session id
+// (at least 4 characters).
 func SelectorMatches(j *core.Job, sel string) bool {
 	switch {
 	case sel == "":
@@ -1275,8 +1386,14 @@ func SelectorMatches(j *core.Job, sel string) bool {
 		return true
 	case j.Key == sel || j.SessionID == sel:
 		return true
+	case j.Location != nil && (j.Location.String() == sel || j.Harness+"@"+j.Location.String() == sel):
+		return true
 	case len(sel) >= 4 && j.SessionID != "" && strings.HasPrefix(j.SessionID, sel):
 		return true
+	}
+	if i := strings.IndexByte(sel, ':'); i > 0 && j.Harness == sel[:i] && j.SessionID != "" {
+		prefix := sel[i+1:]
+		return len(prefix) >= 4 && strings.HasPrefix(j.SessionID, prefix)
 	}
 	return false
 }
@@ -1369,16 +1486,17 @@ func (d *Daemon) wantAwake() (bool, string) {
 // applyScope follows changes to the scope: a session chosen after it stalled
 // is scheduled, and a pending resume that is no longer in scope is dropped.
 func (d *Daemon) applyScope() {
-	if m, err := messages.Load(d.Paths); err == nil && m.PruneWrappers(func(id string) bool { return deliver.WrapperAlive(d.Paths, id) }) {
-		_ = m.Save(d.Paths)
-	}
-	// Read afresh: the copy from the start of this pass can be seconds old,
-	// and saving it would undo a `continuum choose` made since.
-	if sc, err := scope.Load(d.Paths); err == nil && sc.PruneWrappers(func(id string) bool { return deliver.WrapperAlive(d.Paths, id) }) {
-		if err := sc.Save(d.Paths); err != nil {
-			d.logf("scope: %v", err)
-		}
+	_ = messages.Update(d.Paths, func(m *messages.Messages) (bool, error) {
+		return m.PruneWrappers(func(id string) bool { return deliver.WrapperAlive(d.Paths, id) }), nil
+	})
+	// Read afresh inside a file lock so pruning never undoes a concurrent `continuum choose`.
+	if sc, err := scope.Update(d.Paths, func(cur scope.Scope) (scope.Scope, bool, error) {
+		changed := cur.PruneWrappers(func(id string) bool { return deliver.WrapperAlive(d.Paths, id) })
+		return cur, changed, nil
+	}); err == nil {
 		d.Scope = sc
+	} else {
+		d.logf("scope: %v", err)
 	}
 	now := d.Now()
 	for _, j := range d.Jobs {

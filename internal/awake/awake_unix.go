@@ -8,10 +8,15 @@ import (
 	"os/exec"
 	"runtime"
 	"strconv"
+	"sync"
 	"syscall"
 )
 
-type cmdHolder struct{ cmd *exec.Cmd }
+type cmdHolder struct {
+	mu   sync.Mutex
+	cmd  *exec.Cmd
+	done chan struct{}
+}
 
 func newHolder() holder { return &cmdHolder{} }
 
@@ -32,19 +37,45 @@ func (c *cmdHolder) hold(reason string) error {
 		}
 		argv = []string{p, "--what=idle:sleep", "--who=Continuum", "--why=" + reason, "--mode=block", tail, "--pid=" + pid, "-f", "/dev/null"}
 	}
+	return c.start(argv)
+}
+
+func (c *cmdHolder) start(argv []string) error {
+	c.release()
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	done := make(chan struct{})
 	c.cmd = cmd
-	go func() { _ = cmd.Wait() }()
+	c.done = done
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+	}()
 	return nil
 }
 
 func (c *cmdHolder) release() {
-	if c.cmd != nil && c.cmd.Process != nil {
-		_ = c.cmd.Process.Kill()
-	}
+	c.mu.Lock()
+	cmd := c.cmd
+	done := c.done
 	c.cmd = nil
+	c.done = nil
+	c.mu.Unlock()
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	select {
+	case <-done:
+		return
+	default:
+	}
+	// Kill the whole process group so child helpers (such as systemd-inhibit's
+	// tail --pid=...) never survive as orphans.
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	<-done
 }

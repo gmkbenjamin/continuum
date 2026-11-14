@@ -59,6 +59,8 @@ func TestNoFalsePositives(t *testing.T) {
 			"Tests passed: 42",
 			"Your claude.ai usage limit has reset. Continue the task you were working on.",
 			"> continue",
+			"> has it been keep trying to continue sessions even though usage limit hit? check logs, if no logs, implement debug/diagnostic logs.",
+			"❯ did we hit the rate limit?",
 		} {
 			if m := h.Classify(s, 40); m != nil {
 				t.Errorf("%s matched %q as %s", name, s, m.Kind)

@@ -294,7 +294,7 @@ Usage:
   continuum status [options]
 
   Shows whether Continuum is running and its mode, the hooks, and every open
-  session (plus those active in the last 12 hours) with:
+  session (plus any with a pending resume; --all includes closed sessions) with:
 
     STATE    what it is doing: working, idle, waiting for you (a menu or
              prompt is open), usage limit · resumes 10:55 (in 2h),
@@ -311,7 +311,7 @@ Usage:
 
 Options:
   --all                  Also list sessions closed in the last 3 days (default:
-                         open sessions and those active in the last 12 hours).
+                         only open sessions and pending resumes).
   --json                 Print the sessions as JSON (for scripts and other
                          apps).
   -h, --help             Show this help.
@@ -361,7 +361,7 @@ Usage:
   (also: ls, jobs)
 
   Shows every resume Continuum is waiting to do (when, and where it will type)
-  and those finished in the last 24 hours. States:
+  and recent resumes for open sessions (--all includes closed sessions). States:
     pending      waiting for the reset
     delivered    resumed
     skipped      the session continued without Continuum, or moved on
@@ -371,8 +371,8 @@ Usage:
     cancelled    you cancelled it
 
 Options:
-  --all                  Include all finished resumes (default: pending ones and
-                         the last 24 hours).
+  --all                  Include finished resumes for closed sessions (default:
+                         active resumes and open sessions).
   --json                 Print JSON instead of a table (for scripts and other
                          apps).
   -h, --help             Show this help.

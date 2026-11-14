@@ -2,6 +2,28 @@
 
 All notable changes to Continuum. Versions follow [Semantic Versioning](https://semver.org).
 
+## [0.10.2] - 2026-11-14
+
+### Fixed
+- **Compact reset durations (`Resets in 3h32m34s.`).** Antigravity CLI and Go-style
+  compact durations without spaces between units now parse accurately instead of
+  falling back to the 15m/30m unknown-reset backoff.
+- **False-positive limit detection on user prompts and status lines.** `Classify`
+  ignores interactive user input lines (`> ...`, `❯ ...`, `› ...`) and Continuum's
+  own `⏸`/`▶` status log lines; the PTY wrapper clears its screen ring when Enter
+  is pressed, checks the bottom 12 lines, and emits activity when a stalled session
+  settles with non-limit output.
+- **Open and active sessions in `status` and `list`.** `continuum status` and
+  `continuum list` now show only currently open sessions and active resumes by
+  default (`--all` includes closed sessions and finished resumes). Dormant
+  background sessions from `claude agents --json` no longer pretend to be active
+  now, wrapped sessions in Rex/multiplexers are no longer listed twice or repeated
+  under `Other resumes:`, wrapper rows show their short wrapper ID in the `SESSION`
+  column, and recycled OS PIDs no longer mark closed sessions as open.
+- **Diagnostic logging and code review hardening.** Added `INFO`/`DEBUG` schedule
+  and reconciliation logs, atomic lockfile creation across `scope`/`messages`,
+  Windows PTY and process tree fixes, and safe binary replacement during `update`.
+
 ## [0.10.0] - 2026-11-13
 
 ### Added
@@ -311,6 +333,7 @@ First public release.
   sign-in errors.
 - Help for every command (`-h`), `doctor`, and docs in `docs/`.
 
+[0.10.2]: ../../releases/tag/v0.10.2
 [0.10.0]: ../../releases/tag/v0.10.0
 [0.9.1]: ../../releases/tag/v0.9.1
 [0.9.0]: ../../releases/tag/v0.9.0

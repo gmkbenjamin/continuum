@@ -64,8 +64,13 @@ func knownSessions() []knownSession {
 			case s.Status != "":
 				where += ", " + s.Status
 			}
+			open := s.PID > 0
+			lastSeen := s.StatusSince
+			if open {
+				lastSeen = time.Now()
+			}
 			out = append(out, knownSession{Harness: name, ID: s.SessionID, Short: s.ShortID, Name: s.Name, Cwd: s.Cwd, Where: where,
-				Open: s.PID > 0 || s.Kind != "background", LastSeen: time.Now(), Live: true,
+				Open: open, LastSeen: lastSeen, Live: true,
 				Status: s.Status, Kind: s.Kind, WaitingFor: s.WaitingFor, Tmux: s.Tmux, Entrypoint: s.Entrypoint, PID: s.PID})
 		}
 	}
@@ -75,11 +80,14 @@ func knownSessions() []knownSession {
 	// sessions the agent listed itself.
 	for i := range out {
 		if st := sessions[store.SessionKey(out[i].Harness, out[i].ID)]; st != nil {
-			if out[i].Location == nil {
+			if out[i].Location == nil && (st.Location == nil || st.Location.Kind != "wrapper" || deliver.WrapperAlive(p, st.Location.Target)) {
 				out[i].Location = st.Location
 			}
 			if out[i].Entrypoint == "" {
 				out[i].Entrypoint = st.Entrypoint
+			}
+			if !out[i].Open && st.LastSeen.After(out[i].LastSeen) {
+				out[i].LastSeen = st.LastSeen
 			}
 		}
 	}
@@ -93,8 +101,16 @@ func knownSessions() []knownSession {
 		// Agents without a session list (Codex, ...): ask the process table
 		// whether a recent session is still open.
 		if h := r.Harness(s.Harness); h != nil && time.Since(s.LastSeen) < 12*time.Hour && (h.LiveSessions != nil || len(h.DesktopApps) > 0) {
+			pid := s.PID
+			if s.Location != nil && s.Location.Kind == "wrapper" && !deliver.WrapperAlive(p, s.Location.Target) {
+				pid = 0
+			} else if pid > 0 {
+				if _, name, ok := proc.Info(pid); !ok || !h.IsHarnessProcess(name) {
+					pid = 0
+				}
+			}
 			bin, _ := deliver.Binary(cfg, h)
-			st := live.Default().Lookup(h, live.Query{SessionID: s.SessionID, Cwd: s.Cwd, PID: s.PID, Bin: bin, Entrypoint: s.Entrypoint,
+			st := live.Default().Lookup(h, live.Query{SessionID: s.SessionID, Cwd: s.Cwd, PID: pid, Bin: bin, Entrypoint: s.Entrypoint,
 				Homes: cfg.Homes()})
 			ks.Open = st.Open
 		}
@@ -107,7 +123,9 @@ func knownSessions() []knownSession {
 			continue
 		}
 		env := proc.Environ(out[i].PID)
-		if out[i].Location == nil {
+		if id := env["CONTINUUM_WRAPPER_ID"]; id != "" {
+			out[i].Location = &core.Location{Kind: "wrapper", Target: id}
+		} else if out[i].Location == nil {
 			if loc := mux.LocateFromEnv(r, env); loc != nil {
 				out[i].Location = loc
 			}
@@ -152,6 +170,22 @@ func shortID(id string) string {
 
 var idLike = regexp.MustCompile(`^[0-9a-fA-F][0-9a-fA-F-]{5,}$`)
 
+func hasWindowsDrive(arg string) bool {
+	if len(arg) < 3 {
+		return false
+	}
+	c := arg[0]
+	return ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) && arg[1] == ':' && (arg[2] == '\\' || arg[2] == '/')
+}
+
+func isDirArg(arg string) bool {
+	return arg == "." || arg == ".." ||
+		arg == "~" || strings.HasPrefix(arg, "~/") || strings.HasPrefix(arg, `~\`) ||
+		strings.HasPrefix(arg, "/") || strings.HasPrefix(arg, "./") || strings.HasPrefix(arg, "../") ||
+		strings.HasPrefix(arg, `\`) || strings.HasPrefix(arg, `.\`) || strings.HasPrefix(arg, `..\`) ||
+		filepath.IsAbs(arg) || filepath.VolumeName(arg) != "" || hasWindowsDrive(arg)
+}
+
 // resolveEntry turns an argument into a scope entry: a directory, or a
 // session found by id, id prefix, short id or name.
 func resolveEntry(arg string, sessions []knownSession) (scope.Entry, error) {
@@ -162,11 +196,12 @@ func resolveEntry(arg string, sessions []knownSession) (scope.Entry, error) {
 		}
 		return h.entry(), nil
 	}
-	if arg == "." || strings.HasPrefix(arg, "/") || strings.HasPrefix(arg, "~") || strings.HasPrefix(arg, "./") || strings.HasPrefix(arg, "../") {
+	if isDirArg(arg) {
 		path := arg
-		if strings.HasPrefix(path, "~") {
+		if path == "~" || strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
 			home, _ := os.UserHomeDir()
-			path = filepath.Join(home, strings.TrimPrefix(path, "~"))
+			rest := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(path, "~"), "/"), `\`)
+			path = filepath.Join(home, rest)
 		}
 		abs, err := filepath.Abs(path)
 		if err != nil {
@@ -181,18 +216,22 @@ func resolveEntry(arg string, sessions []knownSession) (scope.Entry, error) {
 	if i := strings.IndexByte(arg, ':'); i > 0 {
 		harness, arg = arg[:i], arg[i+1:]
 	}
-	var hits []knownSession
+	var exact, partial []knownSession
 	for _, s := range sessions {
 		if harness != "" && s.Harness != harness {
 			continue
 		}
 		if s.ID == arg || s.Short == arg || strings.EqualFold(s.Name, arg) {
-			hits = []knownSession{s}
-			break
+			exact = append(exact, s)
+			continue
 		}
 		if (len(arg) >= 4 && strings.HasPrefix(s.ID, arg)) || (s.Name != "" && strings.HasPrefix(strings.ToLower(s.Name), strings.ToLower(arg))) {
-			hits = append(hits, s)
+			partial = append(partial, s)
 		}
+	}
+	hits := partial
+	if len(exact) > 0 {
+		hits = exact
 	}
 	switch len(hits) {
 	case 1:
@@ -206,7 +245,7 @@ func resolveEntry(arg string, sessions []knownSession) (scope.Entry, error) {
 			// Not seen yet (or not open): accept a full-looking id as given.
 			return scope.Entry{Harness: harness, Session: arg}, nil
 		}
-		return scope.Entry{}, fmt.Errorf("no session matches %q (see `continuum sessions`; a folder works too, e.g. `continuum choose .`)", arg)
+		return scope.Entry{}, fmt.Errorf("%w %q (see `continuum sessions`; a folder works too, e.g. `continuum choose .`)", errSessionNotFound, arg)
 	}
 	var names []string
 	for _, h := range hits {
@@ -215,22 +254,59 @@ func resolveEntry(arg string, sessions []knownSession) (scope.Entry, error) {
 	return scope.Entry{}, fmt.Errorf("%q %w: %s", arg, scope.ErrAmbiguous, strings.Join(names, ", "))
 }
 
+var errSessionNotFound = errors.New("no session matches")
+
+// resolveSessionTargets resolves arg for removal/reset commands. For "this",
+// it returns all entries (session and/or wrapper) identifying the current
+// session; if no known session matches arg, it falls back to a raw session
+// entry so gone sessions can still be cleaned up, while still surfacing
+// "this", directory, and ambiguity errors.
+func resolveSessionTargets(arg string, sessions []knownSession) ([]scope.Entry, error) {
+	if isThis(arg) {
+		h, err := thisSession()
+		if err != nil {
+			return nil, err
+		}
+		return h.entries(), nil
+	}
+	e, err := resolveEntry(arg, sessions)
+	if err == nil {
+		return []scope.Entry{e}, nil
+	}
+	if errors.Is(err, errSessionNotFound) {
+		harness, session := "", arg
+		if !isDirArg(arg) {
+			if i := strings.IndexByte(arg, ':'); i > 0 {
+				harness, session = arg[:i], arg[i+1:]
+			}
+		}
+		return []scope.Entry{{Harness: harness, Session: session}}, nil
+	}
+	return nil, err
+}
+
 func cmdScope(args []string) error {
 	p := core.GetPaths()
-	sc, err := scope.Load(p)
-	if err != nil {
-		return err
-	}
+	var sc scope.Scope
+	var err error
 	if len(args) > 0 {
 		switch args[0] {
 		case scope.ModeAll, scope.ModeChosen:
-			sc.Mode = args[0]
-			if err := sc.Save(p); err != nil {
-				return err
-			}
+			sc, err = scope.Update(p, func(cur scope.Scope) (scope.Scope, bool, error) {
+				if cur.Mode == args[0] {
+					return cur, false, nil
+				}
+				cur.Mode = args[0]
+				return cur, true, nil
+			})
 		default:
 			return errors.New("usage: continuum scope [all|chosen]")
 		}
+	} else {
+		sc, err = scope.Load(p)
+	}
+	if err != nil {
+		return err
 	}
 	if sc.Mode == scope.ModeChosen {
 		fmt.Println("Scope: chosen sessions only.")
@@ -256,31 +332,47 @@ func cmdChoose(list string, args []string) error {
 		return cmdSessions(nil)
 	}
 	p := core.GetPaths()
-	sc, err := scope.Load(p)
-	if err != nil {
-		return err
-	}
 	sessions := knownSessions()
-	for _, a := range args {
+	entries := make([]scope.Entry, len(args))
+	for i, a := range args {
 		e, err := resolveEntry(a, sessions)
 		if err != nil {
 			return err
 		}
-		var changed bool
-		if list == "chosen" {
-			sc.Chosen, changed = scope.Add(sc.Chosen, e)
-			sc.Excluded, _ = scope.Remove(sc.Excluded, e, false)
-		} else {
-			sc.Excluded, changed = scope.Add(sc.Excluded, e)
-		}
-		verb := map[string]string{"chosen": "chosen", "excluded": "excluded"}[list]
-		if !changed {
-			verb = "already " + verb
-		}
-		fmt.Printf("%s: %s\n", verb, e.String())
+		entries[i] = e
 	}
-	if err := sc.Save(p); err != nil {
+	var lines []string
+	sc, err := scope.Update(p, func(cur scope.Scope) (scope.Scope, bool, error) {
+		lines = lines[:0]
+		dirty := false
+		for _, e := range entries {
+			var changed bool
+			if list == "chosen" {
+				cur.Chosen, changed = scope.Add(cur.Chosen, e)
+				var removed int
+				cur.Excluded, removed = scope.Remove(cur.Excluded, e, false)
+				if removed > 0 {
+					dirty = true
+				}
+			} else {
+				cur.Excluded, changed = scope.Add(cur.Excluded, e)
+			}
+			if changed {
+				dirty = true
+			}
+			verb := map[string]string{"chosen": "chosen", "excluded": "excluded"}[list]
+			if !changed {
+				verb = "already " + verb
+			}
+			lines = append(lines, fmt.Sprintf("%s: %s", verb, e.String()))
+		}
+		return cur, dirty, nil
+	})
+	if err != nil {
 		return err
+	}
+	for _, l := range lines {
+		fmt.Println(l)
 	}
 	if list == "chosen" && sc.Mode != scope.ModeChosen {
 		fmt.Println("Note: the scope is \"all\", so every session is resumed anyway. Run `continuum scope chosen` to limit it to chosen sessions.")
@@ -293,30 +385,40 @@ func cmdUnchoose(list string, args []string) error {
 		return fmt.Errorf("usage: continuum %s ID|NAME|FOLDER|all", map[string]string{"chosen": "unchoose", "excluded": "include"}[list])
 	}
 	p := core.GetPaths()
-	sc, err := scope.Load(p)
-	if err != nil {
-		return err
-	}
 	sessions := knownSessions()
-	total := 0
-	for _, a := range args {
-		var e scope.Entry
-		if a != "all" {
-			if e, err = resolveEntry(a, sessions); err != nil {
-				// Fall back to the raw text: it may name an entry for a
-				// session that is gone.
-				e = scope.Entry{Session: a}
-			}
-		}
-		var n int
-		if list == "chosen" {
-			sc.Chosen, n = scope.Remove(sc.Chosen, e, a == "all")
-		} else {
-			sc.Excluded, n = scope.Remove(sc.Excluded, e, a == "all")
-		}
-		total += n
+	type target struct {
+		all   bool
+		entry scope.Entry
 	}
-	if err := sc.Save(p); err != nil {
+	var targets []target
+	for _, a := range args {
+		if a == "all" {
+			targets = append(targets, target{all: true})
+			continue
+		}
+		es, err := resolveSessionTargets(a, sessions)
+		if err != nil {
+			return err
+		}
+		for _, e := range es {
+			targets = append(targets, target{entry: e})
+		}
+	}
+	total := 0
+	_, err := scope.Update(p, func(cur scope.Scope) (scope.Scope, bool, error) {
+		total = 0
+		for _, t := range targets {
+			var n int
+			if list == "chosen" {
+				cur.Chosen, n = scope.Remove(cur.Chosen, t.entry, t.all)
+			} else {
+				cur.Excluded, n = scope.Remove(cur.Excluded, t.entry, t.all)
+			}
+			total += n
+		}
+		return cur, total > 0, nil
+	})
+	if err != nil {
 		return err
 	}
 	fmt.Printf("removed %d %s entr%s\n", total, list, map[bool]string{true: "y", false: "ies"}[total == 1])
@@ -329,7 +431,7 @@ func cmdSessions(args []string) error {
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
-	rows := sessionRows(3*24*time.Hour, true)
+	rows := sessionRows(3 * 24 * time.Hour)
 	if *asJSON {
 		return printRowsJSON(rows)
 	}

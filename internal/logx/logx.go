@@ -137,6 +137,7 @@ type File struct {
 	maxBytes int64
 	f        *os.File
 	size     int64
+	closed   bool
 }
 
 func OpenFile(path string, maxBytes int64) (*File, error) {
@@ -163,8 +164,17 @@ func (lf *File) open() error {
 func (lf *File) Write(p []byte) (int, error) {
 	lf.mu.Lock()
 	defer lf.mu.Unlock()
+	if lf.closed {
+		return 0, os.ErrClosed
+	}
+	if lf.f == nil {
+		if err := lf.open(); err != nil {
+			return 0, err
+		}
+	}
 	if lf.maxBytes > 0 && lf.size+int64(len(p)) > lf.maxBytes {
-		lf.f.Close()
+		_ = lf.f.Close()
+		lf.f = nil
 		_ = os.Rename(lf.path, lf.path+".1")
 		if err := lf.open(); err != nil {
 			return 0, err
@@ -175,4 +185,14 @@ func (lf *File) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func (lf *File) Close() error { return lf.f.Close() }
+func (lf *File) Close() error {
+	lf.mu.Lock()
+	defer lf.mu.Unlock()
+	lf.closed = true
+	if lf.f == nil {
+		return nil
+	}
+	err := lf.f.Close()
+	lf.f = nil
+	return err
+}

@@ -355,9 +355,22 @@ func shortKey(j *core.Job) string {
 	return k
 }
 
+func jobSessionOpen(p core.Paths, j *core.Job, openSessions map[string]bool) bool {
+	if j == nil {
+		return false
+	}
+	if j.SessionID != "" {
+		return openSessions[j.Harness+":"+j.SessionID]
+	}
+	if j.Location != nil && j.Location.Kind == "wrapper" {
+		return deliver.WrapperAlive(p, j.Location.Target)
+	}
+	return false
+}
+
 func cmdList(args []string) error {
 	fs := newFlagSet("list")
-	all := fs.Bool("all", false, "Include all finished resumes (default: pending ones and the last 24 hours).")
+	all := fs.Bool("all", false, "Include finished resumes for closed sessions (default: active resumes and open sessions).")
 	asJSON := fs.Bool("json", false, "Print JSON instead of a table (for scripts and other apps).")
 	if err := parseFlags(fs, args); err != nil {
 		return err
@@ -369,9 +382,19 @@ func cmdList(args []string) error {
 	}
 	list := store.SortedJobs(jobs)
 	if !*all {
+		openSessions := map[string]bool{}
+		for _, s := range knownSessions() {
+			if s.Open {
+				openSessions[s.Harness+":"+s.ID] = true
+			}
+		}
 		var keep []*core.Job
 		for _, j := range list {
-			if j.State == core.StatePending || j.State == core.StateNeedsUser || time.Since(j.UpdatedAt) < 24*time.Hour {
+			if j.State == core.StatePending || j.State == core.StateNeedsUser {
+				keep = append(keep, j)
+				continue
+			}
+			if time.Since(j.UpdatedAt) < 24*time.Hour && jobSessionOpen(p, j, openSessions) {
 				keep = append(keep, j)
 			}
 		}
@@ -403,14 +426,14 @@ func cmdControl(action string, args []string) error {
 		return fmt.Errorf("usage: continuum %s ID|all", action)
 	}
 	sel := args[0]
+	sels := []string{sel}
 	if isThis(sel) {
 		h, err := thisSession()
 		if err != nil {
 			return err
 		}
+		sels = h.selectors()
 		sel = h.selector()
-	} else if i := strings.IndexByte(sel, ':'); i >= 0 && !strings.Contains(sel, "@") {
-		sel = sel[i+1:] // accept the harness:id form shown by list
 	}
 	if sel == "" {
 		return fmt.Errorf("usage: continuum %s ID|all", action)
@@ -423,11 +446,26 @@ func cmdControl(action string, args []string) error {
 		jobs, _ := store.LoadJobs(p.Jobs)
 		var keys []string
 		sessions := map[string]bool{}
-		for _, j := range jobs {
-			if daemon.SelectorMatches(j, sel) && !sessions[j.Harness+j.SessionID] {
-				sessions[j.Harness+j.SessionID] = true
-				keys = append(keys, shortKey(j))
+		matchedSel := ""
+		for _, s := range sels {
+			for _, j := range jobs {
+				id := j.Key
+				if j.SessionID != "" {
+					id = j.Harness + "\x00" + j.SessionID
+				}
+				if daemon.SelectorMatches(j, s) {
+					if matchedSel == "" {
+						matchedSel = s
+					}
+					if !sessions[id] {
+						sessions[id] = true
+						keys = append(keys, shortKey(j))
+					}
+				}
 			}
+		}
+		if matchedSel != "" {
+			sel = matchedSel
 		}
 		if len(keys) > 1 {
 			sort.Strings(keys)
@@ -470,16 +508,16 @@ func cmdControl(action string, args []string) error {
 
 func cmdStatus(args []string) error {
 	fs := newFlagSet("status")
-	all := fs.Bool("all", false, "Also list sessions closed in the last 3 days (default: open sessions and those active in the last 12 hours).")
+	all := fs.Bool("all", false, "Also list sessions closed in the last 3 days (default: only open sessions and pending resumes).")
 	asJSON := fs.Bool("json", false, "Print the sessions as JSON (for scripts and other apps).")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
-	window := 12 * time.Hour
+	var window time.Duration
 	if *all {
 		window = 3 * 24 * time.Hour
 	}
-	rows := sessionRows(window, *all)
+	rows := sessionRows(window)
 	if *asJSON {
 		return printRowsJSON(rows)
 	}
@@ -530,14 +568,27 @@ func cmdStatus(args []string) error {
 	// Resumes not tied to a listed session (e.g. found on screen in a pane).
 	jobs, _ := store.LoadJobs(p.Jobs)
 	listed := map[string]bool{}
+	listedWrappers := map[string]bool{}
 	for _, r := range rows {
-		listed[r.ID] = true
+		if r.ID != "" {
+			listed[r.ID] = true
+		}
+		if r.Wrapper != "" {
+			listedWrappers[r.Wrapper] = true
+		}
 	}
 	var extra []*core.Job
 	for _, j := range store.SortedJobs(jobs) {
-		if (j.SessionID == "" || !listed[j.SessionID]) && (j.State == core.StatePending || j.State == core.StateNeedsUser) {
-			extra = append(extra, j)
+		if j.State != core.StatePending && j.State != core.StateNeedsUser {
+			continue
 		}
+		if j.SessionID != "" && listed[j.SessionID] {
+			continue
+		}
+		if j.Location != nil && j.Location.Kind == "wrapper" && listedWrappers[j.Location.Target] {
+			continue
+		}
+		extra = append(extra, j)
 	}
 	if len(extra) > 0 {
 		fmt.Println("\nOther resumes:")
@@ -565,6 +616,7 @@ func copySelf(dst string) error {
 		return err
 	}
 	tmp := dst + ".new"
+	_ = os.Remove(tmp)
 	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 	if err != nil {
 		return err

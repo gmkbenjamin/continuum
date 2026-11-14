@@ -42,7 +42,7 @@ type sessionRow struct {
 
 // sessionRows lists open sessions, sessions seen within window, and any with
 // a resume pending or needing the user.
-func sessionRows(window time.Duration, includeClosed bool) []sessionRow {
+func sessionRows(window time.Duration) []sessionRow {
 	p := core.GetPaths()
 	cfg, _ := core.LoadConfig(p.Config)
 	r, _ := rules.Cached(p.Rules)
@@ -55,7 +55,7 @@ func sessionRows(window time.Duration, includeClosed bool) []sessionRow {
 	for _, s := range known {
 		j := jobs[s.Harness+":"+s.ID]
 		pendingish := j != nil && (j.State == core.StatePending || j.State == core.StateNeedsUser)
-		if !s.Open && !pendingish && (now.Sub(s.LastSeen) > window || !includeClosed && !s.Open) {
+		if !s.Open && !pendingish && (window <= 0 || now.Sub(s.LastSeen) > window) {
 			continue
 		}
 		probe := &core.Job{Harness: s.Harness, SessionID: s.ID, Cwd: s.Cwd, Location: s.Location}
@@ -74,12 +74,12 @@ func sessionRows(window time.Duration, includeClosed bool) []sessionRow {
 		}
 		rows = append(rows, row)
 	}
-	return append(rows, wrapperRows(p, r, sc, jobs, known, now)...)
+	return append(rows, wrapperRows(p, cfg, r, sc, msgs, jobs, known, now)...)
 }
 
 // wrapperRows lists agents running in Continuum's wrapper that no session
 // list knows of (agents without one: Antigravity, Cursor, Gemini, ...).
-func wrapperRows(p core.Paths, r *rules.Rules, sc scope.Scope, jobs map[string]*core.Job, known []knownSession, now time.Time) []sessionRow {
+func wrapperRows(p core.Paths, cfg core.Config, r *rules.Rules, sc scope.Scope, msgs *messages.Messages, jobs map[string]*core.Job, known []knownSession, now time.Time) []sessionRow {
 	seen := map[string]bool{}
 	for _, s := range known {
 		if s.Location != nil && s.Location.Kind == "wrapper" {
@@ -105,7 +105,8 @@ func wrapperRows(p core.Paths, r *rules.Rules, sc scope.Scope, jobs map[string]*
 		loc := &core.Location{Kind: "wrapper", Target: id}
 		probe := &core.Job{Harness: meta.Harness, Cwd: meta.Cwd, Location: loc}
 		covered, _ := sc.Covers(probe)
-		row := sessionRow{Agent: meta.Harness, Folder: meta.Cwd, Open: true, Covered: covered, LastSeen: meta.Started, Wrapper: id,
+		row := sessionRow{Agent: meta.Harness, Folder: meta.Cwd, Open: true, Covered: covered,
+			Message: msgs.Resolve(probe, false, cfg, r).Source, LastSeen: meta.Started, Wrapper: id,
 			State: "active", Detail: "open (in Continuum's wrapper)"}
 		if h := r.Harness(meta.Harness); h != nil && h.DisplayName != "" {
 			row.Agent = h.DisplayName
@@ -288,6 +289,9 @@ func printSessionTable(w io.Writer, rows []sessionRow, withMessage bool) {
 		name := r.Name
 		if name == "" {
 			name = shortID(r.ID)
+		}
+		if name == "" && r.Wrapper != "" {
+			name = shortID(r.Wrapper)
 		}
 		folder := filepath.Base(r.Folder)
 		if r.Folder == "" {

@@ -154,6 +154,7 @@ func ParseClaude(r *rules.Rules, path string, lines []Line, local *time.Location
 			ev.Kind = core.KindNativeGaveUp
 			ev.Message = text
 			events = append(events, ev)
+			lastActivity = nil
 		case cl.Type == "assistant" || cl.Type == "user" && !notAPrompt(cl, text):
 			ev := base
 			ev.Kind = core.KindActivity

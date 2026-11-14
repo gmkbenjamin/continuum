@@ -20,10 +20,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/continuum-dev/continuum/internal/core"
 	"github.com/continuum-dev/continuum/internal/rules"
 	"github.com/continuum-dev/continuum/internal/scope"
+	"github.com/continuum-dev/continuum/internal/store"
 )
 
 // BuiltInOutage is typed after a temporary API error.
@@ -76,6 +78,31 @@ func (m *Messages) Save(p core.Paths) error {
 		return err
 	}
 	return core.WriteFileAtomic(Path(p), append(data, '\n'), 0o600)
+}
+
+// Update atomically loads, updates, and saves messages.json under an
+// exclusive file lock. If fn reports changed == false, Save is skipped.
+func Update(p core.Paths, fn func(*Messages) (bool, error)) error {
+	return store.WithLock(Path(p)+".lock", 5*time.Second, func() error {
+		m, err := Load(p)
+		if err != nil {
+			return err
+		}
+		changed, err := fn(m)
+		if err != nil || !changed {
+			return err
+		}
+		return m.Save(p)
+	})
+}
+
+// ResetAll replaces messages.json with an empty configuration under the file
+// lock, recovering even when the existing file is unreadable.
+func ResetAll(p core.Paths) error {
+	return store.WithLock(Path(p)+".lock", 5*time.Second, func() error {
+		m := &Messages{Agents: map[string]Pair{}}
+		return m.Save(p)
+	})
 }
 
 // Clean makes a message safe to type: one line (a line break would send it
@@ -167,7 +194,7 @@ func fill(s string, j *core.Job, r *rules.Rules) string {
 // wrapper). An empty pair removes it.
 func (m *Messages) Set(e scope.Entry, p Pair) {
 	for i := range m.Rules {
-		if same(m.Rules[i].Entry, e) {
+		if scope.Same(m.Rules[i].Entry, e) {
 			if p.Text == "" && p.Outage == "" {
 				m.Rules = append(m.Rules[:i], m.Rules[i+1:]...)
 			} else {
@@ -184,20 +211,24 @@ func (m *Messages) Set(e scope.Entry, p Pair) {
 // Clear removes the message (or only the outage one) for an entry. A session
 // id may be shortened to its first 4 or more characters.
 func (m *Messages) Clear(e scope.Entry, outageOnly bool) bool {
-	for i := range m.Rules {
-		if same(m.Rules[i].Entry, e) || (len(e.Session) >= 4 && strings.HasPrefix(m.Rules[i].Session, e.Session)) {
+	cleared := false
+	var kept []Rule
+	for _, r := range m.Rules {
+		harnessOK := e.Harness == "" || r.Harness == "" || r.Harness == e.Harness
+		if scope.Same(r.Entry, e) || (len(e.Session) >= 4 && r.Session != "" && strings.HasPrefix(r.Session, e.Session) && harnessOK) {
+			cleared = true
 			if outageOnly {
-				m.Rules[i].Outage = ""
-				if m.Rules[i].Text == "" {
-					m.Rules = append(m.Rules[:i], m.Rules[i+1:]...)
+				r.Outage = ""
+				if r.Text != "" {
+					kept = append(kept, r)
 				}
-			} else {
-				m.Rules = append(m.Rules[:i], m.Rules[i+1:]...)
 			}
-			return true
+			continue
 		}
+		kept = append(kept, r)
 	}
-	return false
+	m.Rules = kept
+	return cleared
 }
 
 func merge(old, p Pair) Pair {
@@ -208,10 +239,6 @@ func merge(old, p Pair) Pair {
 		old.Outage = p.Outage
 	}
 	return old
-}
-
-func same(a, b scope.Entry) bool {
-	return a.Session == b.Session && a.Dir == b.Dir && a.Wrapper == b.Wrapper
 }
 
 // PruneWrappers drops messages for `continuum run` sessions that ended.

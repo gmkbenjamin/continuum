@@ -378,12 +378,12 @@ func BundledVersion(a *rules.DesktopApp, homes map[string]string) string {
 // question once, when the daemon starts (normally right after install, with
 // the user at the computer). macOS asks the user once whether Continuum may
 // control the app; better now than at 3am with the screen locked.
-func (d *Daemon) probeTerminalApps() {
-	if runtime.GOOS != "darwin" || len(d.Rules.TerminalApps) == 0 {
+func (d *Daemon) probeTerminalApps(apps map[string]*rules.TerminalApp) {
+	if runtime.GOOS != "darwin" || len(apps) == 0 {
 		return
 	}
 	procs, _ := proc.List()
-	for _, a := range d.Rules.TerminalApps {
+	for _, a := range apps {
 		running := false
 		for _, p := range procs {
 			if a.MatchesProcess(p.Line) {

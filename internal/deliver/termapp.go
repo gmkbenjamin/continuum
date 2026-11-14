@@ -129,7 +129,7 @@ func viaTerminalApp(o Options, h *rules.Harness, job *core.Job) (Result, error) 
 // session idle with nothing waiting for an answer, for terminals whose screen
 // Continuum can't read.
 func agentSaysNoDialog(o Options) error {
-	if o.Live == nil || o.Live.Session == nil || (o.Live.Source != "command" && o.Live.Source != "registry" && !strings.HasPrefix(o.Live.Source, "command") && !strings.HasPrefix(o.Live.Source, "registry")) {
+	if o.Live == nil || o.Live.Session == nil || o.Live.OnlyDesktop || (o.Live.Source != "command" && o.Live.Source != "registry") {
 		return errors.New("can't read this terminal's screen, and the agent doesn't report whether a menu is open")
 	}
 	s := o.Live.Session

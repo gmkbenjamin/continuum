@@ -2,9 +2,11 @@ package logx
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -46,5 +48,34 @@ func TestFileRotates(t *testing.T) {
 	b, err := os.Stat(path + ".1")
 	if err != nil || a.Size() > 100 || b.Size() > 100 {
 		t.Fatalf("rotation: %v %v %v", a.Size(), b, err)
+	}
+}
+
+func TestFileConcurrentWriteAndClose(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.log")
+	f, err := OpenFile(path, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 20; i++ {
+				_, _ = f.Write([]byte("line of log output\n"))
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = f.Close()
+		_ = f.Close()
+	}()
+	wg.Wait()
+
+	if _, err := f.Write([]byte("after close\n")); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("write after Close() = %v, want os.ErrClosed", err)
 	}
 }

@@ -31,7 +31,6 @@ func typeViaPTY(r *rules.Rules, h *rules.Harness, argv []string, dir string, env
 
 	var (
 		mu     sync.Mutex
-		raw    bytes.Buffer
 		last   = time.Now()
 		exited bool
 	)
@@ -44,7 +43,6 @@ func typeViaPTY(r *rules.Rules, h *rules.Harness, argv []string, dir string, env
 				chunk := buf[:n]
 				mu.Lock()
 				ring.Write(chunk)
-				raw.Write(chunk)
 				last = time.Now()
 				mu.Unlock()
 				answerQueries(c, chunk)

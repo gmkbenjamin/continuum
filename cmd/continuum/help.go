@@ -134,7 +134,7 @@ arguments in a terminal opens it too.`,
 		Name: "status", Group: "Set up", Args: "[options]",
 		Summary: "Show the daemon, hooks, and every session and its state",
 		Detail: `Shows whether Continuum is running and its mode, the hooks, and every open
-session (plus those active in the last 12 hours) with:
+session (plus any with a pending resume; --all includes closed sessions) with:
 
   STATE    what it is doing: working, idle, waiting for you (a menu or
            prompt is open), usage limit · resumes 10:55 (in 2h),
@@ -165,7 +165,7 @@ current scope covers them. Use the ID or NAME with choose, exclude, cancel.`,
 		Name: "list", Aliases: []string{"ls", "jobs"}, Group: "Sessions and resumes", Args: "[options]",
 		Summary: "Show scheduled and recent resumes",
 		Detail: `Shows every resume Continuum is waiting to do (when, and where it will type)
-and those finished in the last 24 hours. States:
+and recent resumes for open sessions (--all includes closed sessions). States:
   pending      waiting for the reset
   delivered    resumed
   skipped      the session continued without Continuum, or moved on

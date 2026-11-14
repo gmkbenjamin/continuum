@@ -3,9 +3,11 @@
 package wrapper
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/creack/pty"
@@ -16,6 +18,8 @@ type unixPTY struct {
 	f      *os.File
 	cmd    *exec.Cmd
 	onStop func()
+	mu     sync.Mutex
+	reaped bool
 }
 
 // start runs the agent through `continuum __pty-helper`, which owns the new
@@ -24,6 +28,9 @@ type unixPTY struct {
 // silently drops the SIGTSTP an agent sends itself on Ctrl+Z, leaving it
 // half-suspended.
 func start(argv []string, env []string, cols, rows int) (ptyProcess, error) {
+	if len(argv) == 0 {
+		return nil, errors.New("empty command")
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -40,23 +47,32 @@ func start(argv []string, env []string, cols, rows int) (ptyProcess, error) {
 func (u *unixPTY) Read(p []byte) (int, error)  { return u.f.Read(p) }
 func (u *unixPTY) Write(p []byte) (int, error) { return u.f.Write(p) }
 
+func (u *unixPTY) signalChild(fn func(*os.Process)) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.reaped || u.cmd.Process == nil {
+		return
+	}
+	fn(u.cmd.Process)
+}
+
 // Close closes the terminal and makes sure the helper (and so the agent) is
 // not left suspended: a stopped process never sees the hang-up otherwise.
 func (u *unixPTY) Close() error {
-	if p := u.cmd.Process; p != nil {
+	u.signalChild(func(p *os.Process) {
 		_ = syscall.Kill(p.Pid, syscall.SIGCONT)
 		_ = syscall.Kill(p.Pid, syscall.SIGHUP)
-	}
+	})
 	return u.f.Close()
 }
 
 // Signal passes a signal the wrapper received (hang-up, terminate) on to the
 // agent, waking it first in case it is suspended.
 func (u *unixPTY) Signal(sig os.Signal) {
-	if p := u.cmd.Process; p != nil {
+	u.signalChild(func(p *os.Process) {
 		_ = syscall.Kill(p.Pid, syscall.SIGCONT)
 		_ = p.Signal(sig)
-	}
+	})
 }
 
 // forwardSignals relays hang-up and terminate to the agent instead of letting
@@ -105,8 +121,14 @@ func (u *unixPTY) Wait() (int, error) {
 			}
 			_ = syscall.Kill(pid, syscall.SIGCONT)
 		case ws.Exited():
+			u.mu.Lock()
+			u.reaped = true
+			u.mu.Unlock()
 			return ws.ExitStatus(), nil
 		case ws.Signaled():
+			u.mu.Lock()
+			u.reaped = true
+			u.mu.Unlock()
 			return 128 + int(ws.Signal()), nil
 		}
 	}

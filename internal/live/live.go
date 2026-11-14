@@ -197,7 +197,7 @@ func (f *Finder) Lookup(h *rules.Harness, q Query) State {
 				st.MovedOn = true
 			}
 		}
-		if !st.MovedOn && f.Alive != nil && f.Alive(q.PID) {
+		if !st.MovedOn && st.Source != "command" && f.Alive != nil && f.Alive(q.PID) {
 			// No registry entry but the agent's process is alive: still open.
 			st.Open = true
 			st.Session = &Session{SessionID: q.SessionID, PID: q.PID, Cwd: q.Cwd}

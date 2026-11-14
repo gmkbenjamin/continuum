@@ -61,20 +61,29 @@ func StartDetached(argv []string, dir string, env []string, logPath string) (int
 	if env != nil {
 		cmd.Env = env
 	}
-	devnull, err := os.Open(os.DevNull)
-	if err == nil {
+	var closeInParent []*os.File
+	closeFiles := func() {
+		for _, f := range closeInParent {
+			_ = f.Close()
+		}
+	}
+	if devnull, err := os.Open(os.DevNull); err == nil {
 		cmd.Stdin = devnull
+		closeInParent = append(closeInParent, devnull)
 	}
 	if logPath != "" {
 		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
 			cmd.Stdout = f
 			cmd.Stderr = f
+			closeInParent = append(closeInParent, f)
 		}
 	}
 	detach(cmd)
 	if err := cmd.Start(); err != nil {
+		closeFiles()
 		return 0, err
 	}
+	closeFiles()
 	pid := cmd.Process.Pid
 	go func() { _ = cmd.Wait() }()
 	return pid, nil

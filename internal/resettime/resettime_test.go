@@ -33,6 +33,8 @@ func TestParse(t *testing.T) {
 		{"codex local time", "You’ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at 5:53 PM.", time.Date(2026, 11, 11, 17, 53, 0, 0, syd)},
 		{"codex relative", "You've hit your usage limit. Upgrade to Pro or try again in 2 hours 13 minutes.", ref.Add(2*time.Hour + 13*time.Minute)},
 		{"codex relative days", "You've hit your usage limit. Try again in 3 days 4 hours.", ref.Add(76 * time.Hour)},
+		{"antigravity compact hms", "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 3h32m34s.\nError ID: c14a5727-903a-4050-b53c-86224c0d83e5-364", ref.Add(3*time.Hour + 32*time.Minute + 34*time.Second)},
+		{"compact hm", "Quota reached. Resets in 1h5m.", ref.Add(time.Hour + 5*time.Minute)},
 		{"codex date", "You've hit your usage limit. Try again at 12 Nov 2026 9:05 AM.", time.Date(2026, 11, 12, 9, 5, 0, 0, syd)},
 		{"short relative", "Rate limited. Try again in 45s", ref.Add(45 * time.Second)},
 		{"24h clock", "Quota exceeded; resets at 14:00", time.Date(2026, 11, 11, 14, 0, 0, 0, syd)},
@@ -106,5 +108,27 @@ func TestWeekdayResetEarlierTodayMeansNextWeek(t *testing.T) {
 	got, _ = Parse("resets Mon 9pm", mon7pm, syd)
 	if want := time.Date(2026, 11, 16, 21, 0, 0, 0, syd); !got.Equal(want) {
 		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestParseEdgeCases(t *testing.T) {
+	syd := mustLoc(t, "Australia/Sydney")
+	ref := time.Date(2026, 11, 11, 14, 0, 0, 0, syd)
+
+	// Last resets_at epoch wins (newest screen line).
+	got, ok := Parse(`"resets_at": 1793700000 ... "resets_at": 1793742179`, ref, syd)
+	if !ok || !got.Equal(time.Unix(1793742179, 0)) {
+		t.Fatalf("epoch last-match = (%v, %v)", got, ok)
+	}
+
+	for _, bad := range []string{
+		"Quota resets today",
+		"Try again at 15am",
+		"Resets 0am",
+		"Resets 13pm",
+	} {
+		if got, ok := Parse(bad, ref, syd); ok {
+			t.Errorf("Parse(%q) = (%v, true), want ok=false", bad, got)
+		}
 	}
 }

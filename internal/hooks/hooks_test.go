@@ -290,3 +290,52 @@ func TestUninstallRemovesAFileItCreated(t *testing.T) {
 		t.Fatalf("file Continuum created is still there: %v", err)
 	}
 }
+
+func TestUninstallRemovesCreatedFileAfterUpdateBackups(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	tg := Target{Harness: "codex", Path: path, Events: []string{"SessionStart", "Stop"}, Timeout: 10}
+	if _, err := Install(tg, "/a/continuum", false); err != nil {
+		t.Fatal(err)
+	}
+	// Simulating `continuum update` creates a backup containing only Continuum's hooks.
+	if _, err := Install(tg, "/b/continuum", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Uninstall(tg, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("file Continuum created was left behind after update+uninstall: %v", err)
+	}
+
+	// Pre-existing empty `{}\n` is still restored, not removed.
+	emptyPath := filepath.Join(t.TempDir(), "existing-empty.json")
+	os.WriteFile(emptyPath, []byte("{}\n"), 0o600)
+	tgEmpty := Target{Harness: "codex", Path: emptyPath, Events: []string{"SessionStart", "Stop"}, Timeout: 10}
+	if _, err := Install(tgEmpty, "/a/continuum", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Uninstall(tgEmpty, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustRead(t, emptyPath); got != "{}\n" {
+		t.Fatalf("pre-existing empty object = %q, want %q", got, "{}\n")
+	}
+}
+
+func TestInstallCleansPartialLegacyEventGroup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	orig := `{"hooks": {
+  "Notification": [{"hooks": [{"type": "command", "command": "/old/continuum hook claude"}, {"type": "command", "command": "say hi"}]}]
+}}`
+	os.WriteFile(path, []byte(orig), 0o600)
+	tg := Target{Harness: "claude", Path: path, Events: []string{"Stop"}, Timeout: 10}
+	changed, err := Install(tg, "/new/continuum", false)
+	if err != nil || !changed {
+		t.Fatalf("Install changed=%v err=%v", changed, err)
+	}
+	got := mustRead(t, path)
+	if strings.Contains(got, "/old/continuum") || !strings.Contains(got, "say hi") {
+		t.Fatalf("unexpected Notification group after upgrade:\n%s", got)
+	}
+}

@@ -439,3 +439,169 @@ func TestScopePruneKeepsAChoiceMadeMeanwhile(t *testing.T) {
 		t.Fatalf("chosen after pruning: %+v", sc.Chosen)
 	}
 }
+
+func TestWrapperRekeyPreservesDeliveredAttemptsAndMaxAttempts(t *testing.T) {
+	h := setup(t)
+	maxA := h.d.Rules.Defaults.MaxAttempts
+	// Prior delivered job already hit MaxAttempts-1 tries 30m ago.
+	first := limitEvent(h, "s1", 5*time.Minute)
+	h.d.Handle(first)
+	h.d.Jobs["claude:s1"].Attempts = maxA
+	h.d.Jobs["claude:s1"].State = core.StateDelivered
+	h.d.Jobs["claude:s1"].DeliveredAt = h.now
+
+	// Wrapper detects another limit in the same location, then session event arrives.
+	h.now = h.now.Add(30 * time.Minute)
+	h.d.Handle(core.Event{
+		Harness: "generic", Kind: core.KindUsageLimit, Cwd: "/work/app",
+		At: h.now, ResetAt: h.now.Add(20 * time.Minute), Source: "wrapper",
+		Location: &core.Location{Kind: "tmux", Target: "%1"},
+	})
+	h.d.Handle(core.Event{
+		Harness: "claude", Kind: core.KindUsageLimit, SessionID: "s1", Cwd: "/work/app",
+		At: h.now.Add(time.Second), ResetAt: h.now.Add(20 * time.Minute), Source: "hook:StopFailure",
+		Location: &core.Location{Kind: "tmux", Target: "%1"},
+	})
+	j := h.d.Jobs["claude:s1"]
+	if j == nil || j.Attempts != maxA || j.State != core.StateNeedsUser {
+		t.Fatalf("re-keyed job = %+v, want Attempts=%d and State=%s", j, maxA, core.StateNeedsUser)
+	}
+}
+
+func TestEndedOrClosedSessionDoesNotScanPanes(t *testing.T) {
+	h := setup(t)
+	binDir := t.TempDir()
+	tmuxBin := filepath.Join(binDir, "tmux")
+	if err := os.WriteFile(tmuxBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	oldRunner := mux.Runner
+	t.Cleanup(func() { mux.Runner = oldRunner })
+	mux.Runner = func(timeout time.Duration, dir string, argv ...string) (string, error) {
+		return "%9\tclaude\t/work/app\t/dev/ttys9\t/tmp/tmux-test\n", nil
+	}
+
+	// Case 1: SessionEnd fired -> Location cleared -> must NOT scan panes.
+	h.d.Handle(limitEvent(h, "s-ended", 30*time.Minute))
+	h.now = h.now.Add(5 * time.Minute)
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindSessionEnd, SessionID: "s-ended", At: h.now, Source: "hook:SessionEnd"})
+	h.advance(30 * time.Minute)
+	for _, j := range h.delivered {
+		if j.Key == "claude:s-ended" && j.Location != nil {
+			t.Fatalf("ended session resolved pane %+v", j.Location)
+		}
+	}
+
+	// Case 2: Authoritative closed live state -> must NOT scan panes.
+	h.delivered = nil
+	ev := limitEvent(h, "s-closed", 30*time.Minute)
+	ev.Location = nil
+	h.d.Handle(ev)
+	h.live = &live.State{Checked: true, Open: false, Authoritative: true, Source: "command"}
+	h.advance(32 * time.Minute)
+	for _, j := range h.delivered {
+		if j.Key == "claude:s-closed" && j.Location != nil {
+			t.Fatalf("authoritatively closed session resolved pane %+v", j.Location)
+		}
+	}
+}
+
+func TestSelectorMatchesWrapperLocation(t *testing.T) {
+	j := &core.Job{Key: "antigravity@wrapper:w123", Harness: "antigravity", Location: &core.Location{Kind: "wrapper", Target: "w123"}}
+	for _, sel := range []string{"wrapper:w123", "antigravity@wrapper:w123"} {
+		if !SelectorMatches(j, sel) {
+			t.Errorf("SelectorMatches(%q) = false, want true", sel)
+		}
+	}
+	jc := &core.Job{Key: "claude:1a2b3c4d-0000", Harness: "claude", SessionID: "1a2b3c4d-0000"}
+	if !SelectorMatches(jc, "claude:1a2b") {
+		t.Error("SelectorMatches(claude:1a2b) = false, want true")
+	}
+	if SelectorMatches(jc, "codex:1a2b") {
+		t.Error("SelectorMatches(codex:1a2b) = true for claude job, want false")
+	}
+}
+
+func TestWrapperRekeyDropsStaleResetTime(t *testing.T) {
+	h := setup(t)
+	first := limitEvent(h, "s1", 5*time.Minute)
+	h.d.Handle(first)
+	prior := h.d.Jobs["claude:s1"]
+	prior.State = core.StateDelivered
+	prior.Attempts = 1
+	prior.DeliveredAt = h.now.Add(10 * time.Minute)
+
+	// Within 6h, wrapper reports another limit carrying the exact same stale ResetAt.
+	h.now = h.now.Add(20 * time.Minute)
+	h.d.Handle(core.Event{
+		Harness: "generic", Kind: core.KindUsageLimit, Cwd: "/work/app",
+		At: h.now, ResetAt: first.ResetAt, Source: "wrapper",
+		Location: &core.Location{Kind: "wrapper", Target: "w1"},
+	})
+	h.d.Handle(core.Event{
+		Harness: "claude", Kind: core.KindUsageLimit, SessionID: "s1", Cwd: "/work/app",
+		At: h.now.Add(time.Second), ResetAt: first.ResetAt, Source: "hook:StopFailure",
+		Location: &core.Location{Kind: "wrapper", Target: "w1"},
+	})
+	j := h.d.Jobs["claude:s1"]
+	if j == nil || j.State != core.StatePending {
+		t.Fatalf("job = %+v", j)
+	}
+	if j.ResetKnown || !j.ResetAt.IsZero() {
+		t.Fatalf("stale ResetAt survived wrapper re-key: %+v", j)
+	}
+	if !j.DueAt.After(h.now) {
+		t.Fatalf("stale reset time caused immediate DueAt %s <= %s", j.DueAt, h.now)
+	}
+}
+
+func TestAntigravityCompactResetDurationAndReconcileLoadedJobs(t *testing.T) {
+	h := setup(t)
+	msg := "⣽  Running\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 3h32m34s.\nError ID: c14a5727-903a-4050-b53c-86224c0d83e5-364"
+	// Simulate an older job saved with ResetKnown=false and a false-positive user input job.
+	h.d.Jobs["antigravity@wrapper:w1"] = &core.Job{
+		Key: "antigravity@wrapper:w1", Harness: "antigravity", Kind: core.KindUsageLimit,
+		Message: msg, LimitAt: h.now, DueAt: h.now.Add(15 * time.Minute),
+		State: core.StatePending, Sources: []string{"wrapper"}, Hit: "Individual quota reached",
+	}
+	h.d.Jobs["antigravity@wrapper:w2"] = &core.Job{
+		Key: "antigravity@wrapper:w2", Harness: "antigravity", Kind: core.KindUsageLimit,
+		Message: "> has it been keep trying to continue sessions even though usage limit hit?",
+		LimitAt: h.now, DueAt: h.now.Add(15 * time.Minute),
+		State: core.StatePending, Sources: []string{"wrapper"}, Hit: "usage limit hit",
+	}
+	h.d.reconcileLoadedJobs()
+
+	j1 := h.d.Jobs["antigravity@wrapper:w1"]
+	wantReset := h.now.Add(3*time.Hour + 32*time.Minute + 34*time.Second)
+	if !j1.ResetKnown || !j1.ResetAt.Equal(wantReset) {
+		t.Fatalf("reconciled j1 ResetKnown=%v ResetAt=%v, want %v", j1.ResetKnown, j1.ResetAt, wantReset)
+	}
+	if j1.DueAt.Before(wantReset) {
+		t.Fatalf("reconciled j1 DueAt=%v < ResetAt=%v", j1.DueAt, wantReset)
+	}
+	if j2 := h.d.Jobs["antigravity@wrapper:w2"]; j2.State != core.StateSkipped {
+		t.Fatalf("false-positive user input job state=%s, want skipped", j2.State)
+	}
+
+	// An older in-memory wrapper binary spooling an event with ResetAt=zero or
+	// a user prompt line is also parsed/filtered by limitEvent in the daemon.
+	h.d.Handle(core.Event{
+		Harness: "antigravity", Kind: core.KindUsageLimit, Message: msg,
+		At: h.now, Source: "wrapper", Location: &core.Location{Kind: "wrapper", Target: "w3"},
+		Hit: "Individual quota reached",
+	})
+	if j3 := h.d.Jobs["antigravity@wrapper:w3"]; j3 == nil || !j3.ResetKnown || !j3.ResetAt.Equal(wantReset) {
+		t.Fatalf("daemon did not parse ResetAt from older wrapper event: %+v", j3)
+	}
+	h.d.Handle(core.Event{
+		Harness: "antigravity", Kind: core.KindUsageLimit,
+		Message: "> has it been keep trying to continue sessions even though usage limit hit?",
+		At:      h.now, Source: "wrapper", Location: &core.Location{Kind: "wrapper", Target: "w4"},
+		Hit: "usage limit hit",
+	})
+	if j4 := h.d.Jobs["antigravity@wrapper:w4"]; j4 != nil {
+		t.Fatalf("daemon did not filter user-prompt event from older wrapper: %+v", j4)
+	}
+}

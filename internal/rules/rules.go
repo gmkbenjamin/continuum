@@ -543,6 +543,22 @@ type Match struct {
 	Hit  string // the text the pattern matched
 }
 
+// isUserInputLine reports whether a screen line is what the user typed at an
+// interactive prompt ("> ...", "❯ ...", "› ...") or a Continuum status line,
+// not an agent message.
+func isUserInputLine(line string) bool {
+	s := strings.TrimSpace(line)
+	for _, p := range []string{"> ", "❯ ", "› "} {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	if strings.Contains(s, "⏸ ") || strings.Contains(s, "▶ ") {
+		return true
+	}
+	return s == ">" || s == "❯" || s == "›"
+}
+
 // Classify scans text for limit messages. Only the last tailLines non-empty
 // lines are considered so that an agent talking *about* limits earlier in a
 // conversation does not trigger anything.
@@ -554,6 +570,9 @@ func (h *Harness) Classify(text string, tailLines int) *Match {
 	// Walk from the bottom: the most recent message wins.
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := lines[i]
+		if isUserInputLine(line) {
+			continue
+		}
 		for _, p := range h.Patterns {
 			if p.re != nil && p.re.MatchString(line) {
 				ctx := line

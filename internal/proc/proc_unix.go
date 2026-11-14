@@ -43,19 +43,24 @@ func Info(pid int) (ppid int, name string, ok bool) {
 }
 
 func extraDirs(home string) []string {
-	return []string{
-		filepath.Join(home, ".local", "bin"),
-		filepath.Join(home, "bin"),
-		filepath.Join(home, ".npm-global", "bin"),
-		filepath.Join(home, ".bun", "bin"),
-		filepath.Join(home, ".cargo", "bin"),
-		filepath.Join(home, "go", "bin"),
+	var dirs []string
+	if home != "" {
+		dirs = append(dirs,
+			filepath.Join(home, ".local", "bin"),
+			filepath.Join(home, "bin"),
+			filepath.Join(home, ".npm-global", "bin"),
+			filepath.Join(home, ".bun", "bin"),
+			filepath.Join(home, ".cargo", "bin"),
+			filepath.Join(home, "go", "bin"),
+		)
+	}
+	return append(dirs,
 		"/opt/homebrew/bin",
 		"/usr/local/bin",
 		"/usr/bin",
 		"/bin",
 		"/snap/bin",
-	}
+	)
 }
 
 func candidates(dir, name string) []string { return []string{filepath.Join(dir, name)} }

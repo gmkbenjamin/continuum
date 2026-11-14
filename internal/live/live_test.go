@@ -63,6 +63,13 @@ func TestClaudeAgentsJSON(t *testing.T) {
 	if st := f.Lookup(h, q); !st.Checked || st.Open {
 		t.Fatalf("closed: %+v", st)
 	}
+	// Even if a recycled PID is alive, an authoritative `claude agents --json`
+	// answer that does not list the session means it is closed.
+	fAlive := finder(t, map[int]bool{999: true}, agentsJSON, nil)
+	q.SessionID, q.PID = "gone", 999
+	if st := fAlive.Lookup(h, q); !st.Checked || st.Open {
+		t.Fatalf("closed session with recycled pid: %+v", st)
+	}
 }
 
 func TestRegistryFallbackAndMovedOn(t *testing.T) {

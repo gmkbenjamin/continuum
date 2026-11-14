@@ -1,4 +1,4 @@
-VERSION ?= 0.10.0
+VERSION ?= 0.10.2
 LDFLAGS := -s -w -X github.com/continuum-dev/continuum/internal/core.Version=$(VERSION)
 PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64 windows/arm64
 
@@ -19,7 +19,7 @@ test:
 vet:
 	go vet ./...
 	GOOS=linux go vet ./...
-	GOOS=windows go vet ./... 2>&1 | grep -v 'possible misuse of unsafe.Pointer' || true
+	GOOS=windows go vet ./...
 
 docs:
 	scripts/gen-docs.sh

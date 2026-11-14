@@ -311,7 +311,7 @@ func resetOne(which string) error {
 		return resetMessage(nil)
 	case r != nil && r.Harnesses[which] != nil:
 		return resetMessage([]string{"--agent", which})
-	case strings.HasPrefix(which, "/") || strings.HasPrefix(which, "~") || strings.HasPrefix(which, "."):
+	case isDirArg(which):
 		return resetMessage([]string{"--folder", which})
 	}
 	return resetMessage([]string{"--session", which})

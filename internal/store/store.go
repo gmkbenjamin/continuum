@@ -4,7 +4,9 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -89,4 +91,24 @@ func AppendHistory(path string, entry map[string]any) {
 	}
 	defer f.Close()
 	_, _ = f.Write(append(data, '\n'))
+}
+
+// WithLock acquires an exclusive lock on path (retrying ErrLocked up to wait),
+// runs fn, and releases the lock.
+func WithLock(path string, wait time.Duration, fn func() error) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		f, err := Lock(path)
+		if err == nil {
+			defer f.Close()
+			return fn()
+		}
+		if !errors.Is(err, ErrLocked) || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
