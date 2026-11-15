@@ -10,7 +10,7 @@ HOST := $(shell go env GOOS)-$(shell go env GOARCH)
 # ./continuum link at it.
 build:
 	@mkdir -p dist
-	go build -ldflags '$(LDFLAGS)' -o dist/continuum-$(HOST) ./cmd/continuum
+	go build -trimpath -ldflags '$(LDFLAGS)' -o dist/continuum-$(HOST) ./cmd/continuum
 	@ln -sfn dist/continuum-$(HOST) continuum
 
 test:
@@ -36,7 +36,7 @@ dist:
 	@for p in $(PLATFORMS); do \
 		os=$${p%/*}; arch=$${p#*/}; ext=; [ $$os = windows ] && ext=.exe; \
 		echo "dist/continuum-$$os-$$arch$$ext"; \
-		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -ldflags '$(LDFLAGS)' -o dist/continuum-$$os-$$arch$$ext ./cmd/continuum || exit 1; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags '$(LDFLAGS)' -o dist/continuum-$$os-$$arch$$ext ./cmd/continuum || exit 1; \
 	done
 
 clean:
