@@ -689,3 +689,82 @@ func TestNewSessionIsPickedUpAndResumed(t *testing.T) {
 		t.Fatalf("not resumed at the reset: %d", len(h.delivered))
 	}
 }
+
+// A limit hit while the daemon was stopped for longer than the catch-up
+// window still gets resumed when it starts, if the session is still open
+// and waiting on it.
+func TestOldLimitOfOpenSessionIsResumed(t *testing.T) {
+	h := setup(t)
+	ev := limitEvent(h, "s1", -time.Hour) // reset already passed
+	ev.At = h.now.Add(-25 * time.Hour)
+	h.live = &live.State{Checked: true, Open: true, Session: &live.Session{SessionID: "s1"}}
+	h.d.Handle(ev)
+	j := h.d.Jobs["claude:s1"]
+	if j == nil || j.State != core.StatePending {
+		t.Fatalf("old limit of an open session dropped: %+v", h.d.Jobs)
+	}
+	h.advance(2 * time.Minute)
+	if len(h.delivered) != 1 {
+		t.Fatalf("delivered %d", len(h.delivered))
+	}
+}
+
+func TestOldLimitOfClosedOrMovedOnSessionIsIgnored(t *testing.T) {
+	for name, st := range map[string]*live.State{
+		"closed":   {Checked: true},
+		"moved on": {Checked: true, Open: true, MovedOn: true},
+	} {
+		h := setup(t)
+		ev := limitEvent(h, "s1", -time.Hour)
+		ev.At = h.now.Add(-25 * time.Hour)
+		h.live = st
+		h.d.Handle(ev)
+		if len(h.d.Jobs) != 0 {
+			t.Fatalf("%s: old limit created a job: %+v", name, h.d.Jobs)
+		}
+	}
+}
+
+func TestOldLimitThenActivityIsNotResumed(t *testing.T) {
+	h := setup(t)
+	h.live = &live.State{Checked: true, Open: true, Session: &live.Session{SessionID: "s1"}}
+	ev := limitEvent(h, "s1", -time.Hour)
+	ev.At = h.now.Add(-25 * time.Hour)
+	h.d.Handle(ev)
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindActivity, SessionID: "s1", At: h.now.Add(-time.Hour), Source: "hook:UserPromptSubmit"})
+	h.advance(2 * time.Minute)
+	if len(h.delivered) != 0 {
+		t.Fatal("resumed a session the user had continued")
+	}
+}
+
+// On start, a transcript last written before the catch-up window that ends
+// on a limit is adopted if its session is open (agents without hooks).
+func TestStartLooksBackForOpenStalledSessions(t *testing.T) {
+	h := setup(t)
+	write := func(id string) {
+		path := filepath.Join(h.claude, "projects", "-work-app", id+".jsonl")
+		at := h.now.Add(-3 * 24 * time.Hour)
+		os.WriteFile(path, []byte(`{"type":"assistant","sessionId":"`+id+`","cwd":"/work/app","timestamp":"`+at.Format(time.RFC3339)+`","isApiErrorMessage":true,"error":"rate_limit","message":{"content":[{"type":"text","text":"You've hit your weekly limit · resets Nov 10 at 6pm (UTC)"}]}}`+"\n"), 0o600)
+		os.Chtimes(path, at, at)
+	}
+	write("open")
+	write("closed")
+	h.d.LiveFn = func(j *core.Job) *live.State {
+		if j.SessionID == "open" {
+			return &live.State{Checked: true, Open: true, Session: &live.Session{SessionID: "open"}}
+		}
+		return &live.State{Checked: true}
+	}
+	h.advance(time.Second) // its reset has passed: resumed on the first tick
+	if j := h.d.Jobs["claude:open"]; j == nil || j.State != core.StateDelivered {
+		t.Fatalf("open stalled session not resumed on start: %+v", h.d.Jobs["claude:open"])
+	}
+	if h.d.Jobs["claude:closed"] != nil {
+		t.Fatal("closed session revived")
+	}
+	h.advance(2 * time.Minute)
+	if len(h.delivered) != 1 || h.delivered[0].SessionID != "open" {
+		t.Fatalf("delivered %d", len(h.delivered))
+	}
+}

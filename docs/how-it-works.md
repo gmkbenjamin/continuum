@@ -161,7 +161,10 @@ that came due while asleep run as soon as the computer wakes.
 
 - **Closed sessions from before installation are never revived.** Sessions that are
   open and stalled are picked up. After the daemon has been off, at most 12 hours
-  (`catch_up_hours`) are caught up.
+  (`catch_up_hours`) are caught up, except that a session that is still open and
+  still waiting on a limit is resumed however long ago it stopped (up to 8 days, past
+  a weekly limit). Anything the session did since (you typed in it, cleared it, or
+  closed it) means it is left alone.
 - **No unsafe typing.** It types only into the session's own agent process: never into
   menus, approval prompts, shells, editors or another session, and it never starts a
   copy of an open session.

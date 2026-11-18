@@ -127,8 +127,9 @@ the problem, then run diagnose.`,
 		Summary: "A menu for everything Continuum does",
 		Detail: `Opens a menu: status, sessions (choose, exclude, set a resume message,
 resume now, cancel), resume messages, scope, grace, watching live, doctor,
-the log, and install, update or uninstall. Running ` + "`continuum`" + ` with no
-arguments in a terminal opens it too.`,
+the log, and install, update or uninstall. Pick an item by its number or by
+the letter shown in brackets ([s]tatus, s[c]ope, ...). Running ` + "`continuum`" + `
+with no arguments in a terminal opens it too.`,
 	},
 	{
 		Name: "status", Group: "Set up", Args: "[options]",
@@ -320,7 +321,8 @@ with "shell_hook_agents" in config.json.`,
 notices and does (stalls, scheduled resumes, resumes, skips), until you press
 Ctrl+C. Nothing runs in the background. Hooks and the shell hook keep
 collecting events while it isn't running; it catches up on them (up to
-catch_up_hours back) when it next runs.
+catch_up_hours back) when it next runs. A session still open and waiting on
+a limit is resumed however long ago it stopped (up to 8 days).
 
 Only one Continuum runs at a time. If the background daemon is running,
 ` + "`watch`" + ` says so; --takeover stops it and watches here instead.

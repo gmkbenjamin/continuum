@@ -2,6 +2,23 @@
 
 All notable changes to Continuum. Versions follow [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+### Fixed
+- **Sessions that hit a limit while the daemon was stopped are resumed when it
+  starts.** A limit older than `catch_up_hours` (12h) was silently dropped, even when
+  the session was still open and waiting on it and its reset hadn't come yet, so a
+  weekly limit hit during a long stop was never resumed. Now an old limit is kept
+  when its session is still open and hasn't moved on (later activity still cancels
+  it), and the first scan after a start looks back 8 days for open sessions whose
+  transcript ends on a limit (agents without hooks). A dropped old limit is logged
+  at debug level.
+
+### Added
+- **Letter shortcuts in the interactive menu.** Every menu item can be picked by a
+  letter from its label, shown in brackets (`[S]tatus`, `S[c]ope`, `Resume [m]essages`),
+  as well as by its number. Letters are case-insensitive and unique within each menu.
+
 ## [0.10.2] - 2026-11-14
 
 ### Fixed

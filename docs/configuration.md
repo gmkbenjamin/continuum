@@ -16,7 +16,7 @@
 | `strategies` | `["wrapper","multiplexer","terminal-app","native"]` | Delivery routes, in order. |
 | `shell_hook_agents` | installed agents | Commands the shell hook wraps (replaces the default list). |
 | `max_wait_hours` | `192` | Don't schedule resets further away than this. |
-| `catch_up_hours` | `12` | How far back to catch up after the daemon was off. |
+| `catch_up_hours` | `12` | How far back to catch up after the daemon was off. Sessions still open and waiting on a limit are resumed from further back (up to 8 days). |
 | `notify` | `true` | Desktop notifications. |
 | `watch_transcripts` | `true` | Read Claude transcripts and Codex rollouts. |
 | `scan_panes` | `true` | Scan tmux panes for other agents. |

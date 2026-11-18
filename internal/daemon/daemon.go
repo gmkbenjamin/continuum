@@ -59,6 +59,7 @@ type Daemon struct {
 	Compat *Compat
 
 	baseline     bool
+	lookedBack   bool
 	timingSig    string
 	compatDirty  bool
 	lastBeat     time.Time
@@ -324,7 +325,8 @@ func (d *Daemon) ingestSpool() {
 }
 
 func (d *Daemon) scanSources() {
-	since := d.Now().Add(-d.Config.CatchUp())
+	now := d.Now()
+	since := now.Add(-d.Config.CatchUp())
 	baseline := d.baseline
 	d.baseline = false
 	// On the very first scan history is not acted on, with one exception:
@@ -338,7 +340,7 @@ func (d *Daemon) scanSources() {
 			evs := sources.ParseClaude(d.Rules, path, lines, d.Local)
 			d.debugf("transcript %s: %d new lines, %d events%s", filepath.Base(path), len(lines), len(evs), map[bool]string{true: " (first scan: history not acted on)"}[baseline])
 			if baseline {
-				if ev := lastStall(evs, since); ev != nil {
+				if ev := lastStall(evs, now.Add(-lookBack)); ev != nil {
 					stalled = append(stalled, *ev)
 				}
 				continue
@@ -359,7 +361,7 @@ func (d *Daemon) scanSources() {
 			evs := sources.ParseCodex(d.Rules, path, lines, st, d.Local)
 			d.debugf("rollout %s: %d new lines, %d events%s", filepath.Base(path), len(lines), len(evs), map[bool]string{true: " (first scan: history not acted on)"}[baseline])
 			if baseline {
-				if ev := lastStall(evs, since); ev != nil {
+				if ev := lastStall(evs, now.Add(-lookBack)); ev != nil {
 					stalled = append(stalled, *ev)
 				}
 				continue
@@ -376,6 +378,10 @@ func (d *Daemon) scanSources() {
 	}
 	for _, ev := range stalled {
 		d.adoptIfOpen(ev)
+	}
+	if !d.lookedBack {
+		d.lookedBack = true
+		d.adoptOlderStalls(since)
 	}
 	d.dirty = true
 }
@@ -394,6 +400,59 @@ func lastStall(evs []core.Event, since time.Time) *core.Event {
 		}
 	}
 	return nil
+}
+
+// lookBack is how far the first scan after a start looks for open sessions
+// still stopped on a limit: past a weekly limit.
+const lookBack = 8 * 24 * time.Hour
+
+// adoptOlderStalls runs once per start. A transcript last written before the
+// catch-up window (since) isn't scanned, so a session that hit a limit while
+// Continuum was stopped for longer than that would never be resumed. Each
+// such transcript that ends on a stall is adopted if its session is open.
+func (d *Daemon) adoptOlderStalls(since time.Time) {
+	from := d.Now().Add(-lookBack)
+	older := func(path string) bool {
+		info, err := os.Stat(path)
+		return err == nil && info.ModTime().Before(since)
+	}
+	if d.Config.HarnessEnabled("claude") {
+		root := filepath.Join(d.Config.ClaudeDir(), "projects")
+		for path, lines := range sources.NewTailer().Scan(root, from, 3) {
+			if !older(path) {
+				continue
+			}
+			if ev := lastStall(sources.ParseClaude(d.Rules, path, lines, d.Local), from); ev != nil {
+				d.adoptIfOpen(*ev)
+			}
+		}
+	}
+	if d.Config.HarnessEnabled("codex") {
+		root := filepath.Join(d.Config.CodexDir(), "sessions")
+		for path, lines := range sources.NewTailer().Scan(root, from, 5) {
+			if !older(path) {
+				continue
+			}
+			if ev := lastStall(sources.ParseCodex(d.Rules, path, lines, &sources.CodexState{}, d.Local), from); ev != nil {
+				d.adoptIfOpen(*ev)
+			}
+		}
+	}
+}
+
+// stillOnLimit: the session of an old stall is open right now and hasn't moved
+// on to another conversation.
+func (d *Daemon) stillOnLimit(ev core.Event, sess *store.Session) bool {
+	if sess != nil && sess.Ended {
+		return false
+	}
+	if ev.SessionID != "" && d.LiveFn != nil {
+		probe := &core.Job{Harness: ev.Harness, SessionID: ev.SessionID, Cwd: ev.Cwd, PID: ev.PID, Entrypoint: ev.Entrypoint}
+		if st := d.LiveFn(probe); st != nil && st.Checked {
+			return st.Open && !st.MovedOn
+		}
+	}
+	return ev.Location != nil && ev.Location.Kind == "wrapper" && deliver.WrapperAlive(d.Paths, ev.Location.Target)
 }
 
 // adoptIfOpen schedules a stall found on the first scan, but only if its
@@ -621,10 +680,20 @@ func addSource(list []string, s string) []string {
 
 func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 	now := d.Now()
-	if ev.At.Before(now.Add(-d.Config.CatchUp())) {
-		return
-	}
 	key := jobKey(ev)
+	if ev.At.Before(now.Add(-d.Config.CatchUp())) {
+		// Older than the catch-up window: Continuum wasn't running when it
+		// happened (stopped, or the computer was off). It still counts if the
+		// session is open and has sat on that limit since; later activity
+		// (from the spool or the transcript) drops it again.
+		if !d.stillOnLimit(ev, sess) {
+			d.debugf("%s: ignoring a %s from %s at %s: older than the catch-up window, and the session is closed or has moved on", key, ev.Kind, ev.Source, ev.At.Local().Format("Jan 2 15:04"))
+			return
+		}
+		if d.Jobs[key] == nil && !strings.HasSuffix(ev.Source, "+adopted") {
+			d.logf("%s · %s: hit a limit at %s while Continuum wasn't running, and is still waiting on it: scheduling its resume", d.name(ev.Harness), key, ev.At.Local().Format("Jan 2 15:04"))
+		}
+	}
 	if key == "" {
 		d.logf("ignoring %s %s event with no session or location", ev.Harness, ev.Kind)
 		return
