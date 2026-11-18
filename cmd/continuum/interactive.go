@@ -55,6 +55,59 @@ func (t *tui) report(err error) {
 	}
 }
 
+// option is one menu entry: its number, and its label with "&" before the
+// letter that also picks it (shown as "[s]").
+type option struct {
+	num   string
+	label string
+}
+
+// letter is the shortcut letter marked with "&" in the label.
+func (o option) letter() string {
+	if i := strings.IndexByte(o.label, '&'); i >= 0 && i+1 < len(o.label) {
+		return strings.ToLower(o.label[i+1 : i+2])
+	}
+	return ""
+}
+
+// text is the label with its shortcut letter shown in brackets.
+func (o option) text() string {
+	i := strings.IndexByte(o.label, '&')
+	if i < 0 || i+1 >= len(o.label) {
+		return o.label
+	}
+	return o.label[:i] + "[" + o.label[i+1:i+2] + "]" + o.label[i+2:]
+}
+
+// showMenu prints the options in rows (one or two per row, aligned).
+func (t *tui) showMenu(rows ...[]option) {
+	tw := tabwriter.NewWriter(t.out, 0, 2, 3, ' ', 0)
+	for _, row := range rows {
+		cells := make([]string, len(row))
+		for i, o := range row {
+			cells[i] = fmt.Sprintf("%-2s %s", o.num, o.text())
+		}
+		fmt.Fprintln(tw, "  "+strings.Join(cells, "\t"))
+	}
+	tw.Flush()
+}
+
+// choose asks with prompt and returns the number of the option picked by
+// number or letter; anything else comes back lowercased as typed.
+func (t *tui) choose(prompt string, rows ...[]option) string {
+	ans := strings.ToLower(t.ask(prompt))
+	for _, row := range rows {
+		for _, o := range row {
+			if ans == o.num || (ans != "" && ans == o.letter()) {
+				return o.num
+			}
+		}
+	}
+	return ans
+}
+
+const pickHint = "  Please choose a number or letter from the list."
+
 func cmdInteractive(args []string) error {
 	return runInteractive(lineReader(os.Stdin), os.Stdout)
 }
@@ -71,23 +124,21 @@ func runInteractive(in *bufio.Reader, out io.Writer) error {
 		if sc.Mode == scope.ModeChosen {
 			scopeNow = "chosen sessions only"
 		}
-		items := []string{
-			"1  Status and scheduled resumes",
-			"2  Sessions: choose, exclude, set a message, resume now",
-			"3  Resume messages",
-			"4  Scope: which sessions are resumed (now: " + scopeNow + ")",
-			"5  Wait for an agent's own resume (grace)",
-			"6  Watch live in this terminal",
-			"7  Start, stop or turn off auto-start (now: " + daemonSummary(p) + ")",
-			"8  Check everything (doctor)",
-			"9  Recent log",
-			"10 Install, update or uninstall",
-			"q  Quit",
+		menu := [][]option{
+			{{"1", "&Status and scheduled resumes"}},
+			{{"2", "S&essions: choose, exclude, set a message, resume now"}},
+			{{"3", "Resume &messages"}},
+			{{"4", "S&cope: which sessions are resumed (now: " + scopeNow + ")"}},
+			{{"5", "Wait for an agent's own resume (&grace)"}},
+			{{"6", "&Watch live in this terminal"}},
+			{{"7", "Start, stop or turn off &auto-start (now: " + daemonSummary(p) + ")"}},
+			{{"8", "Check everything (&doctor)"}},
+			{{"9", "Recent &log"}},
+			{{"10", "&Install, update or uninstall"}},
+			{{"q", "Quit"}},
 		}
-		for _, it := range items {
-			fmt.Fprintln(out, "  "+it)
-		}
-		switch strings.ToLower(t.ask("\nChoose: ")) {
+		t.showMenu(menu...)
+		switch t.choose("\nChoose: ", menu...) {
 		case "1":
 			t.report(cmdStatus(nil))
 			t.pause()
@@ -116,7 +167,7 @@ func runInteractive(in *bufio.Reader, out io.Writer) error {
 			return nil
 		case "":
 		default:
-			fmt.Fprintln(out, "  Please choose a number from the list.")
+			fmt.Fprintln(out, pickHint)
 		}
 	}
 }
@@ -216,12 +267,15 @@ func (t *tui) session(s knownSession) {
 			label = shortID(s.ID)
 		}
 		fmt.Fprintf(t.out, "\n%s %s · %s · %s\n", s.Harness, shortID(s.ID), label, tildePath(s.Cwd))
-		fmt.Fprintln(t.out, "  1  Choose it (for scope \"chosen\")     2  Stop choosing it")
-		fmt.Fprintln(t.out, "  3  Exclude it (never resume)         4  Stop excluding it")
-		fmt.Fprintln(t.out, "  5  Set its resume message            6  Clear its message")
-		fmt.Fprintln(t.out, "  7  Show the message it would get")
-		fmt.Fprintln(t.out, "  8  Resume it now                     9  Cancel its scheduled resume")
-		switch t.ask("Choose (Enter to go back): ") {
+		menu := [][]option{
+			{{"1", "&Choose it (for scope \"chosen\")"}, {"2", "Stop c&hoosing it"}},
+			{{"3", "&Exclude it (never resume)"}, {"4", "Stop e&xcluding it"}},
+			{{"5", "&Set its resume message"}, {"6", "C&lear its message"}},
+			{{"7", "Sho&w the message it would get"}},
+			{{"8", "&Resume it now"}, {"9", "C&ancel its scheduled resume"}},
+		}
+		t.showMenu(menu...)
+		switch t.choose("Choose (Enter to go back): ", menu...) {
 		case "1":
 			t.report(cmdChoose("chosen", []string{id}))
 		case "2":
@@ -245,7 +299,7 @@ func (t *tui) session(s knownSession) {
 		case "", "q":
 			return
 		default:
-			fmt.Fprintln(t.out, "  Please choose a number from the list.")
+			fmt.Fprintln(t.out, pickHint)
 		}
 	}
 }
@@ -257,11 +311,14 @@ func (t *tui) messages() {
 		fmt.Fprintln(t.out)
 		t.report(showMessages())
 		fmt.Fprintln(t.out)
-		fmt.Fprintln(t.out, "  1  Set the default message        2  Set the default outage message")
-		fmt.Fprintln(t.out, "  3  Set a message for an agent     4  Set a message for a folder")
-		fmt.Fprintln(t.out, "  5  Reset one message              6  Reset all messages")
-		fmt.Fprintln(t.out, "  (Per-session messages: menu 2, Sessions.)")
-		switch t.ask("Choose (Enter to go back): ") {
+		menu := [][]option{
+			{{"1", "Set the &default message"}, {"2", "Set the default &outage message"}},
+			{{"3", "Set a message for an &agent"}, {"4", "Set a message for a &folder"}},
+			{{"5", "&Reset one message"}, {"6", "Reset a&ll messages"}},
+		}
+		t.showMenu(menu...)
+		fmt.Fprintln(t.out, "  (Per-session messages: Sessions, 2 or e in the main menu.)")
+		switch t.choose("Choose (Enter to go back): ", menu...) {
 		case "1":
 			if text := t.ask("Default message: "); text != "" && text != "q" {
 				t.report(setMessage([]string{text}))
@@ -296,7 +353,7 @@ func (t *tui) messages() {
 		case "", "q":
 			return
 		default:
-			fmt.Fprintln(t.out, "  Please choose a number from the list.")
+			fmt.Fprintln(t.out, pickHint)
 		}
 	}
 }
@@ -343,9 +400,11 @@ func (t *tui) pickAgent() string {
 func (t *tui) scope() {
 	fmt.Fprintln(t.out)
 	t.report(cmdScope(nil))
-	fmt.Fprintln(t.out, "\n  1  Resume every session   2  Resume chosen sessions only")
-	fmt.Fprintln(t.out, "  (Choose or exclude sessions in menu 2, Sessions.)")
-	switch t.ask("Choose (Enter to go back): ") {
+	menu := []option{{"1", "Resume &every session"}, {"2", "Resume &chosen sessions only"}}
+	fmt.Fprintln(t.out)
+	t.showMenu(menu)
+	fmt.Fprintln(t.out, "  (Choose or exclude sessions in Sessions, 2 or e in the main menu.)")
+	switch t.choose("Choose (Enter to go back): ", menu) {
 	case "1":
 		t.report(cmdScope([]string{"all"}))
 		t.pause()
@@ -390,21 +449,21 @@ func (t *tui) daemonMenu() {
 		cfg, _ := core.LoadConfig(p.Config)
 		running := daemonRunning(p)
 		fmt.Fprintf(t.out, "\n  Daemon: %s\n  Auto-start: %s\n\n", map[bool]string{true: "running", false: "not running"}[running], autostartState(p, cfg))
+		first := option{"1", "&Start it"}
 		if running {
-			fmt.Fprintln(t.out, "  1  Stop it (until you start it again or log in)")
-		} else {
-			fmt.Fprintln(t.out, "  1  Start it")
+			first = option{"1", "&Stop it (until you start it again or log in)"}
 		}
 		auto := cfg.AutostartEnabled()
 		if rec, ok := daemon.LoadInstall(p); ok && rec.Standalone {
 			auto = false
 		}
+		second := option{"2", "Turn &auto-start on (at login, and whenever an agent needs it)"}
 		if auto {
-			fmt.Fprintln(t.out, "  2  Turn auto-start off (nothing starts it by itself; also stops it)")
-		} else {
-			fmt.Fprintln(t.out, "  2  Turn auto-start on (at login, and whenever an agent needs it)")
+			second = option{"2", "Turn &auto-start off (nothing starts it by itself; also stops it)"}
 		}
-		switch t.ask("Choose (Enter to go back): ") {
+		menu := [][]option{{first}, {second}}
+		t.showMenu(menu...)
+		switch t.choose("Choose (Enter to go back): ", menu...) {
 		case "1":
 			if running {
 				t.report(cmdStop())
@@ -424,11 +483,15 @@ func (t *tui) daemonMenu() {
 }
 
 func (t *tui) lifecycle() {
-	fmt.Fprintln(t.out, "\n  1  Install (shows what will change, then asks)")
-	fmt.Fprintln(t.out, "  2  Update to this version")
-	fmt.Fprintln(t.out, "  3  Uninstall (keeps your settings)")
-	fmt.Fprintln(t.out, "  4  Uninstall and delete everything (--purge)")
-	switch t.ask("Choose (Enter to go back): ") {
+	menu := [][]option{
+		{{"1", "&Install (shows what will change, then asks)"}},
+		{{"2", "&Update to this version"}},
+		{{"3", "U&ninstall (keeps your settings)"}},
+		{{"4", "Uninstall and delete everything (--&purge)"}},
+	}
+	fmt.Fprintln(t.out)
+	t.showMenu(menu...)
+	switch t.choose("Choose (Enter to go back): ", menu...) {
 	case "1":
 		t.report(cmdInstall(nil))
 	case "2":
