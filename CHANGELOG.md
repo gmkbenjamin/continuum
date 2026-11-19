@@ -43,6 +43,9 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 - **Print-mode runs of other agents are ignored.** Hooks from `grok -p`, `muse exec`,
   `agent -p` and other runs nobody types into no longer create sessions: the agent's
   command line is judged by the same rules the shell hook uses.
+- **The test suite passes on Windows.** Tests there shared the real home folder
+  (Windows takes it from `USERPROFILE`), wrote Windows paths unescaped into JSON, and
+  expected Unix paths, file modes and links.
 
 ## [0.11.0] - 2026-11-19
 
