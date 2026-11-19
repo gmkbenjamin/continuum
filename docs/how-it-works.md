@@ -23,6 +23,10 @@ one doesn't stop Continuum:
 
 - Claude Code writes the error into its transcript (`isApiErrorMessage`,
   `error: "rate_limit"`) and fires a `StopFailure` hook.
+- Claude Code's grace stop: on reaching the limit it may instead let the turn finish
+  on a short allowance, with a note in the transcript (`usageLimitNote: "wrap_up"`)
+  and no error. The end of that turn is the stall; the work it does meanwhile, and its
+  `Stop` hook, aren't the session moving on.
 - Codex records `usage_limit_exceeded`, plus the exact `resets_at` of the exhausted
   window, in its rollout file.
 - Grok Build fires the same hooks (`StopFailure` with `rate_limit`, `server_error`, …),
@@ -44,13 +48,17 @@ one doesn't stop Continuum:
 **Reset times** come from the exact time when the agent gives one (Codex), or from the
 wording: "resets 10am (Australia/Sydney)", "try again at 5:53 PM", "in 2 hours 13
 minutes", "in 30s", "resets Nov 14, 6pm", ISO times and weekdays. If no time can be
-found, Continuum retries with backoff. Transient errors (529 overloaded, 5xx, dropped
+found, a limit is the account's: Continuum uses the reset another session of the same
+account (same config folder) reported for the same limit, or, if none has, learns it
+from the next one that does. Failing that, it retries with backoff. Transient errors (529 overloaded, 5xx, dropped
 streams) get a short backoff.
 
 **Before typing**, Continuum checks four things:
 
 1. **Nobody has continued yet.** New activity in the transcript means you or the agent
    resumed it. So does Claude reporting the session busy since after the limit hit.
+   The screen changing doesn't count when the transcript or a hook reported the
+   stall: Claude Code clears its limit notice by itself when the limit resets.
 2. **It's still the conversation that stalled.** If the agent's window has moved on to
    another conversation (`/clear`, `/resume`), Continuum leaves the old one alone.
 3. **The pane still runs this session's agent, in front.** Every process in a pane

@@ -5,6 +5,17 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 ## [Unreleased]
 
 ### Fixed
+- **Claude Code's grace stop is resumed.** On reaching the usage limit, Claude Code
+  can now let the turn finish on a short allowance instead of failing it, so no
+  limit error or `StopFailure` hook is written: only a note in the transcript
+  (`usageLimitNote: "wrap_up"`), and a normal turn end. Continuum took the turn's own
+  work for the session moving on and never resumed it. The end of such a turn is now
+  a usage-limit stall. Its reset time, which the note doesn't give, is taken from
+  another session of the same account that hit the same limit (or filled in when
+  one does), with the unknown-reset backoff as the fallback. The wrapper seeing the
+  screen change no longer cancels a resume that the transcript or a hook reported:
+  Claude Code clears its "Usage limit reached" notice by itself at the reset, which
+  dropped the resume minutes before it was due.
 - **Sessions that hit a limit while the daemon was stopped are resumed when it
   starts.** A limit older than `catch_up_hours` (12h) was silently dropped, even when
   the session was still open and waiting on it and its reset hadn't come yet, so a

@@ -34,6 +34,8 @@ type offsetsFile struct {
 	Claude *sources.Tailer                `json:"claude"`
 	Codex  *sources.Tailer                `json:"codex"`
 	State  map[string]*sources.CodexState `json:"codex_state"`
+	// ClaudeState: transcripts whose last turn is wrapping up after a limit.
+	ClaudeState map[string]*sources.ClaudeState `json:"claude_state,omitempty"`
 }
 
 // Daemon holds the scheduler state.
@@ -120,6 +122,9 @@ func New(p core.Paths) (*Daemon, error) {
 	}
 	if d.Offsets.State == nil {
 		d.Offsets.State = map[string]*sources.CodexState{}
+	}
+	if d.Offsets.ClaudeState == nil {
+		d.Offsets.ClaudeState = map[string]*sources.ClaudeState{}
 	}
 	return d, nil
 }
@@ -337,7 +342,16 @@ func (d *Daemon) scanSources() {
 	if d.Config.HarnessEnabled("claude") {
 		root := filepath.Join(d.Config.ClaudeDir(), "projects")
 		for path, lines := range d.Offsets.Claude.Scan(root, since, 3) {
-			evs := sources.ParseClaude(d.Rules, path, lines, d.Local)
+			st := d.Offsets.ClaudeState[path]
+			if st == nil {
+				st = &sources.ClaudeState{}
+			}
+			evs := sources.ParseClaudeState(d.Rules, path, lines, st, d.Local)
+			if st.WrapUp != "" {
+				d.Offsets.ClaudeState[path] = st
+			} else {
+				delete(d.Offsets.ClaudeState, path)
+			}
 			d.debugf("transcript %s: %d new lines, %d events%s", filepath.Base(path), len(lines), len(evs), map[bool]string{true: " (first scan: history not acted on)"}[baseline])
 			if baseline {
 				if ev := lastStall(evs, now.Add(-lookBack)); ev != nil {
@@ -347,6 +361,11 @@ func (d *Daemon) scanSources() {
 			}
 			for _, ev := range evs {
 				d.Handle(ev)
+			}
+		}
+		for p := range d.Offsets.ClaudeState {
+			if _, ok := d.Offsets.Claude.Offsets[p]; !ok {
+				delete(d.Offsets.ClaudeState, p)
 			}
 		}
 	}
@@ -539,6 +558,13 @@ func (d *Daemon) continued(ev core.Event, only func(*core.Job) bool) {
 		sameSession := ev.SessionID != "" && j.SessionID == ev.SessionID && j.Harness == ev.Harness
 		sameLoc := ev.Location != nil && j.Location != nil && ev.Location.String() == j.Location.String()
 		if !sameSession && !sameLoc || only != nil && !only(j) {
+			continue
+		}
+		if screenSourced(ev.Source) && !onlyScreenSources(j.Sources) {
+			// The screen changing isn't the session moving on: Claude Code
+			// clears its limit notice by itself when the limit resets. The
+			// transcript or hooks that reported this stall report activity.
+			d.debugf("%s: the screen changed, but the stall came from %s; waiting for the agent itself to show activity", j.Key, strings.Join(j.Sources, ", "))
 			continue
 		}
 		j.State = core.StateSkipped
@@ -824,6 +850,15 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 			nj.ResetAt, nj.ResetKnown = t, true
 		}
 	}
+	if !nj.ResetKnown && !stale && ev.Kind == core.KindUsageLimit {
+		if o := d.sameLimit(nj); o != nil {
+			nj.ResetAt, nj.ResetKnown = o.ResetAt, true
+			d.debugf("%s: no reset time of its own; using %s from %s, which hit the same limit", key, o.ResetAt.Local().Format("15:04"), o.Key)
+		}
+	}
+	if nj.ResetKnown && ev.Kind == core.KindUsageLimit {
+		d.shareReset(nj)
+	}
 	d.reschedule(nj)
 	if nj.State == core.StatePending {
 		if ok, why := d.Scope.Covers(nj); !ok {
@@ -1003,6 +1038,62 @@ func (d *Daemon) reschedule(j *core.Job) {
 	if j.DueAt.Sub(now) > d.Config.MaxWait() {
 		j.State = core.StateNeedsUser
 		j.Result = fmt.Sprintf("reset is %s away, beyond max_wait_hours", j.DueAt.Sub(now).Round(time.Hour))
+	}
+}
+
+// sameAccount: two jobs of one agent whose transcripts live under the same
+// config folder, so their usage limits are the same account's. A job without
+// a transcript (read off the screen) can't tell, and counts as the same.
+func sameAccount(a, b *core.Job) bool {
+	if a.Harness != b.Harness {
+		return false
+	}
+	if a.TranscriptPath == "" || b.TranscriptPath == "" {
+		return true
+	}
+	root := func(p string) string { return filepath.Dir(filepath.Dir(filepath.Clean(p))) }
+	return root(a.TranscriptPath) == root(b.TranscriptPath)
+}
+
+// limitWindow: how long before a known reset another stall of the same
+// account is taken to be the same limit (Claude's session limit lasts 5 hours).
+const limitWindow = 5 * time.Hour
+
+// sameLimit finds the latest stall of j's account whose reset is known and
+// still ahead of j's: a limit is the account's, so j waits for that reset too.
+// Claude Code's grace stop, for one, ends a turn on a limit without saying
+// when it resets.
+func (d *Daemon) sameLimit(j *core.Job) *core.Job {
+	var best *core.Job
+	for _, o := range d.Jobs {
+		if o == j || o.Kind != core.KindUsageLimit || !o.ResetKnown || !sameAccount(o, j) {
+			continue
+		}
+		if !o.ResetAt.After(j.LimitAt) || o.LimitAt.After(j.LimitAt.Add(2*time.Minute)) || o.LimitAt.Before(j.LimitAt.Add(-limitWindow)) {
+			continue
+		}
+		if best == nil || o.LimitAt.After(best.LimitAt) {
+			best = o
+		}
+	}
+	return best
+}
+
+// shareReset gives j's reset time to the same account's pending stalls that
+// hit the limit shortly before j without learning when it resets.
+func (d *Daemon) shareReset(j *core.Job) {
+	for _, o := range d.Jobs {
+		if o == j || o.State != core.StatePending || o.Kind != core.KindUsageLimit || o.ResetKnown || !sameAccount(o, j) {
+			continue
+		}
+		if o.LimitAt.After(j.LimitAt.Add(2*time.Minute)) || o.LimitAt.Before(j.LimitAt.Add(-limitWindow)) || !j.ResetAt.After(o.LimitAt) {
+			continue
+		}
+		o.ResetAt, o.ResetKnown = j.ResetAt, true
+		o.UpdatedAt = d.Now()
+		d.reschedule(o)
+		d.dirty = true
+		d.logf("⏸  %s · reset %s, learned from %s · resumes %s", d.describe(o), o.ResetAt.In(d.Local).Format("15:04"), d.describe(j), when(o.DueAt, d.Now()))
 	}
 }
 

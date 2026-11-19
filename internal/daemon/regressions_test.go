@@ -605,3 +605,111 @@ func TestAntigravityCompactResetDurationAndReconcileLoadedJobs(t *testing.T) {
 		t.Fatalf("daemon did not filter user-prompt event from older wrapper: %+v", j4)
 	}
 }
+
+// graceStop writes a Claude transcript whose last turn was told the usage
+// limit is reached and finished on Claude Code's grace allowance, ending at
+// end. It returns the transcript's path.
+func graceStop(t *testing.T, h *harnessT, session string, end time.Time) string {
+	t.Helper()
+	ts := func(d time.Duration) string { return end.Add(d).Format(time.RFC3339Nano) }
+	lines := []string{
+		`{"type":"user","sessionId":"` + session + `","cwd":"/work/app","timestamp":"` + ts(-10*time.Minute) + `","message":{"role":"user","content":"ship it"}}`,
+		`{"type":"user","sessionId":"` + session + `","cwd":"/work/app","timestamp":"` + ts(-30*time.Second) + `","isMeta":true,"usageLimitNote":"wrap_up","message":{"role":"user","content":"[Usage limit reached; a short grace allowance remains, then this turn is cut off without warning.]"}}`,
+		`{"type":"assistant","sessionId":"` + session + `","cwd":"/work/app","timestamp":"` + ts(-time.Second) + `","message":{"content":[{"type":"text","text":"Your usage limit was reached, so I had to stop partway."}]}}`,
+		`{"type":"system","subtype":"stop_hook_summary","sessionId":"` + session + `","cwd":"/work/app","timestamp":"` + ts(0) + `"}`,
+		`{"type":"system","subtype":"turn_duration","sessionId":"` + session + `","cwd":"/work/app","timestamp":"` + ts(5*time.Millisecond) + `"}`,
+	}
+	path := filepath.Join(h.claude, "projects", "-work-app", session+".jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Claude Code's grace stop ends the turn without a limit error or a reset
+// time. The session still waits for the account's reset, which another
+// session's limit told Continuum, and is continued then. Neither the turn's
+// own Stop hook nor the screen clearing the limit notice at the reset counts
+// as the session moving on.
+func TestGraceStopResumesAtTheAccountsReset(t *testing.T) {
+	h := setup(t)
+	h.advance(0) // the first scan only takes stock
+	reset := h.now.Add(100 * time.Minute)
+	other := limitEvent(h, "s0", 100*time.Minute)
+	other.TranscriptPath = filepath.Join(h.claude, "projects", "-work-other", "s0.jsonl")
+	h.d.Handle(other)
+
+	end := h.now.Add(2 * time.Minute)
+	path := graceStop(t, h, "g1", end)
+	loc := &core.Location{Kind: "wrapper", Target: "w1"}
+	stop, _ := hooks.BuildEvent(h.d.Rules, "claude", hooks.Input{HookEventName: "Stop", SessionID: "g1", Cwd: "/work/app", TranscriptPath: path,
+		LastAssistantMessage: "Your usage limit was reached, so I had to stop partway."},
+		map[string]string{"CONTINUUM_WRAPPER_ID": "w1"}, end.Add(-200*time.Millisecond))
+	h.d.Handle(stop)
+	h.advance(3 * time.Minute)
+
+	j := h.d.Jobs["claude:g1"]
+	if j == nil || j.State != core.StatePending {
+		t.Fatalf("the grace stop was not scheduled: %+v", j)
+	}
+	if !j.ResetKnown || !j.ResetAt.Equal(reset) {
+		t.Fatalf("reset %v (known %v), want the account's %v", j.ResetAt, j.ResetKnown, reset)
+	}
+	// At the reset Claude Code clears its limit notice; the wrapper sees the
+	// screen change.
+	h.now = reset
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindActivity, At: reset, Source: "wrapper", Location: loc, Cwd: "/work/app"})
+	if j.State != core.StatePending {
+		t.Fatalf("the screen changing at the reset dropped the resume: %s (%s)", j.State, j.Result)
+	}
+	h.advance(10 * time.Minute)
+	var got bool
+	for _, d := range h.delivered {
+		got = got || d.Key == "claude:g1"
+	}
+	if !got || j.State != core.StateDelivered {
+		t.Fatalf("the grace stop was not resumed: %s (%s)", j.State, j.Result)
+	}
+}
+
+// A grace stop seen before any other limit has its reset time filled in by
+// the first limit of the same account that names one.
+func TestGraceStopLearnsTheResetLater(t *testing.T) {
+	h := setup(t)
+	h.advance(0)
+	graceStop(t, h, "g1", h.now)
+	h.advance(time.Minute)
+	j := h.d.Jobs["claude:g1"]
+	if j == nil || j.State != core.StatePending || j.ResetKnown {
+		t.Fatalf("want a pending job with no reset time yet: %+v", j)
+	}
+	other := limitEvent(h, "s0", 90*time.Minute)
+	other.TranscriptPath = filepath.Join(h.claude, "projects", "-work-other", "s0.jsonl")
+	h.d.Handle(other)
+	if !j.ResetKnown || !j.ResetAt.Equal(other.ResetAt) || j.DueAt.Before(other.ResetAt) {
+		t.Fatalf("reset %v due %v, want the account's reset %v", j.ResetAt, j.DueAt, other.ResetAt)
+	}
+	// Another account's limit (another config folder) says nothing about it.
+	h2 := setup(t)
+	h2.advance(0)
+	graceStop(t, h2, "g1", h2.now)
+	h2.advance(time.Minute)
+	foreign := limitEvent(h2, "s0", 90*time.Minute)
+	foreign.TranscriptPath = filepath.Join(t.TempDir(), "projects", "-work-other", "s0.jsonl")
+	h2.d.Handle(foreign)
+	if j2 := h2.d.Jobs["claude:g1"]; j2 == nil || j2.ResetKnown {
+		t.Fatalf("took another account's reset: %+v", j2)
+	}
+}
+
+// A stall only the screen reported is still dropped when the screen moves on.
+func TestScreenOnlyStallStillEndsOnScreenActivity(t *testing.T) {
+	h := setup(t)
+	loc := &core.Location{Kind: "wrapper", Target: "w1"}
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindUsageLimit, Message: "Usage limit reached · resets 10:00am", Hit: "Usage limit reached",
+		At: h.now, ResetAt: h.now.Add(time.Hour), Source: "wrapper", Location: loc})
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindActivity, At: h.now.Add(time.Minute), Source: "wrapper", Location: loc})
+	if j := h.d.Jobs["claude@wrapper:w1"]; j == nil || j.State != core.StateSkipped {
+		t.Fatalf("want the screen-only stall dropped, got %+v", j)
+	}
+}

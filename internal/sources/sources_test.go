@@ -197,3 +197,88 @@ func TestClaudeNativeGaveUpDropsPriorActivity(t *testing.T) {
 		t.Fatalf("got events %+v, want single NativeGaveUp without trailing activity", evs)
 	}
 }
+
+// Claude Code's grace stop: on reaching the usage limit it adds a note to the
+// turn and lets it finish on a short allowance. No limit error is written; the
+// turn simply ends, and that end is the stall.
+var graceStopLines = []string{
+	`{"type":"user","sessionId":"g1","cwd":"/work/app","timestamp":"2026-11-19T09:20:00Z","message":{"role":"user","content":"ship it"}}`,
+	`{"type":"assistant","sessionId":"g1","cwd":"/work/app","timestamp":"2026-11-19T09:27:00Z","message":{"content":[{"type":"text","text":"Building"}]}}`,
+	`{"type":"user","sessionId":"g1","cwd":"/work/app","timestamp":"2026-11-19T09:28:06Z","isMeta":true,"turnCompanion":true,"usageLimitNote":"wrap_up","message":{"role":"user","content":"[Usage limit reached; a short grace allowance remains, then this turn is cut off without warning. Either way, end by telling the user their usage limit was reached, what's done and what's left.]"}}`,
+	`{"type":"assistant","sessionId":"g1","cwd":"/work/app","timestamp":"2026-11-19T09:28:20Z","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}`,
+	`{"type":"user","sessionId":"g1","cwd":"/work/app","timestamp":"2026-11-19T09:28:22Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}`,
+	`{"type":"assistant","sessionId":"g1","cwd":"/work/app","timestamp":"2026-11-19T09:28:31Z","message":{"content":[{"type":"text","text":"Your usage limit was reached, so I had to stop partway."}]}}`,
+	`{"type":"system","subtype":"stop_hook_summary","sessionId":"g1","cwd":"/work/app","timestamp":"2026-11-19T09:28:31.321Z"}`,
+	`{"type":"system","subtype":"turn_duration","sessionId":"g1","cwd":"/work/app","timestamp":"2026-11-19T09:28:31.326Z","isMeta":false}`,
+}
+
+func writeLines(t *testing.T, path string, lines []string) []Line {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return ReadFrom(path, 0)
+}
+
+func TestClaudeGraceStop(t *testing.T) {
+	r := loadRules(t)
+	path := filepath.Join(t.TempDir(), "g1.jsonl")
+	evs := ParseClaude(r, path, writeLines(t, path, graceStopLines), time.UTC)
+	if len(evs) != 1 || evs[0].Kind != core.KindUsageLimit {
+		t.Fatalf("want one usage limit at the turn's end, got %+v", evs)
+	}
+	ev := evs[0]
+	if want := time.Date(2026, 11, 19, 9, 28, 31, 321e6, time.UTC); !ev.At.Equal(want) {
+		t.Fatalf("limit at %v, want the turn's end %v", ev.At, want)
+	}
+	if !ev.ResetAt.IsZero() || !strings.Contains(ev.Message, "Usage limit reached") || ev.SessionID != "g1" {
+		t.Fatalf("bad event %+v", ev)
+	}
+}
+
+// The wrapping-up turn usually spans several scans: its work in between is not
+// the session moving on, and the stall is reported when the turn ends.
+func TestClaudeGraceStopAcrossScans(t *testing.T) {
+	r := loadRules(t)
+	path := filepath.Join(t.TempDir(), "g1.jsonl")
+	lines := writeLines(t, path, graceStopLines)
+	st := &ClaudeState{}
+	first := ParseClaudeState(r, path, lines[:4], st, time.UTC)
+	for _, ev := range first {
+		if ev.At.After(time.Date(2026, 11, 19, 9, 28, 6, 0, time.UTC)) {
+			t.Fatalf("the wrapping-up turn reported %+v", ev)
+		}
+	}
+	if st.WrapUp == "" {
+		t.Fatal("the grace note was not carried over")
+	}
+	second := ParseClaudeState(r, path, lines[4:], st, time.UTC)
+	if len(second) != 1 || second[0].Kind != core.KindUsageLimit || st.WrapUp != "" {
+		t.Fatalf("want the limit at the turn's end, got %+v (state %+v)", second, st)
+	}
+}
+
+func TestClaudeGraceStopThenPrompt(t *testing.T) {
+	r := loadRules(t)
+	path := filepath.Join(t.TempDir(), "g1.jsonl")
+	lines := append(append([]string{}, graceStopLines...),
+		`{"type":"user","sessionId":"g1","cwd":"/work/app","timestamp":"2026-11-19T11:45:00Z","message":{"role":"user","content":"continue"}}`)
+	evs := ParseClaude(r, path, writeLines(t, path, lines), time.UTC)
+	if len(evs) != 2 || evs[0].Kind != core.KindUsageLimit || evs[1].Kind != core.KindActivity {
+		t.Fatalf("want the limit, then activity, got %+v", evs)
+	}
+}
+
+// The allowance ran out mid-turn: Claude Code's own limit error, with its
+// reset time, is the stall; the turn's end doesn't add a second one.
+func TestClaudeGraceStopCutOff(t *testing.T) {
+	r := loadRules(t)
+	path := filepath.Join(t.TempDir(), "g1.jsonl")
+	lines := append(append([]string{}, graceStopLines[:5]...),
+		`{"type":"assistant","sessionId":"g1","cwd":"/work/app","timestamp":"2026-11-19T09:29:00Z","isApiErrorMessage":true,"error":"rate_limit","message":{"content":[{"type":"text","text":"You've hit your limit · resets 10:40pm (Australia/Sydney)"}]}}`,
+		graceStopLines[7])
+	evs := ParseClaude(r, path, writeLines(t, path, lines), syd(t))
+	if len(evs) != 1 || evs[0].Kind != core.KindUsageLimit || evs[0].ResetAt.IsZero() {
+		t.Fatalf("want the limit error with its reset time only, got %+v", evs)
+	}
+}
