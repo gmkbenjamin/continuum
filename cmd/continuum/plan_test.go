@@ -75,8 +75,8 @@ func TestInstallPlanListsEverything(t *testing.T) {
 	r, _ := rules.Load("")
 	items := installPlanItems(installOptions{Copy: true, Shell: true, Service: true}, p, cfg, r)
 	m := whats(items)
-	if runtime.GOOS != "windows" { // Windows gets no command link, and continuum.exe
-		for _, key := range []string{"Continuum program|~/.continuum/bin/continuum", "command link|~/.local/bin/continuum"} {
+	if runtime.GOOS != "windows" { // Windows gets continuum.exe, and no command link or shell hook
+		for _, key := range []string{"Continuum program|~/.continuum/bin/continuum", "command link|~/.local/bin/continuum", "zsh shell hook|~/.zshrc"} {
 			if _, ok := m[key]; !ok {
 				t.Errorf("plan is missing %s; has %v", key, keys(m))
 			}
@@ -86,7 +86,6 @@ func TestInstallPlanListsEverything(t *testing.T) {
 		"Continuum folder|~/.continuum",
 		"Claude Code hooks|~/.claude/settings.json",
 		"Codex hooks|~/.codex/hooks.json",
-		"zsh shell hook|~/.zshrc",
 	} {
 		it, ok := m[key]
 		if !ok {
