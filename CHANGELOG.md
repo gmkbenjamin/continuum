@@ -4,6 +4,8 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-19
+
 ### Fixed
 - **Claude Code's grace stop is resumed.** On reaching the usage limit, Claude Code
   can now let the turn finish on a short allowance instead of failing it, so no
@@ -361,6 +363,7 @@ First public release.
   sign-in errors.
 - Help for every command (`-h`), `doctor`, and docs in `docs/`.
 
+[0.11.0]: ../../releases/tag/v0.11.0
 [0.10.2]: ../../releases/tag/v0.10.2
 [0.10.0]: ../../releases/tag/v0.10.0
 [0.9.1]: ../../releases/tag/v0.9.1
