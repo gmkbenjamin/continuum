@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -39,9 +40,10 @@ func setup(t *testing.T) *harnessT {
 	t.Setenv("CONTINUUM_HOME", filepath.Join(home, "continuum"))
 	// Never run the real agents from tests.
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows
 	t.Setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
 	p := core.GetPaths()
-	cfg := `{"claude_home": "` + h.claude + `", "codex_home": "` + h.codex + `", "notify": false, "scan_panes": false, "poll_seconds": 1}`
+	cfg := `{"claude_home": ` + jsonStr(h.claude) + `, "codex_home": ` + jsonStr(h.codex) + `, "notify": false, "scan_panes": false, "poll_seconds": 1}`
 	os.MkdirAll(p.Home, 0o700)
 	os.WriteFile(p.Config, []byte(cfg), 0o600)
 	d, err := New(p)
@@ -181,7 +183,7 @@ func TestLiveTmuxPaneIsUsed(t *testing.T) {
 func TestStillOpenWaitsWithoutUsingAttempts(t *testing.T) {
 	h := setup(t)
 	var notes []string
-	cfg := `{"claude_home": "` + h.claude + `", "codex_home": "` + h.codex + `", "scan_panes": false, "poll_seconds": 1}`
+	cfg := `{"claude_home": ` + jsonStr(h.claude) + `, "codex_home": ` + jsonStr(h.codex) + `, "scan_panes": false, "poll_seconds": 1}`
 	os.WriteFile(h.d.Paths.Config, []byte(cfg), 0o600)
 	h.d.reload()
 	h.d.NotifyFn = func(title, body string) { notes = append(notes, body) }
@@ -635,7 +637,7 @@ func TestGraceChangeAppliesToWaitingSessions(t *testing.T) {
 	if want := h.now.Add(35 * time.Minute); !j.DueAt.Equal(want) {
 		t.Fatalf("due %v want %v", j.DueAt, want)
 	}
-	cfg := `{"claude_home": "` + h.claude + `", "codex_home": "` + h.codex + `", "notify": false, "scan_panes": false, "poll_seconds": 1, "native_grace_seconds": {"claude": 0}}`
+	cfg := `{"claude_home": ` + jsonStr(h.claude) + `, "codex_home": ` + jsonStr(h.codex) + `, "notify": false, "scan_panes": false, "poll_seconds": 1, "native_grace_seconds": {"claude": 0}}`
 	os.WriteFile(h.d.Paths.Config, []byte(cfg), 0o600)
 	h.d.Tick()
 	if want := h.now.Add(31 * time.Minute); !j.DueAt.Equal(want) {
@@ -767,4 +769,10 @@ func TestStartLooksBackForOpenStalledSessions(t *testing.T) {
 	if len(h.delivered) != 1 || h.delivered[0].SessionID != "open" {
 		t.Fatalf("delivered %d", len(h.delivered))
 	}
+}
+
+// jsonStr quotes s as a JSON string (Windows paths hold backslashes).
+func jsonStr(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

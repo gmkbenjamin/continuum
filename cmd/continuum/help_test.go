@@ -29,7 +29,7 @@ func TestEveryCommandHasHelp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := string(src)
+	body := strings.ReplaceAll(string(src), "\r\n", "\n") // a Windows checkout
 	body = body[strings.Index(body, "func main()"):]
 	body = body[:strings.Index(body, "\n}\n")]
 	for _, m := range regexp.MustCompile(`case "([a-z][a-z-]*)"`).FindAllStringSubmatch(body, -1) {

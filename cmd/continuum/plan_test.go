@@ -35,6 +35,8 @@ func TestConfirm(t *testing.T) {
 func sandboxHome(t *testing.T) string {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows takes the home folder from here
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("ZDOTDIR", "")
 	t.Setenv("SHELL", "/bin/zsh")
 	t.Setenv("CONTINUUM_HOME", "")

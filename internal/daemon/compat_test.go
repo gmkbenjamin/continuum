@@ -14,7 +14,7 @@ func TestUpdateRemovedOurHooksTheyComeBack(t *testing.T) {
 	h := setup(t)
 	bin := filepath.Join(t.TempDir(), "claude")
 	os.WriteFile(bin, []byte("#!/bin/sh\necho '--bg --resume --print attach agents'\n"), 0o755)
-	cfg := `{"claude_home": "` + h.claude + `", "codex_home": "` + h.codex + `", "binaries": {"claude": "` + bin + `"}, "scan_panes": false}`
+	cfg := `{"claude_home": ` + jsonStr(h.claude) + `, "codex_home": ` + jsonStr(h.codex) + `, "binaries": {"claude": ` + jsonStr(bin) + `}, "scan_panes": false}`
 	os.WriteFile(h.d.Paths.Config, []byte(cfg), 0o600)
 	h.d.reload()
 	var notes []string

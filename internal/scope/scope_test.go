@@ -105,6 +105,7 @@ func TestRemovePrefixRespectsHarness(t *testing.T) {
 func TestTildeAndConcurrentUpdate(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows
 	if got := tilde(filepath.Join(home, "..dot")); got != filepath.Join("~", "..dot") {
 		t.Fatalf("tilde(..dot) = %q", got)
 	}

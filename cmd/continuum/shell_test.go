@@ -37,6 +37,7 @@ func TestShellBlockRoundTrip(t *testing.T) {
 func TestInstallShellFiles(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows
 	t.Setenv("ZDOTDIR", "")
 	t.Setenv("SHELL", "/bin/zsh")
 	rc := filepath.Join(home, ".zshrc")
@@ -83,6 +84,7 @@ func TestCursorAgentAliasWrappedOnlyWhenCursors(t *testing.T) {
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows
 	t.Setenv("CONTINUUM_HOME", filepath.Join(home, ".continuum"))
 	bin := filepath.Join(home, "bin")
 	install := filepath.Join(home, ".local", "share", "cursor-agent", "versions", "2026.11.17")
