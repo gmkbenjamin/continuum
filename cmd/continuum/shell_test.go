@@ -48,7 +48,7 @@ func TestInstallShellFiles(t *testing.T) {
 	if strings.Count(string(data), blockStart) != 1 || !strings.HasPrefix(string(data), "alias ll='ls -l'\n") {
 		t.Fatalf("zshrc:\n%s", data)
 	}
-	if st, _ := os.Stat(rc); st.Mode().Perm() != 0o600 {
+	if st, _ := os.Stat(rc); runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 		t.Fatalf("permissions changed: %v", st.Mode())
 	}
 	if _, err := os.Stat(filepath.Join(home, ".bashrc")); err == nil {

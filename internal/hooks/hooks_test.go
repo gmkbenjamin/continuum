@@ -21,6 +21,15 @@ func loadRules(t *testing.T) *rules.Rules {
 	return r
 }
 
+// ourHookText is how Continuum's hook command for Claude Code reads in a
+// settings file on this OS.
+func ourHookText(bin string) string {
+	if runtime.GOOS == "windows" {
+		return "hook claude"
+	}
+	return `\"` + bin + `\" hook claude 2>/dev/null || true`
+}
+
 func TestStopFailureEvent(t *testing.T) {
 	r := loadRules(t)
 	now := time.Date(2026, 11, 11, 8, 0, 0, 0, time.UTC)
@@ -115,7 +124,7 @@ func TestInstallUninstallKeepsEverythingElse(t *testing.T) {
 	}
 	data, _ := os.ReadFile(path)
 	s := string(data)
-	for _, want := range []string{`"model": "opus"`, `git log && git status`, `echo <hi>`, `rex __internal session-start`, `\"` + bin + `\" hook claude 2>/dev/null || true`, `"StopFailure"`} {
+	for _, want := range []string{`"model": "opus"`, `git log && git status`, `echo <hi>`, `rex __internal session-start`, ourHookText(bin), `"StopFailure"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in\n%s", want, s)
 		}

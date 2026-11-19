@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -164,7 +165,7 @@ func TestHandFoundBugs(t *testing.T) {
 	bin := filepath.Join(home, "prog")
 	os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755)
 	capture(t, func() { linkIntoPath(bin, false) })
-	if target, err := os.Readlink(filepath.Join(home, ".local", "bin", "continuum")); err != nil || target != bin {
+	if target, err := os.Readlink(filepath.Join(home, ".local", "bin", "continuum")); runtime.GOOS != "windows" && (err != nil || target != bin) {
 		t.Errorf("link: %q %v", target, err)
 	}
 
@@ -178,7 +179,7 @@ func TestHandFoundBugs(t *testing.T) {
 	if !strings.Contains(got, "never_resume") || strings.Contains(got, "retry with backoff") {
 		t.Errorf("detect billing:\n%s", got)
 	}
-	if s := (scope.Entry{Dir: filepath.Join(home, "work", "api")}).String(); s != "every session in ~/work/api" {
+	if s := (scope.Entry{Dir: filepath.Join(home, "work", "api")}).String(); s != "every session in "+filepath.FromSlash("~/work/api") {
 		t.Errorf("folder label %q", s)
 	}
 }

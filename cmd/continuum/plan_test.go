@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -62,7 +63,7 @@ func sandboxHome(t *testing.T) string {
 func whats(items []planItem) map[string]planItem {
 	m := map[string]planItem{}
 	for _, it := range items {
-		m[it.What+"|"+tildePath(it.Path)] = it
+		m[it.What+"|"+filepath.ToSlash(tildePath(it.Path))] = it // one form on every OS
 	}
 	return m
 }
@@ -74,9 +75,14 @@ func TestInstallPlanListsEverything(t *testing.T) {
 	r, _ := rules.Load("")
 	items := installPlanItems(installOptions{Copy: true, Shell: true, Service: true}, p, cfg, r)
 	m := whats(items)
+	if runtime.GOOS != "windows" { // Windows gets no command link, and continuum.exe
+		for _, key := range []string{"Continuum program|~/.continuum/bin/continuum", "command link|~/.local/bin/continuum"} {
+			if _, ok := m[key]; !ok {
+				t.Errorf("plan is missing %s; has %v", key, keys(m))
+			}
+		}
+	}
 	for _, key := range []string{
-		"Continuum program|~/.continuum/bin/continuum",
-		"command link|~/.local/bin/continuum",
 		"Continuum folder|~/.continuum",
 		"Claude Code hooks|~/.claude/settings.json",
 		"Codex hooks|~/.codex/hooks.json",

@@ -3,6 +3,7 @@ package live
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -135,7 +136,11 @@ func TestCodexProcessScan(t *testing.T) {
 		t.Fatalf("by dir: %+v", st)
 	}
 	// The app server and `codex exec` are not the TUI holding a session.
+	// (On Windows a process's folder is unknown, so any may hold it.)
 	for _, dir := range []string{"/w/a", "/w/c", "/w/z"} {
+		if runtime.GOOS == "windows" {
+			break
+		}
 		if st := f.Lookup(h, Query{SessionID: "t-9", Cwd: dir}); !st.Checked || st.Open {
 			t.Fatalf("%s: %+v", dir, st)
 		}

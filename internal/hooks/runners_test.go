@@ -3,6 +3,7 @@ package hooks
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -149,7 +150,7 @@ func TestSymlinkedSettingsStayLinked(t *testing.T) {
 	if data, _ := os.ReadFile(real); !strings.Contains(string(data), "hook claude") {
 		t.Fatal("the linked file didn't get the hooks")
 	}
-	if fi, _ := os.Stat(real); fi.Mode().Perm() != 0o644 {
+	if fi, _ := os.Stat(real); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o644 {
 		t.Fatalf("permissions changed to %v", fi.Mode().Perm())
 	}
 	if _, err := Uninstall(tg, false); err != nil {
