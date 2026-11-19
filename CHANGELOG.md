@@ -4,6 +4,13 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-11-20
+
+### Fixed
+- **An agent wrapped under two commands is listed once.** `install` and `update`
+  listed the Cursor CLI twice in their summary of what is covered (its `agent` and
+  `cursor-agent` commands are both wrapped).
+
 ## [0.12.0] - 2026-11-20
 
 ### Added

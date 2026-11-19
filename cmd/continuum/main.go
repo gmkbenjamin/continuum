@@ -917,8 +917,11 @@ func coverageSummary(r *rules.Rules) []string {
 		out = append(out, line)
 	}
 	var others []string
+	listed := map[string]bool{}
 	for _, a := range shellHookAgents() {
-		if a.Harness != "claude" && a.Harness != "codex" {
+		// One agent may be wrapped under two commands (cursor-agent, agent).
+		if a.Harness != "claude" && a.Harness != "codex" && !listed[a.Harness] {
+			listed[a.Harness] = true
 			others = append(others, r.Harness(a.Harness).DisplayName)
 		}
 	}
