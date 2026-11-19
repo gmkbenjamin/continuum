@@ -35,3 +35,25 @@ func TestEnvironOfAnotherProcess(t *testing.T) {
 		t.Fatal("environment of a missing process")
 	}
 }
+
+// Arguments come back exactly, spaces inside one argument included: a prompt
+// like "help me fix it" must not read as the subcommand `help`.
+func TestArgsOfAnotherProcess(t *testing.T) {
+	if !EnvironSupported() {
+		t.Skip("not on this OS")
+	}
+	cmd := exec.Command(os.Args[0], "help me fix the tests", "--flag")
+	cmd.Env = append(os.Environ(), "CONTINUUM_ENV_HELPER=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer cmd.Process.Kill()
+	var got []string
+	for i := 0; i < 50 && len(got) < 3; i++ {
+		got = Args(cmd.Process.Pid)
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(got) != 3 || got[1] != "help me fix the tests" || got[2] != "--flag" {
+		t.Fatalf("args %q", got)
+	}
+}

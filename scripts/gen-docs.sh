@@ -52,6 +52,9 @@ Every agent above gets:
   menu or approval prompt is open.
 - **No copies**: an agent's own CLI is only used to continue a session that is known
   to be closed (Claude Code, Codex and Grok Build, which report their sessions).
+- **Full-screen programs**: for agents that draw by moving the cursor and keep
+  redrawing (opencode 2), the wrapper reads the rendered screen too, where the message
+  is whole. A message already shown when you last sent a prompt doesn't count again.
 - **Recognition under interpreters**: agents that run under Node, Bun or Python (where
   tmux only reports `node` or `python`) are recognised by their command line.
 
@@ -61,8 +64,26 @@ Build reports them through its hooks (Continuum adds `~/.grok/hooks/continuum.js
 Grok runs it in folders you have trusted) and lists its open sessions, so a closed Grok
 session can be continued with `grok --resume`.
 
+Muse Code reports through hooks Continuum adds to `~/.config/muse/settings.json`
+(`$XDG_CONFIG_HOME/muse`), and `muse sessions --json` tells which sessions are open.
+Muse runs hooks with a cleaned environment, so Continuum reads where the session runs
+(its wrapper or multiplexer pane) from the Muse process itself. A Muse session is
+resumed in place; Muse has no command to continue a closed session headlessly.
+
+The Cursor CLI reports its sessions through `~/.cursor/hooks.json`. Its `stop` hook
+doesn't say which error ended a turn, so limits are still read off the screen. Cursor
+now installs its command as `agent`: the shell hook wraps `agent` too, but only while
+that name is a link into Cursor's own install. Cursor also runs Claude Code's hooks;
+with its own hook installed, those runs are ignored rather than reported twice.
+
+opencode 2 runs its sessions in a shared background service; its terminal interface
+is wrapped and resumed in place.
+
+Continuum's skill in `~/.claude/skills` is read by Grok Build, Muse Code, the Cursor
+CLI and opencode as well as Claude Code.
+
 Print-mode and SDK runs (`claude -p`, Agent SDK scripts, `codex exec`, Codex subagent
-threads), and agents started by another agent's tool, are left alone: nobody types into
+threads, `grok -p`, `muse exec`, `agent -p`), and agents started by another agent's tool, are left alone: nobody types into
 them, and continuing one would start work nobody asked for.
 
 ## Shell hook: "default" and "opt-in"
@@ -110,7 +131,7 @@ upstream.
 Agents that live inside an editor or desktop app window (the Cursor and Windsurf editors'
 own agents, VS Code Copilot Chat, Cline and Roo in VS Code, Zed's agent, the Antigravity
 editor, Claude and ChatGPT desktop chats) have no terminal Continuum can type into. Their
-command-line agents are covered: Cursor CLI (`cursor-agent`), Antigravity CLI (`agy`),
+command-line agents are covered: Cursor CLI (`agent`, `cursor-agent`), Antigravity CLI (`agy`),
 and any agent you run in an editor's built-in terminal. Claude Code and Codex sessions in their
 desktop apps are the exception. Codex app sessions are continued inside the app,
 through its local server. Claude Desktop sessions are continued by themselves as soon

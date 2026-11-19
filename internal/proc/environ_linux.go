@@ -22,3 +22,18 @@ func Environ(pid int) map[string]string {
 	}
 	return env
 }
+
+// Args returns the exact arguments of one of the user's own processes
+// (argv[0] first), or nil if they can't be read.
+func Args(pid int) []string {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	parts := bytes.Split(bytes.TrimRight(data, "\x00"), []byte{0})
+	out := make([]string, len(parts))
+	for i, p := range parts {
+		out[i] = string(p)
+	}
+	return out
+}

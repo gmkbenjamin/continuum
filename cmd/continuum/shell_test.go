@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -72,4 +73,49 @@ func TestShellFunctions(t *testing.T) {
 	if _, err := shellFunctions("fish", "/x", []hookAgent{{"gemini", "gemini"}}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// Cursor installs its CLI as `agent`, a link into its cursor-agent folder.
+// That name is wrapped only while it is Cursor's.
+func TestCursorAgentAliasWrappedOnlyWhenCursors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CONTINUUM_HOME", filepath.Join(home, ".continuum"))
+	bin := filepath.Join(home, "bin")
+	install := filepath.Join(home, ".local", "share", "cursor-agent", "versions", "2026.11.17")
+	os.MkdirAll(bin, 0o755)
+	os.MkdirAll(install, 0o755)
+	os.WriteFile(filepath.Join(install, "cursor-agent"), []byte("#!/bin/sh\n"), 0o755)
+	t.Setenv("PATH", bin)
+
+	other := filepath.Join(home, "other-agent")
+	os.WriteFile(other, []byte("#!/bin/sh\n"), 0o755)
+	os.Symlink(other, filepath.Join(bin, "agent"))
+	if has(shellHookAgents(), "agent") {
+		t.Fatal("another program named agent wrapped")
+	}
+	os.Remove(filepath.Join(bin, "agent"))
+	os.Symlink(filepath.Join(install, "cursor-agent"), filepath.Join(bin, "agent"))
+	os.Symlink(filepath.Join(install, "cursor-agent"), filepath.Join(bin, "cursor-agent"))
+	got := shellHookAgents()
+	if !has(got, "agent") || !has(got, "cursor-agent") {
+		t.Fatalf("Cursor's agent command not wrapped: %+v", got)
+	}
+	for _, a := range got {
+		if a.Command == "agent" && a.Harness != "cursor" {
+			t.Fatalf("agent wrapped as %s", a.Harness)
+		}
+	}
+}
+
+func has(list []hookAgent, cmd string) bool {
+	for _, a := range list {
+		if a.Command == cmd {
+			return true
+		}
+	}
+	return false
 }

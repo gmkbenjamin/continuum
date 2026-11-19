@@ -6,8 +6,8 @@ prints this help itself with `-h` or `--help`.
 ```text
 continuum - work never loses its momentum
 
-Keeps AI coding agents (Claude Code, Codex, Grok Build, Gemini CLI, Antigravity,
-Cursor, opencode, Aider and more) working through usage limits and API outages. When an agent
+Keeps AI coding agents (Claude Code, Codex, Grok Build, Muse Code, Cursor CLI,
+opencode, Gemini CLI, Antigravity, Aider and more) working through usage limits and API outages. When an agent
 stalls, Continuum waits for the limit to reset and continues the same session,
 in place: never a copy, never a new session. Works in any terminal, with the
 window unfocused or the screen locked.
@@ -90,10 +90,11 @@ Usage:
 
     1. Copies this binary to ~/.continuum/bin/continuum (and links it into
        ~/.local/bin when that folder is on your PATH).
-    2. Adds hooks to ~/.claude/settings.json, ~/.codex/hooks.json and
-       ~/.grok/hooks/continuum.json so Claude Code, Codex and Grok Build report
-       stalls and where they run. Every other setting is kept, and a timestamped
-       backup is saved first.
+    2. Adds hooks to ~/.claude/settings.json, ~/.codex/hooks.json,
+       ~/.grok/hooks/continuum.json, ~/.config/muse/settings.json and
+       ~/.cursor/hooks.json so Claude Code, Codex, Grok Build, Muse Code and the
+       Cursor CLI report stalls and where they run (only for agents you have).
+       Every other setting is kept, and a timestamped backup is saved first.
     3. Adds a marked block to your shell startup file (~/.zshrc, ~/.bashrc, fish
        conf.d) that runs interactive agents (claude, codex, gemini, opencode, ...)
        under Continuum, so it can type into them in any terminal.

@@ -49,8 +49,15 @@ func shellHookAgents() []hookAgent {
 	if len(cfg.ShellHookAgents) > 0 {
 		for _, want := range cfg.ShellHookAgents {
 			for _, name := range r.HarnessNames() {
-				if h := r.Harness(name); name == want || h.Binary == want {
+				h := r.Harness(name)
+				if name == want || h.Binary == want {
 					add(h)
+				}
+				for _, a := range h.CommandAliases {
+					if a.Command == want && !seen[a.Command] && validName.MatchString(a.Command) && cfg.HarnessEnabled(h.Name) {
+						seen[a.Command] = true
+						out = append(out, hookAgent{h.Name, a.Command})
+					}
 				}
 			}
 		}
@@ -64,8 +71,31 @@ func shellHookAgents() []hookAgent {
 		if _, err := proc.LookPath(h.Binary); err == nil {
 			add(h)
 		}
+		for _, a := range h.CommandAliases {
+			if seen[a.Command] || !validName.MatchString(a.Command) || !cfg.HarnessEnabled(h.Name) {
+				continue
+			}
+			if aliasResolves(a) {
+				seen[a.Command] = true
+				out = append(out, hookAgent{h.Name, a.Command})
+			}
+		}
 	}
 	return out
+}
+
+// aliasResolves reports whether a's command is installed and is the agent's
+// own (Cursor's `agent` links into its cursor-agent folder; another tool
+// named `agent` is left alone).
+func aliasResolves(a rules.CommandAlias) bool {
+	p, err := proc.LookPath(a.Command)
+	if err != nil {
+		return false
+	}
+	if real, err := filepath.EvalSymlinks(p); err == nil {
+		p = real
+	}
+	return a.Matches(p)
 }
 
 var validName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)

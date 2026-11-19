@@ -212,9 +212,41 @@ type Harness struct {
 	// hook installed for another agent (which this one also runs) is then
 	// recognised as this agent's.
 	HookEnv []string `json:"hook_env"`
+	// CommandAliases: other names the agent is installed under, wrapped by
+	// the shell hook only while they resolve to the agent's own install.
+	CommandAliases []CommandAlias `json:"command_aliases"`
+	// ScreenDetection: the wrapper also looks for limits on the rendered
+	// screen, for full-screen programs that draw by moving the cursor and
+	// keep redrawing (their output stream holds the message only in pieces).
+	// Lines already shown when the user last sent a prompt don't count.
+	ScreenDetection bool `json:"screen_detection"`
+	// HookRequiresCLI: other programs read this agent's hook file too (the
+	// Cursor editor reads ~/.cursor/hooks.json): its hooks count only when
+	// the agent's command-line program runs them, and install adds them only
+	// when that program is installed.
+	HookRequiresCLI bool `json:"hook_requires_cli"`
 
 	nativeWait, nativeGaveUp, neverResume, uiMarkers, processRes, argRes, ignoreEntry []*regexp.Regexp
 	commonMerged                                                                      bool
+}
+
+// CommandAlias is another command name an agent is installed under, such as
+// Cursor's `agent` (a link to cursor-agent).
+type CommandAlias struct {
+	Command string `json:"command"`
+	// ResolvesTo must appear in the alias's resolved path (links followed)
+	// for it to count as this agent: the name may belong to something else.
+	ResolvesTo string `json:"resolves_to"`
+}
+
+// Matches reports whether resolvedPath (the alias with links followed) is
+// this agent's install.
+func (a CommandAlias) Matches(resolvedPath string) bool {
+	if a.ResolvesTo == "" {
+		return false
+	}
+	p := strings.ToLower(strings.ReplaceAll(resolvedPath, `\`, "/"))
+	return strings.Contains(p, strings.ToLower(a.ResolvesTo))
 }
 
 // InShellHook reports whether the shell hook wraps this agent by default.

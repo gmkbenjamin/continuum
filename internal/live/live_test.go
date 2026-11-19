@@ -176,3 +176,32 @@ func TestDesktopAppHoldsSessions(t *testing.T) {
 		t.Fatal("desktop session open with the app closed")
 	}
 }
+
+// `muse sessions --json` (Muse Code 1.4.24): an object, no pid or folder.
+func TestMuseSessionsJSON(t *testing.T) {
+	r, err := rules.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := r.Harness("muse")
+	out := `{"sessions":[{"sessionId":"01a1f3be-64e4-7933-a259-43a984103466","name":"brown-declination","workspaceLabel":"musews","openedBy":"tui","binaryVersion":null,"attachable":false}]}`
+	f := finder(t, nil, out, nil)
+	st := f.Lookup(h, Query{SessionID: "01a1f3be-64e4-7933-a259-43a984103466", Bin: "/u/.local/bin/muse"})
+	if !st.Checked || !st.Open || !st.Authoritative || st.Session.Name != "brown-declination" || st.Session.Entrypoint != "tui" {
+		t.Fatalf("open session: %+v %+v", st, st.Session)
+	}
+	st = f.Lookup(h, Query{SessionID: "gone", Bin: "/u/.local/bin/muse"})
+	if !st.Checked || st.Open || !st.Authoritative {
+		t.Fatalf("closed session: %+v", st)
+	}
+	// Nothing running: an empty list is still an answer.
+	st = finder(t, nil, "note: something\n{\"sessions\":[]}", nil).Lookup(h, Query{SessionID: "x", Bin: "muse"})
+	if !st.Checked || st.Open {
+		t.Fatalf("empty list: %+v", st)
+	}
+	// Not the expected shape: no answer, rather than "closed".
+	st = finder(t, nil, `{"error":"registry locked"}`, nil).Lookup(h, Query{SessionID: "x", Bin: "muse"})
+	if st.Checked && st.Source == "command" {
+		t.Fatalf("bad output taken as an answer: %+v", st)
+	}
+}

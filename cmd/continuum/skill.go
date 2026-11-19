@@ -1,7 +1,8 @@
 package main
 
 // The Continuum skill: a short guide that agents with skills (Claude Code,
-// Codex, Antigravity, and Grok Build through Claude's folder) load when the
+// Codex, Antigravity, and Grok Build, Muse Code, the Cursor CLI and opencode
+// through Claude's folder) load when the
 // user asks about resuming, so the agent can check and control Continuum
 // for its own session. `continuum agent-guide` prints the same for any agent.
 
@@ -109,7 +110,7 @@ func skillTargets(cfg core.Config, r *rules.Rules) []skillTarget {
 		}
 		name := h.DisplayName
 		if c.harness == "claude" {
-			name += " (and Grok Build, which reads its skills)"
+			name += " (and Grok Build, Muse Code, the Cursor CLI and opencode, which read its skills)"
 		}
 		out = append(out, skillTarget{Agent: name, Dir: filepath.Join(c.dir, "continuum")})
 	}

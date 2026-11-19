@@ -12,6 +12,8 @@ The details behind the [README](../README.md): how stalls are found, what is che
   Codex rollouts      ~/.codex/sessions     ├─▶ session: scope, reset ─▶    tmux · screen · zellij · herdr
   Codex hooks (SessionStart, Stop)          │   time, "is it open?",        Rex · WezTerm · kitty
   Grok Build hooks, active_sessions.json    │
+  Muse Code hooks, muse sessions --json     │
+  Cursor CLI hooks                          │
   wrapper (screen of any wrapped agent)     │   activity check, retries  3. agent commands, same session:
   tmux pane scan (any agent)                ┘                               open background session → claude attach
                                                                             closed session → claude --bg --resume <id>
@@ -34,6 +36,16 @@ one doesn't stop Continuum:
   `~/.grok/active_sessions.json`. Grok also runs Claude Code's hooks; Continuum tells
   the two apart by the `GROK_*` variables Grok sets, so a Grok session is never taken
   for a Claude one.
+- Muse Code fires Claude Code-style hooks (`StopFailure` with the error and its
+  details) from `~/.config/muse/settings.json`, and `muse sessions --json` lists its
+  open sessions. Muse runs hooks with a cleaned environment, so the hook reads the
+  wrapper id or multiplexer pane from the Muse process itself.
+- The Cursor CLI reports sessions starting and ending, and its replies, from
+  `~/.cursor/hooks.json`; its limits are read off the screen. Cursor runs Claude
+  Code's hooks too; those runs are ignored while Cursor's own is installed (the same
+  goes for Grok Build).
+- Hooks from runs nobody types into (`grok -p`, `muse exec`, `agent -p`) are ignored:
+  the agent's own command line is judged by the same rules the shell hook uses.
 - The wrapper and the tmux pane scanner read the bottom of the agent's screen. That's
   how every other agent is covered. A turn that ends normally with a reply that only
   *mentions* a limit ("the client now prints 'usage limit reached'"), anywhere in the
@@ -200,6 +212,8 @@ over the network.
 | Claude Code hooks | `~/.claude/settings.json`: `SessionStart`, `StopFailure`, `Stop`, `SessionEnd` | Claude Code reports stalls and where each session runs. This also covers Claude Desktop. |
 | Codex hooks | `~/.codex/hooks.json`: `SessionStart`, `Stop` | Codex reports where each session runs. |
 | Grok Build hooks | `~/.grok/hooks/continuum.json`, a file of Continuum's own | Grok Build reports stalls and where each session runs. Grok runs hooks in folders you have trusted. |
+| Muse Code hooks | `~/.config/muse/settings.json`: `SessionStart`, `StopFailure`, `Stop`, `SessionEnd` | Muse Code reports stalls and its sessions. |
+| Cursor CLI hooks | `~/.cursor/hooks.json`: `sessionStart`, `afterAgentResponse`, `stop`, `sessionEnd` | The Cursor CLI reports its sessions and replies. |
 | Agent skill | `~/.claude/skills/continuum`, `~/.codex/skills/continuum`, `~/.gemini/config/skills/continuum` (for the agents you have) | Lets agents check and control Continuum for their own session (see [below](#agents-controlling-continuum)). `install --no-skill` leaves it out. |
 | Shell hook | A marked block in `~/.zshrc`, `~/.bashrc` or fish's `conf.d/continuum.fish` | Runs interactive `claude`, `codex` and other installed agents under the wrapper, so Continuum can type into them. |
 | Login item (background mode only) | macOS: `~/Library/LaunchAgents/dev.continuum.daemon.plist`. Linux: `~/.config/systemd/user/continuum.service`. Windows: scheduled task "Continuum". | Starts the background daemon when you log in. |
@@ -223,7 +237,7 @@ hooks only queue events for it. In background mode:
   - checks the hooks are intact, and whether an agent was updated, every 10 minutes.
 
   It types or runs anything only when a resume is due.
-- **Hooks**, run by Claude Code, Codex and Grok Build on session events. Each takes a few
+- **Hooks**, run by Claude Code, Codex, Grok Build, Muse Code and the Cursor CLI on session events. Each takes a few
   milliseconds, drops a small event file in `~/.continuum/spool/`, and starts the
   daemon if it isn't running.
 - **The wrapper**, around each agent started from your shell: two small processes,
@@ -250,13 +264,14 @@ continuum resume-now this         # resume it now
 
 Continuum finds the session from the variable the agent sets for its commands
 (Claude Code's `CLAUDE_CODE_SESSION_ID`, Grok Build's `GROK_SESSION_ID`,
-Antigravity's `ANTIGRAVITY_CONVERSATION_ID`), else from the agent's process, or the
+Muse Code's `MUSE_SESSION_ID`, Antigravity's `ANTIGRAVITY_CONVERSATION_ID`), else from the agent's process, or the
 wrapper or pane it runs in, matched against what its hooks reported. Run outside an
 agent, `this` is an error.
 
 `install` gives agents that read skills a short Continuum skill, so you can simply ask
 ("don't auto-resume this session", "when you resume, re-run the tests first"):
-`~/.claude/skills/continuum` (Claude Code, and Grok Build, which reads Claude's skills),
+`~/.claude/skills/continuum` (Claude Code, and Grok Build, Muse Code, the Cursor CLI
+and opencode, which read Claude's skills),
 `~/.codex/skills/continuum` and `~/.gemini/config/skills/continuum` (Antigravity).
 `install --no-skill` leaves them out. `continuum agent-guide` prints the same guide for
 any other agent.

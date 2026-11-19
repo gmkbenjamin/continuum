@@ -162,10 +162,53 @@ func Run(o Options) (int, error) {
 		mu         sync.Mutex
 		ring       = ansi.NewRing(16 * 1024)
 		sinceInput = ansi.NewRing(16 * 1024) // output since the user last typed
-		lastOutput time.Time
-		changed    bool
-		writeMu    sync.Mutex
+		// What the agent shows: full-screen programs that redraw by moving
+		// the cursor (opencode) leave a limit message in the stream as
+		// fragments, pushed out of its tail by later redraws.
+		screen = ansi.NewScreen(cols, rows)
+		// screenOn: screen detection is wanted for this agent and the screen
+		// model hasn't failed (a fault in it turns it off; the agent's
+		// session must never suffer for it).
+		screenOn = h.ScreenDetection
+		// Limit messages on screen when the user last sent a prompt or
+		// Continuum last resumed: they stay visible in the history and must
+		// not count again.
+		stale = map[string]int{} // line -> how many times it was shown
+		// Limits found on the rendered screen, reported since the last
+		// prompt or resume (the screen keeps showing them).
+		reportedShown = map[string]time.Time{}
+		lastOutput    time.Time
+		changed       bool
+		writeMu       sync.Mutex
 	)
+	// The screen model's operations, mu held.
+	guard := func(f func()) {
+		if !screenOn {
+			return
+		}
+		defer func() {
+			if recover() != nil {
+				screenOn = false
+			}
+		}()
+		f()
+	}
+	shownText := func() (text string) {
+		guard(func() { text = screen.String() })
+		return text
+	}
+	markStale := func() { // mu held
+		reportedShown = map[string]time.Time{}
+		stale = map[string]int{}
+		if !screenOn {
+			return
+		}
+		for _, l := range strings.Split(shownText(), "\n") {
+			if h.Classify(l, 1) != nil {
+				stale[normalise(l)]++
+			}
+		}
+	}
 	write := func(b []byte) {
 		writeMu.Lock()
 		defer writeMu.Unlock()
@@ -186,6 +229,7 @@ func Run(o Options) (int, error) {
 					// A submitted prompt starts a new turn; older limit text
 					// on screen must not be re-detected from the ring.
 					ring = ansi.NewRing(16 * 1024)
+					markStale()
 				}
 				mu.Unlock()
 			}
@@ -207,6 +251,7 @@ func Run(o Options) (int, error) {
 				mu.Lock()
 				ring.Write(buf[:n])
 				sinceInput.Write(buf[:n])
+				guard(func() { screen.Write(buf[:n]) })
 				lastOutput = time.Now()
 				changed = true
 				mu.Unlock()
@@ -238,6 +283,7 @@ func Run(o Options) (int, error) {
 				mu.Lock()
 				screen := ansi.Strip(ring.String())
 				recent := ansi.Strip(sinceInput.String())
+				shown := shownText()
 				mu.Unlock()
 				// The bottom of the screen, and anything shown since the user
 				// last typed: a menu stays open until answered, even when
@@ -245,6 +291,11 @@ func Run(o Options) (int, error) {
 				dialog := r.BlockingDialog(screen)
 				if dialog == "" {
 					dialog = r.BlockingDialogAnywhere(recent)
+				}
+				if dialog == "" && shown != "" {
+					// A full-screen program draws its menus by moving the
+					// cursor too: the rendered screen shows them whole.
+					dialog = r.BlockingDialog(shown)
 				}
 				if dialog != "" {
 					// Write the note before removing the request: the daemon
@@ -264,24 +315,63 @@ func Run(o Options) (int, error) {
 				mu.Lock()
 				ring = ansi.NewRing(16 * 1024)
 				sinceInput = ansi.NewRing(16 * 1024)
+				markStale()
 				changed = false
 				mu.Unlock()
 			}
+			if interactive && h.ScreenDetection {
+				if c, rr, err := term.GetSize(int(o.Stdout.Fd())); err == nil {
+					mu.Lock()
+					guard(func() { screen.Resize(c, rr) })
+					mu.Unlock()
+				}
+			}
+			// Old copies of a stale message that scrolled away are forgotten
+			// on every tick, not only when the screen settles, so one shown
+			// again later is new; only between frames (no output for a
+			// moment), never half way through a redraw.
+			mu.Lock()
+			if len(stale) > 0 && time.Since(lastOutput) > 200*time.Millisecond {
+				forget(shownText(), stale)
+			}
+			mu.Unlock()
 			// Detection once the screen has settled.
 			mu.Lock()
 			settled := changed && time.Since(lastOutput) > 1500*time.Millisecond
-			var text string
+			var text, shown string
+			var shownSeen map[string]time.Time
 			if settled {
 				changed = false
 				text = ansi.Strip(ring.String())
+				if screenOn {
+					shown = freshLines(shownText(), stale)
+					shownSeen = reportedShown
+				}
 			}
 			mu.Unlock()
 			if !settled {
 				continue
 			}
 			m := h.Classify(text, min(r.Defaults.TailLines, 12))
+			seen := reported
+			fromScreen := false
+			now := time.Now()
+			dup := false
+			if shownSeen != nil {
+				if m != nil {
+					if last, ok := reported[signature(m)]; ok && now.Sub(last) < 15*time.Minute {
+						m, dup = nil, true // the screen knows whether it is new
+					}
+				}
+				if m == nil {
+					// Lines shown before the last prompt or resume are left
+					// out, so a match here is new since then.
+					m = h.Classify(shown, min(r.Defaults.TailLines, 12))
+					seen, fromScreen = shownSeen, true
+				}
+			}
 			if m == nil {
-				if stalled && strings.TrimSpace(text) != "" {
+				if !dup && stalled && strings.TrimSpace(text) != "" {
 					stalled = false
 					_ = core.SpoolEvent(p, core.Event{
 						Harness: harness, Kind: core.KindActivity, At: time.Now(), Source: "wrapper",
@@ -292,12 +382,17 @@ func Run(o Options) (int, error) {
 			}
 			// A screen redraw repeats the same message; report it again only
 			// after a while (a genuinely new limit names a new reset time).
-			sig := m.Kind + "|" + normalise(m.Text)
-			now := time.Now()
-			if last, ok := reported[sig]; ok && now.Sub(last) < 15*time.Minute {
+			sig := signature(m)
+			if last, ok := seen[sig]; ok && now.Sub(last) < 15*time.Minute {
 				continue
 			}
-			reported[sig] = now
+			seen[sig] = now
+			if shownSeen != nil && !fromScreen {
+				// The same message on the rendered screen is this report too.
+				if ms := h.Classify(shown, min(r.Defaults.TailLines, 12)); ms != nil {
+					shownSeen[signature(ms)] = now
+				}
+			}
 			stalled = true
 			ev := core.Event{
 				Harness: harness, Kind: m.Kind, Message: m.Text, At: now, Source: "wrapper",
@@ -324,6 +419,46 @@ func Run(o Options) (int, error) {
 	close(stop)
 	wg.Wait()
 	return code, werr
+}
+
+func signature(m *rules.Match) string { return m.Kind + "|" + normalise(m.Text) }
+
+// freshLines is screen without its stale lines: of each line in stale, the
+// first (oldest) copies, as many as were shown then. The same message shown
+// once more since is new (a limit hit again after a resume). Counts drop as
+// old copies scroll away, so a later copy isn't mistaken for an old one.
+func freshLines(screen string, stale map[string]int) string {
+	if len(stale) == 0 {
+		return screen
+	}
+	forget(screen, stale)
+	lines := strings.Split(screen, "\n")
+	skip := map[string]int{}
+	out := lines[:0]
+	for _, l := range lines {
+		k := normalise(l)
+		if skip[k] < stale[k] {
+			skip[k]++
+			continue
+		}
+		out = append(out, l)
+	}
+	return strings.Join(out, "\n")
+}
+
+// forget lowers each stale count to the copies screen still shows.
+func forget(screen string, stale map[string]int) {
+	shown := map[string]int{}
+	for _, l := range strings.Split(screen, "\n") {
+		if k := normalise(l); stale[k] > 0 {
+			shown[k]++
+		}
+	}
+	for k, n := range stale {
+		if shown[k] < n {
+			stale[k] = shown[k]
+		}
+	}
 }
 
 func normalise(s string) string {

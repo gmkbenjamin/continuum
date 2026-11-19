@@ -154,10 +154,11 @@ func installTargets(o installOptions, cfg core.Config, r *rules.Rules) []hooks.T
 		if len(want) > 0 && !want[t.Harness] {
 			continue
 		}
-		_, binErr := deliver.Binary(cfg, r.Harness(t.Harness))
+		h := r.Harness(t.Harness)
+		_, binErr := deliver.Binary(cfg, h)
 		_, dirErr := os.Stat(filepath.Dir(t.Path))
-		if binErr != nil && dirErr != nil && len(want) == 0 {
-			continue
+		if binErr != nil && (dirErr != nil || h.HookRequiresCLI) && len(want) == 0 {
+			continue // not installed (for some agents, its folder alone doesn't count)
 		}
 		out = append(out, t)
 	}
@@ -208,6 +209,8 @@ func installPlanItems(o installOptions, p core.Paths, cfg core.Config, r *rules.
 			"claude": "lets Claude Code (terminal, IDE and Desktop) tell Continuum when a session stalls on a limit, and where it runs",
 			"codex":  "lets Codex tell Continuum when a session starts and stops, and where it runs",
 			"grok":   "lets Grok Build tell Continuum when a session stalls on a limit, and where it runs (a file of Continuum's own; Grok asks you to trust a folder before its hooks run there)",
+			"muse":   "lets Muse Code tell Continuum when a session stalls on a limit, and where it runs",
+			"cursor": "lets the Cursor CLI tell Continuum when a session starts and ends, and where it runs",
 		}[t.Harness]
 		if purpose == "" {
 			purpose = "lets " + h.DisplayName + " tell Continuum about its sessions"

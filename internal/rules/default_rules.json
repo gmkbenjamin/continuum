@@ -201,6 +201,8 @@
       "binary": "opencode",
       "process_names": ["opencode"],
       "process_arg_patterns": ["(?:^|[/\\\\])opencode(?:\\s|$)", "opencode-ai"],
+      "_screen_detection": "opencode 2 draws by moving the cursor and redraws its title after an error: the message is only whole on the rendered screen.",
+      "screen_detection": true,
       "use_common_patterns": true,
       "patterns": [],
       "never_resume_patterns": [],
@@ -242,6 +244,38 @@
       ]
     },
 
+    "muse": {
+      "display_name": "Muse Code",
+      "binary": "muse",
+      "_process_names": "`muse` is a launcher script that runs muse-bin-<version>; the prefix match covers both.",
+      "process_names": ["muse"],
+      "process_arg_patterns": ["[/\\\\]muse-bin-\\d"],
+      "session_env": ["MUSE_SESSION_ID"],
+      "_hook_requires_cli": "The Muse desktop app may share the settings file.",
+      "hook_requires_cli": true,
+      "_stop_failure_kinds": "Muse Code's hooks follow Claude Code's (SessionStart, StopFailure, Stop, SessionEnd, with error, error_details and last_assistant_message).",
+      "stop_failure_kinds": {
+        "rate_limit": "usage_limit",
+        "rate_limited": "usage_limit",
+        "tier_limit": "usage_limit",
+        "quota_exhausted": "usage_limit",
+        "overloaded": "transient",
+        "server_error": "transient",
+        "unknown": "transient"
+      },
+      "use_common_patterns": true,
+      "patterns": [
+        {"kind": "usage_limit", "regex": "(?i)usage\\s+exhausted"},
+        {"kind": "usage_limit", "regex": "(?i)(?:tier\\s+)?quota\\s+(?:is\\s+)?exhausted"}
+      ],
+      "never_resume_patterns": ["(?i)run\\s+`?muse\\s+login`?", "(?i)not\\s+logged\\s+in", "(?i)couldn[’']?t\\s+(?:read|access)\\s+your\\s+(?:saved\\s+login|meta\\s+credentials)", "(?i)keychain\\s+is\\s+locked"],
+      "ui_markers": ["(?i)muse\\s+code", "(?i)voice\\s+input\\s+\\(", "(?i)ctrl\\+o\\s+to\\s+expand", "(?i)esc\\s+to\\s+(?:interrupt|cancel)", "❯"],
+      "wrap": {"passthrough_flags": ["-V", "-h", "--help", "--version"], "passthrough_subcommands": ["exec", "config", "export", "trace", "model-profile", "skills", "voice", "plugins", "sandbox", "schema", "serve", "mxp", "acp", "session-message", "sessions", "mcp", "auth", "login", "logout", "usage", "init", "help"]},
+      "_live_sessions": "`muse sessions --json` lists the sessions running on this machine ({\"sessions\": [{sessionId, name, openedBy, ...}]}). The `muse` launcher checks for an update (a large download) at most hourly when it runs: Continuum's checks ask it not to.",
+      "live_sessions": {"command": ["env", "MUSE_NO_AUTO_UPDATE=1", "{bin}", "sessions", "--json"]},
+      "native_commands": []
+    },
+
     "amp": {
       "display_name": "Amp",
       "homepage": "https://ampcode.com",
@@ -277,6 +311,10 @@
       "display_name": "Cursor CLI",
       "homepage": "https://cursor.com/cli",
       "binary": "cursor-agent",
+      "_command_aliases": "Cursor now installs its CLI as `agent` (a link to cursor-agent). That name is too common to wrap blindly: it is wrapped only while it resolves to Cursor's install.",
+      "command_aliases": [{"command": "agent", "resolves_to": "cursor-agent"}],
+      "_hook_requires_cli": "The Cursor editor (and Grok Build) read ~/.cursor/hooks.json too.",
+      "hook_requires_cli": true,
       "process_names": ["cursor-agent"],
       "process_arg_patterns": ["cursor-agent", "[/\\\\]\\.cursor[/\\\\]agent"],
       "_hook_env": "Cursor sets CURSOR_VERSION for every hook it runs, including hooks it borrows from other agents.",
@@ -288,8 +326,8 @@
       ],
       "never_resume_patterns": ["(?i)usage-based\\s+pricing", "(?i)on-demand\\s+usage\\s+(?:is\\s+)?(?:off|disabled|limit)", "(?i)upgrade\\s+to\\s+(?:pro|ultra)"],
       "ui_markers": ["(?i)ctrl\\+c\\s+to\\s+stop", "(?i)/\\s*for\\s+commands", "(?i)cursor\\s+agent", "(?i)add\\s+a\\s+follow-up"],
-      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--print", "--version", "--output-format"], "passthrough_subcommands": ["login", "logout", "status", "whoami", "mcp", "update", "upgrade", "ls", "install-shell-integration", "uninstall-shell-integration", "generate-rule", "create-chat", "about", "help"]},
-      "live_sessions": {"scan_processes": true, "process_exclude_args": ["mcp", "login", "status", "update"]},
+      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--print", "--version", "--output-format", "--list-models"], "passthrough_subcommands": ["login", "logout", "status", "whoami", "mcp", "plugin", "worker", "models", "team", "bedrock", "update", "upgrade", "install-shell-integration", "uninstall-shell-integration", "generate-rule", "rule", "create-chat", "about", "help"]},
+      "live_sessions": {"scan_processes": true, "process_exclude_args": ["mcp", "login", "status", "update", "worker", "plugin", "models"]},
       "native_commands": []
     },
 

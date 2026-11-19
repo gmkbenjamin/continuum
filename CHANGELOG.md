@@ -4,6 +4,46 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-20
+
+### Added
+- **Muse Code.** Meta's terminal agent (`muse`, running as `muse-bin-<version>`) is
+  wrapped by the shell hook and recognised in tmux panes. `install` adds hooks to
+  `~/.config/muse/settings.json` (`$XDG_CONFIG_HOME/muse`): Muse reports sessions,
+  stalls (`StopFailure` with the error and its details) and replies the way Claude
+  Code does. `muse sessions --json` tells Continuum which sessions are open. Muse
+  runs hooks with a cleaned environment, so the hook reads the session's wrapper or
+  pane from the Muse process itself. Muse reads Continuum's skill from
+  `~/.claude/skills`. Continuum's checks run the launcher with
+  `MUSE_NO_AUTO_UPDATE=1`, so they never start Muse's self-update.
+- **Cursor CLI hooks and its `agent` command.** Cursor now installs its CLI as
+  `agent`; the shell hook wraps that name too, but only while it is a link into
+  Cursor's own install (`command_aliases` in the rules). `install` adds
+  `~/.cursor/hooks.json` (`sessionStart`, `afterAgentResponse`, `stop`,
+  `sessionEnd`), so Cursor sessions are tracked by their conversation id and folder,
+  and a reply that only mentions a limit isn't taken for one. The Cursor editor and
+  Grok Build read the same file: only runs by the Cursor CLI itself count, and the
+  hooks are added only when the CLI is installed. The CLI runs under node, started as
+  `agent`, and is recognised by its command line. `agent ls` (a picker
+  that opens a session) is now wrapped; `models`, `worker`, `plugin` and others are
+  passed through.
+- **Limits on full-screen programs.** opencode 2 draws by moving the cursor and
+  redraws its title after an error, so its limit message reached the wrapper only in
+  pieces and was never detected. The wrapper now keeps a rendered copy of the screen
+  for agents marked `screen_detection` in the rules (opencode), and a limit message
+  shown since the last prompt or resume counts, even the same wording again. A menu
+  or approval prompt drawn the same way is seen on the rendered screen too, so
+  nothing is typed into it.
+
+### Fixed
+- **Grok Build stalls were reported twice.** Grok runs Claude Code's hooks as well as
+  its own; the check for Continuum's own Grok hook searched the file as text and
+  missed the escaped quotes in it, so the borrowed run reported every event again.
+  The file is now parsed (the same check covers Cursor).
+- **Print-mode runs of other agents are ignored.** Hooks from `grok -p`, `muse exec`,
+  `agent -p` and other runs nobody types into no longer create sessions: the agent's
+  command line is judged by the same rules the shell hook uses.
+
 ## [0.11.0] - 2026-11-19
 
 ### Fixed

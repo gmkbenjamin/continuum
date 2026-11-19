@@ -3,7 +3,8 @@
 **When your AI coding agent hits its usage limit, Continuum picks the work back up the
 moment the limit resets.**
 
-Continuum watches Claude Code, Codex, Grok Build and about 25 other coding agents. When
+Continuum watches Claude Code, Codex, Grok Build, Muse Code, Cursor CLI, opencode and
+about 25 other coding agents. When
 one stops on a usage limit or a temporary API error, it waits for the reset and
 continues **the same session, in place**. It never starts a new session or a copy, and
 the window doesn't need to be focused, visible or even unlocked.
@@ -89,15 +90,17 @@ continuum exclude this            # don't auto-resume it
 continuum message set --session this "Re-run the failing tests, then continue."
 ```
 
-`install` gives Claude Code, Codex and Antigravity a Continuum skill (Grok Build reads
-Claude's), so you can just ask. For other agents, tell them to run `continuum
+`install` gives Claude Code, Codex and Antigravity a Continuum skill (Grok Build, Muse
+Code, the Cursor CLI and opencode read Claude's), so you can just ask. For other agents, tell them to run `continuum
 agent-guide`.
 
 ## Supported agents
 
-- **Fully:** Claude Code (CLI, IDE, Desktop), Codex (CLI, app), Grok Build.
-- **In any terminal:** Gemini CLI, Antigravity CLI, Cursor CLI, Qwen Code, Aider,
-  opencode, GitHub Copilot CLI and more: [the full list](docs/agents.md).
+- **Fully:** Claude Code (CLI, IDE, Desktop), Codex (CLI, app), Grok Build, Muse Code.
+- **With hooks:** Cursor CLI (`agent`), which reports its sessions; limits are read
+  off its screen.
+- **In any terminal:** opencode, Gemini CLI, Antigravity CLI, Qwen Code, Aider, GitHub
+  Copilot CLI and more: [the full list](docs/agents.md).
 - **Not covered:** agents inside an editor window (the Cursor, Windsurf and Antigravity
   editors' own agents, VS Code Copilot Chat). Their command-line agents work.
 

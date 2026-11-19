@@ -230,11 +230,25 @@ func (f *Finder) fromCommand(ls *rules.LiveSessions, q Query) ([]Session, bool) 
 		return nil, false
 	}
 	out = strings.TrimSpace(out)
-	if i := strings.IndexByte(out, '['); i > 0 {
-		out = out[i:] // tolerate a banner line before the JSON
+	// Tolerate banner lines before the JSON.
+	for out != "" && out[0] != '[' && out[0] != '{' {
+		i := strings.IndexByte(out, '\n')
+		if i < 0 {
+			return nil, false
+		}
+		out = strings.TrimSpace(out[i+1:])
 	}
 	var raw []map[string]any
-	if json.Unmarshal([]byte(out), &raw) != nil {
+	if strings.HasPrefix(out, "{") {
+		// {"sessions": [...]}, as `muse sessions --json` prints
+		var wrapped struct {
+			Sessions *[]map[string]any `json:"sessions"`
+		}
+		if json.Unmarshal([]byte(out), &wrapped) != nil || wrapped.Sessions == nil {
+			return nil, false
+		}
+		raw = *wrapped.Sessions
+	} else if json.Unmarshal([]byte(out), &raw) != nil {
 		return nil, false
 	}
 	list := make([]Session, 0, len(raw))
@@ -412,7 +426,7 @@ func fromMap(m map[string]any) Session {
 		Kind:       str("kind"),
 		Status:     str("status", "state"),
 		Tmux:       str("tmux"),
-		Entrypoint: str("entrypoint"),
+		Entrypoint: str("entrypoint", "openedBy"),
 		Name:       str("name"),
 		WaitingFor: str("waitingFor", "waiting_for"),
 		Version:    str("version"),

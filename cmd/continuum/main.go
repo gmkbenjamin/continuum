@@ -860,8 +860,10 @@ func printAgentTable(r *rules.Rules) {
 			by = append(by, "hooks", "transcripts", "session list")
 		case "codex":
 			by = append(by, "hooks", "rollout files", "process scan")
-		case "grok":
+		case "grok", "muse":
 			by = append(by, "hooks", "session list")
+		case "cursor":
+			by = append(by, "hooks")
 		}
 		if len(h.ProcessNames) > 0 || len(h.ProcessArgPatterns) > 0 {
 			by = append(by, "screen (wrapper, tmux)")
@@ -875,6 +877,9 @@ func printAgentTable(r *rules.Rules) {
 			resumes += "; closed sessions by id"
 		}
 		cmdName := "`" + h.Binary + "`"
+		for _, a := range h.CommandAliases {
+			cmdName += " or `" + a.Command + "`"
+		}
 		if name == "rovodev" {
 			cmdName = "`acli rovodev`"
 		}

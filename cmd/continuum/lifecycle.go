@@ -161,9 +161,10 @@ func doInstall(o installOptions) error {
 		if len(want) > 0 && !want[t.Harness] {
 			continue
 		}
-		_, binErr := deliver.Binary(cfg, r.Harness(t.Harness))
+		h := r.Harness(t.Harness)
+		_, binErr := deliver.Binary(cfg, h)
 		_, dirErr := os.Stat(filepath.Dir(t.Path))
-		if binErr != nil && dirErr != nil && len(want) == 0 {
+		if binErr != nil && (dirErr != nil || h.HookRequiresCLI) && len(want) == 0 {
 			fmt.Printf("%-10s not found, skipped\n", t.Harness+":")
 			continue
 		}
@@ -307,8 +308,17 @@ func pinAgentHomes(p core.Paths, cfg core.Config) core.Config {
 		{"claude_home", "CLAUDE_CONFIG_DIR", "Claude Code", ".claude", &cfg.ClaudeHome},
 		{"codex_home", "CODEX_HOME", "Codex", ".codex", &cfg.CodexHome},
 		{"grok_home", "GROK_HOME", "Grok Build", ".grok", &cfg.GrokHome},
+		{"muse_home", "XDG_CONFIG_HOME", "Muse Code", filepath.Join(".config", "muse"), &cfg.MuseHome},
 	} {
 		dir := os.Getenv(a.env)
+		if a.key == "muse_home" && dir != "" {
+			// Muse Code keeps its settings in $XDG_CONFIG_HOME/muse; noted
+			// only when that is a real Muse folder (the variable is common).
+			if !filepath.IsAbs(dir) || !exists(filepath.Join(dir, "muse")) {
+				continue
+			}
+			dir = filepath.Join(dir, "muse")
+		}
 		if dir == "" || *a.set != "" {
 			continue
 		}

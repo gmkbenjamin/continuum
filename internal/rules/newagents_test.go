@@ -1,6 +1,9 @@
 package rules
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestNewAgentsWording(t *testing.T) {
 	r, err := Load("")
@@ -60,5 +63,72 @@ func TestBlockingDialogAnywhere(t *testing.T) {
 	}
 	if r.BlockingDialogAnywhere(text) == "" {
 		t.Fatal("menu not seen")
+	}
+}
+
+func TestMuseCode(t *testing.T) {
+	r, _ := Load("")
+	h := r.Harness("muse")
+	if h == nil {
+		t.Fatal("no muse harness")
+	}
+	// `muse` is a launcher; the running program is muse-bin-<version>
+	// (tmux shows it cut short).
+	for _, name := range []string{"muse", "muse-bin-1.4.24-R9131.1", "muse-bin-1.4.24"} {
+		if !h.IsHarnessProcess(name) {
+			t.Errorf("%s not recognised", name)
+		}
+	}
+	if h.IsHarnessProcess("museum") {
+		t.Error("museum taken for Muse Code")
+	}
+	if !h.MatchesCommandLine("/Users/u/.local/bin/muse-bin-1.4.24-R9131.1 --provider meta") {
+		t.Error("command line not recognised")
+	}
+	for args, want := range map[string]bool{"": true, "resume --last": true, "--model x": true, "exec fix": false, "sessions --json": false, "--version": false, "usage": false} {
+		var a []string
+		if args != "" {
+			a = strings.Fields(args)
+		}
+		if got := h.Wrap.Wants(a); got != want {
+			t.Errorf("wrap %q: %v want %v", args, got, want)
+		}
+	}
+	if !h.HasStrongUIMarker("── Voice input (alt(option)+v to start) ──\n❯\n  meta · ~/w · Auto-review") {
+		t.Error("Muse Code's input box not recognised")
+	}
+	if m := h.Classify("Usage exhausted (last reported)", 4); m == nil || m.Kind != "usage_limit" {
+		t.Errorf("usage exhausted: %+v", m)
+	}
+	// Warnings shown while it keeps working are not stalls.
+	for _, s := range []string{"You've used 90% of your weekly quota (resets at 5:00 PM)", "At this pace your weekly quota runs out in about 2 hours (resets at 5:00 PM)", "Usage nearly exhausted", "Usage running low"} {
+		if m := h.Classify(s, 4); m != nil {
+			t.Errorf("warning %q taken for %s", s, m.Kind)
+		}
+	}
+	if !h.NeverResume("not logged in: run `muse login` first") {
+		t.Error("login error should need the user")
+	}
+}
+
+func TestCursorAgentAlias(t *testing.T) {
+	r, _ := Load("")
+	h := r.Harness("cursor")
+	if len(h.CommandAliases) == 0 || h.CommandAliases[0].Command != "agent" {
+		t.Fatalf("aliases %+v", h.CommandAliases)
+	}
+	a := h.CommandAliases[0]
+	if !a.Matches("/Users/u/.local/share/cursor-agent/versions/2026.11.17-f532c45/cursor-agent") {
+		t.Error("Cursor's install not matched")
+	}
+	if !a.Matches(`C:\Users\u\AppData\Local\cursor-agent\agent.cmd`) {
+		t.Error("Windows path not matched")
+	}
+	if a.Matches("/usr/local/bin/agent") || a.Matches("/opt/other/agent") {
+		t.Error("another program named agent matched")
+	}
+	// `agent ls` opens a session picker that resumes a chat: wrapped.
+	if !h.Wrap.Wants([]string{"ls"}) || h.Wrap.Wants([]string{"-p", "hi"}) || h.Wrap.Wants([]string{"models"}) {
+		t.Error("cursor wrap rules")
 	}
 }

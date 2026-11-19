@@ -37,6 +37,13 @@ type Input struct {
 	LastAssistantMessage string          `json:"last_assistant_message"`
 	Reason               string          `json:"reason"`
 	Source               string          `json:"source"`
+	// Cursor CLI: conversation_id (also sent as session_id), the workspace
+	// folders instead of cwd, the outcome of a turn on stop, and the reply
+	// text on afterAgentResponse.
+	ConversationID string   `json:"conversation_id"`
+	WorkspaceRoots []string `json:"workspace_roots"`
+	Status         string   `json:"status"`
+	Text           string   `json:"text"`
 }
 
 func rawString(raw json.RawMessage) string {
@@ -59,6 +66,12 @@ func rawString(raw json.RawMessage) string {
 // ok is false when the hook carries nothing Continuum needs.
 func BuildEvent(r *rules.Rules, harness string, in Input, env map[string]string, now time.Time) (core.Event, bool) {
 	h := r.Harness(harness)
+	if in.SessionID == "" {
+		in.SessionID = in.ConversationID
+	}
+	if in.Cwd == "" && len(in.WorkspaceRoots) > 0 {
+		in.Cwd = in.WorkspaceRoots[0]
+	}
 	ev := core.Event{
 		Harness: harness, SessionID: in.SessionID, Cwd: in.Cwd, TranscriptPath: in.TranscriptPath,
 		At: now, Source: "hook:" + in.HookEventName,
@@ -108,7 +121,16 @@ func BuildEvent(r *rules.Rules, harness string, in Input, env map[string]string,
 				ev.ResetAt = t
 			}
 		}
-	case "stop":
+	case "stop", "afteragentresponse":
+		if strings.EqualFold(in.Status, "error") {
+			// Cursor ended the turn on an error but doesn't say which: the
+			// screen tells whether it is a limit. Reporting it as activity
+			// would read as "working normally".
+			return ev, false
+		}
+		if in.LastAssistantMessage == "" {
+			in.LastAssistantMessage = in.Text
+		}
 		// A turn ended normally. Real limits and API errors arrive through
 		// StopFailure (and the transcript), so this is activity, unless the
 		// reply reads like a limit message: then it is reported as a reply,
@@ -138,10 +160,21 @@ func clip(s string, n int) string {
 	return s
 }
 
-func grokHasOwnHook() bool {
+// hasOwnHook reports whether Continuum's own hooks for harness are installed
+// (then that agent also runs them, and a borrowed hook of another agent's
+// must not report the same event twice).
+func hasOwnHook(harness string) bool {
 	cfg, _ := core.LoadConfig(core.GetPaths().Config)
-	data, err := os.ReadFile(GrokHookFile(cfg))
-	return err == nil && isOurs(string(data))
+	for _, t := range Targets(cfg) {
+		if t.Harness != harness {
+			continue
+		}
+		// Parsed, not searched as text: in the file the command's quotes
+		// are escaped, which a plain text match misses.
+		ok, _ := Installed(t)
+		return ok
+	}
+	return false
 }
 
 // ProcTree lists processes for the checks below. Tests replace it.
@@ -176,12 +209,54 @@ func NearestAgent(r *rules.Rules, tree map[int]proc.Node, pid int) (string, int)
 		if !ok {
 			return "", 0
 		}
-		if a := cliAgent(r, n.Name); a != "" {
+		if a := agentAt(r, n, pid); a != "" {
 			return a, pid
 		}
 		pid = n.PPID
 	}
 	return "", 0
+}
+
+// agentAt is the agent's CLI that process pid (named n.Name) runs, or "".
+// By name; or, when the name is an interpreter (node, bun, python) or a
+// command alias (the Cursor CLI shows as `agent`, or as `node` on Linux), by
+// its exact command line.
+func agentAt(r *rules.Rules, n proc.Node, pid int) string {
+	alias := n.Name != "" && isAlias(r, n.Name)
+	if !alias {
+		if a := cliAgent(r, n.Name); a != "" {
+			return a
+		}
+	}
+	if n.Name == "" || unicode.IsUpper([]rune(n.Name)[0]) || !(alias || r.IsInterpreter(n.Name)) {
+		return ""
+	}
+	// An alias name may be another program's too (`agent` is also a generic
+	// agent name): the command line decides first.
+	if args := ProcArgs(pid); len(args) > 0 {
+		line := strings.Join(args, " ")
+		for _, name := range r.HarnessNames() {
+			if r.Harness(name).MatchesCommandLine(line) {
+				return name
+			}
+		}
+	}
+	if alias {
+		return cliAgent(r, n.Name)
+	}
+	return ""
+}
+
+func isAlias(r *rules.Rules, name string) bool {
+	base := strings.TrimSuffix(strings.ToLower(filepath.Base(name)), ".exe")
+	for _, h := range r.HarnessNames() {
+		for _, a := range r.Harness(h).CommandAliases {
+			if strings.EqualFold(a.Command, base) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // nested walks up from pid: past the agent running the hook (and helper
@@ -192,14 +267,14 @@ func nested(r *rules.Rules, tree map[int]proc.Node, pid int) bool {
 	if len(tree) == 0 {
 		return false
 	}
-	isAgent := func(name string) bool { return cliAgent(r, name) != "" }
 	steps := 0
+	var ownAgent string
 	for ; pid > 1 && steps < 30; steps++ {
 		n, ok := tree[pid]
 		if !ok {
 			return false
 		}
-		if isAgent(n.Name) {
+		if ownAgent = agentAt(r, n, pid); ownAgent != "" {
 			break
 		}
 		pid = n.PPID
@@ -208,9 +283,13 @@ func nested(r *rules.Rules, tree map[int]proc.Node, pid int) bool {
 		return false
 	}
 	own := tree[pid].Name
-	// Bounded: on Windows a parent id can be stale and reused, which can
-	// make a loop.
+	// Helper processes of the agent's own (same name, and not another
+	// agent: `node` may also run a different one). Bounded: on Windows a
+	// parent id can be stale and reused, which can make a loop.
 	for pid = tree[pid].PPID; pid > 1 && steps < 60 && tree[pid].Name == own; pid = tree[pid].PPID {
+		if a := agentAt(r, tree[pid], pid); a != "" && a != ownAgent {
+			return true
+		}
 		steps++
 	}
 	for ; pid > 1 && steps < 60; steps++ {
@@ -218,7 +297,7 @@ func nested(r *rules.Rules, tree map[int]proc.Node, pid int) bool {
 		if !ok {
 			return false
 		}
-		if isAgent(n.Name) {
+		if agentAt(r, n, pid) != "" {
 			return true
 		}
 		pid = n.PPID
@@ -263,12 +342,14 @@ func Handle(harness string, stdin io.Reader, environ []string) {
 	}
 	env := mux.EnvMap(environ)
 	tree := ProcTree()
+	env = withAgentEnv(r, env, tree, os.Getppid())
 	if other := r.HookHarness(env); other != "" && other != harness {
-		// Another agent ran this agent's hook (Grok Build runs Claude Code's),
-		// unless the variable was only inherited by this agent.
+		// Another agent ran this agent's hook (Grok Build and Cursor run
+		// Claude Code's), unless the variable was only inherited by this agent.
 		if a := nearestAgent(r, tree, os.Getppid()); a == "" || a == other {
-			if other == "grok" && grokHasOwnHook() {
-				return // Grok runs Continuum's own Grok hook too; that one reports
+			if hasOwnHook(other) {
+				debugHook(p, harness, "run by "+other+", which runs Continuum's own "+other+" hook too; ignored")
+				return
 			}
 			debugHook(p, harness, "run by "+other+"; reporting it as "+other)
 			harness = other
@@ -277,6 +358,21 @@ func Handle(harness string, stdin io.Reader, environ []string) {
 	ev, ok := BuildEvent(r, harness, in, env, time.Now())
 	if !ok {
 		debugHook(p, harness, in.HookEventName+": nothing to report")
+		return
+	}
+	if h := r.Harness(harness); h.HookRequiresCLI && len(tree) > 0 {
+		if a, _ := NearestAgent(r, tree, os.Getppid()); a != harness {
+			// Another program read this agent's hook file (the Cursor
+			// editor reads ~/.cursor/hooks.json, as does Grok Build): its
+			// events are not this CLI's sessions.
+			debugHook(p, harness, in.HookEventName+": not run by its command-line agent; ignored")
+			return
+		}
+	}
+	if !interactive(r, harness, tree, os.Getppid()) {
+		// Print mode or a headless subcommand (`grok -p`, `muse exec`,
+		// `agent -p`): nobody types into it.
+		debugHook(p, harness, in.HookEventName+": not an interactive session; ignored")
 		return
 	}
 	if nested(r, tree, os.Getppid()) {
@@ -297,6 +393,80 @@ func Handle(harness string, stdin io.Reader, environ []string) {
 	_ = core.SpoolEvent(p, ev)
 }
 
+// ProcEnviron reads a process's environment. Tests replace it.
+var ProcEnviron = proc.Environ
+
+// withAgentEnv fills in where the session runs from the agent's own
+// environment when the hook's has none of it: Muse Code runs hooks with a
+// cleaned environment (HOME, PATH, TERM and its own variables), so the
+// wrapper id and the multiplexer pane are only in the agent's process. The
+// hook's own variables win.
+func withAgentEnv(r *rules.Rules, env map[string]string, tree map[int]proc.Node, ppid int) map[string]string {
+	if env["CONTINUUM_WRAPPER_ID"] != "" || mux.LocateFromEnv(r, env) != nil {
+		return env
+	}
+	_, pid := NearestAgent(r, tree, ppid)
+	if pid <= 0 {
+		return env
+	}
+	agent := ProcEnviron(pid)
+	if len(agent) == 0 {
+		return env
+	}
+	out := make(map[string]string, len(agent)+len(env))
+	for k, v := range agent {
+		out[k] = v
+	}
+	for k, v := range env {
+		out[k] = v
+	}
+	return out
+}
+
+// ProcArgs returns a process's arguments. Tests replace it.
+var ProcArgs = proc.Args
+
+// interactive reports whether the agent running the hook was started as an
+// interactive session, judged by the same rules that decide what the shell
+// hook wraps. Claude Code and Codex say so themselves (entrypoint, rollout
+// originator), so they are not checked here; when the agent's process or its
+// arguments can't be found, it counts as interactive.
+func interactive(r *rules.Rules, harness string, tree map[int]proc.Node, ppid int) bool {
+	if harness == "claude" || harness == "codex" {
+		return true
+	}
+	h := r.Harness(harness)
+	if h == nil || h.Wrap == nil {
+		return true
+	}
+	a, pid := NearestAgent(r, tree, ppid)
+	if a != harness || pid <= 0 {
+		return true
+	}
+	args := ProcArgs(pid)
+	if len(args) < 2 {
+		return true
+	}
+	rest := args[1:]
+	// An agent under an interpreter: the script it runs comes first
+	// (node …/cursor-agent/…/index.js -p "…").
+	for len(rest) > 0 && looksLikeScript(rest[0]) {
+		rest = rest[1:]
+	}
+	return h.Wrap.Wants(rest)
+}
+
+func looksLikeScript(a string) bool {
+	if !strings.ContainsAny(a, `/\`) {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(a)) {
+	case ".js", ".mjs", ".cjs", ".ts", ".py":
+		return true
+	}
+	return false
+}
+
 // ---- install ---------------------------------------------------------------
 
 // Target describes one agent settings file Continuum manages.
@@ -305,6 +475,18 @@ type Target struct {
 	Path    string
 	Events  []string
 	Timeout int
+	// Flat: each event lists hook entries directly ({"command": ...}), as
+	// Cursor's hooks.json does, instead of Claude Code's groups of hooks.
+	Flat bool
+	// Init: top-level keys the agent requires in the file, added when
+	// missing (Cursor's "version", Muse Code's "schema_version").
+	Init []KeyValue
+}
+
+// KeyValue is one top-level setting.
+type KeyValue struct {
+	Key   string
+	Value any
 }
 
 func Targets(c core.Config) []Target {
@@ -314,6 +496,12 @@ func Targets(c core.Config) []Target {
 		// Grok Build reads every JSON file in ~/.grok/hooks; this one is
 		// Continuum's own, removed whole on uninstall.
 		{Harness: "grok", Path: GrokHookFile(c), Events: []string{"SessionStart", "StopFailure", "Stop", "SessionEnd"}, Timeout: 10},
+		// Muse Code runs Claude Code-style hooks from its settings.json.
+		{Harness: "muse", Path: filepath.Join(c.MuseDir(), "settings.json"), Events: []string{"SessionStart", "StopFailure", "Stop", "SessionEnd"}, Timeout: 10,
+			Init: []KeyValue{{"schema_version", json.Number("1")}}},
+		// Cursor CLI: ~/.cursor/hooks.json, version 1, flat entries.
+		{Harness: "cursor", Path: filepath.Join(c.CursorDir(), "hooks.json"), Events: []string{"sessionStart", "afterAgentResponse", "stop", "sessionEnd"}, Flat: true,
+			Init: []KeyValue{{"version", json.Number("1")}}},
 	}
 }
 
@@ -365,6 +553,13 @@ func Install(t Target, bin string, dryRun bool) (bool, error) {
 			return false, fmt.Errorf("%s: \"hooks\" is not an object; not touching it", t.Path)
 		}
 		hooksObj = newObject()
+		if len(strings.TrimSpace(string(original))) == 0 {
+			// A new file: what the agent requires in one. An existing file is
+			// left as it is, so uninstall can give it back byte for byte.
+			for _, kv := range t.Init {
+				root.set(kv.Key, kv.Value)
+			}
+		}
 		root.set("hooks", hooksObj)
 	}
 	want := Command(bin, t.Harness)
@@ -390,6 +585,12 @@ func Install(t Target, bin string, dryRun bool) (bool, error) {
 		list, _ := groups.([]any)
 		list = removeOurs(list)
 		entry := newObject()
+		if t.Flat {
+			entry.set("command", want)
+			list = append(list, entry)
+			hooksObj.set(event, list)
+			continue
+		}
 		entry.set("type", "command")
 		entry.set("command", want)
 		entry.set("timeout", json.Number(strconv.Itoa(t.Timeout)))
@@ -424,7 +625,7 @@ func Uninstall(t Target, dryRun bool) (bool, error) {
 	// (same formatting, key order and whitespace).
 	if b := matchingBackup(t.Path, out); b != nil {
 		out = b
-	} else if len(root.keys) == 0 && onlyOursBackups(t.Path) {
+	} else if onlyInit(root, t) && onlyOursBackups(t) {
 		// Continuum created this file (any backups came only from updates to
 		// its own hooks) and nothing else is in it: remove it.
 		if dryRun {
@@ -463,11 +664,30 @@ func matchingBackup(path string, want []byte) []byte {
 		var b any
 		bd := json.NewDecoder(strings.NewReader(string(data)))
 		bd.UseNumber()
-		if bd.Decode(&b) == nil && reflect.DeepEqual(w, b) {
+		// An empty "hooks" the file had is dropped with Continuum's: the
+		// same file.
+		if bd.Decode(&b) == nil && reflect.DeepEqual(withoutEmptyHooks(w), withoutEmptyHooks(b)) {
 			return data
 		}
 	}
 	return nil
+}
+
+func withoutEmptyHooks(v any) any {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return v
+	}
+	if h, ok := m["hooks"].(map[string]any); ok && len(h) == 0 {
+		c := make(map[string]any, len(m))
+		for k, x := range m {
+			if k != "hooks" {
+				c[k] = x
+			}
+		}
+		return c
+	}
+	return v
 }
 
 func containsEvent(list []string, e string) bool {
@@ -594,6 +814,9 @@ func hooksOf(g any) []*object {
 	if !ok {
 		return nil
 	}
+	if _, flat := o.get("command"); flat {
+		return []*object{o} // a flat entry (Cursor)
+	}
 	v, _ := o.get("hooks")
 	var out []*object
 	for _, x := range asList(v) {
@@ -631,13 +854,30 @@ func stripOurs(root *object) int {
 	return removed
 }
 
-func onlyOursBackups(path string) bool {
-	for _, b := range Backups(path) {
+// onlyInit: nothing is left in root but the keys install adds to a new file.
+func onlyInit(root *object, t Target) bool {
+	for _, k := range root.keys {
+		found := false
+		for _, kv := range t.Init {
+			v, _ := root.get(k)
+			if kv.Key == k && fmt.Sprint(v) == fmt.Sprint(kv.Value) {
+				found = true
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func onlyOursBackups(t Target) bool {
+	for _, b := range Backups(t.Path) {
 		root, _, err := load(b)
 		if err != nil {
 			return false
 		}
-		if stripOurs(root) == 0 || len(root.keys) != 0 {
+		if stripOurs(root) == 0 || !onlyInit(root, t) {
 			return false
 		}
 	}
@@ -650,6 +890,13 @@ func removeOurs(list []any) []any {
 	for _, g := range list {
 		o, ok := g.(*object)
 		if !ok {
+			out = append(out, g)
+			continue
+		}
+		if c, flat := o.get("command"); flat {
+			if s, _ := c.(string); isOurs(s) {
+				continue // a flat entry (Cursor)
+			}
 			out = append(out, g)
 			continue
 		}

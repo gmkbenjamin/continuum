@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-var Version = "0.11.0"
+var Version = "0.12.0"
 
 // Location says where an agent is running so input can be delivered to it
 // without focusing any window.
@@ -195,6 +195,7 @@ type Config struct {
 	ClaudeHome        string            `json:"claude_home,omitempty"`
 	CodexHome         string            `json:"codex_home,omitempty"`
 	GrokHome          string            `json:"grok_home,omitempty"`
+	MuseHome          string            `json:"muse_home,omitempty"`
 	ResetHintsCommand []string          `json:"reset_hints_command,omitempty"`
 	Binaries          map[string]string `json:"binaries,omitempty"`
 	AutostartDaemon   *bool             `json:"autostart_daemon,omitempty"`
@@ -313,10 +314,30 @@ func (c Config) GrokDir() string {
 	return filepath.Join(home, ".grok")
 }
 
+// MuseDir is Muse Code's settings folder ($XDG_CONFIG_HOME/muse, else
+// ~/.config/muse).
+func (c Config) MuseDir() string {
+	if c.MuseHome != "" {
+		return c.MuseHome
+	}
+	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" && filepath.IsAbs(v) {
+		return filepath.Join(v, "muse")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "muse")
+}
+
+// CursorDir is the Cursor CLI's folder (~/.cursor; it has no variable to
+// move it).
+func (c Config) CursorDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".cursor")
+}
+
 // Homes are the agents' home folders, for {claude_home}-style placeholders
 // in the rules.
 func (c Config) Homes() map[string]string {
-	return map[string]string{"claude_home": c.ClaudeDir(), "codex_home": c.CodexDir(), "grok_home": c.GrokDir()}
+	return map[string]string{"claude_home": c.ClaudeDir(), "codex_home": c.CodexDir(), "grok_home": c.GrokDir(), "muse_home": c.MuseDir(), "cursor_home": c.CursorDir()}
 }
 
 // NewID returns a short random id.
