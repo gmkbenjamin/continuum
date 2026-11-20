@@ -4,6 +4,33 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-20
+
+### Added
+- **Banked resets for Codex, Grok Build, Muse Code and the Cursor CLI.** Spotting a
+  limit that came back early now works beyond Claude Code:
+  - **Codex** records the plan's limits with every answer. An answer to a request sent
+    after another session's limit, with room left in every window of the same limit
+    (`limit_id`), moves that session's resume up. Answers paid from credits leave the
+    windows at 100% and don't count.
+  - **Grok Build, Muse Code and the Cursor CLI**: a turn their Stop hook reports as
+    ended normally, more than 10 minutes after another session's limit, does the same
+    (`stop_hook_answers` in the rules).
+
+  Checked live on Claude Code: a banked reset used during a weekly limit moved three
+  waiting sessions from 114 hours away to 5 minutes, 10 seconds after the next answer.
+
+### Changed
+- **A wrong guess isn't repeated.** If a resume moved up because the limit looked
+  lifted hits the limit again within 15 minutes, answers in the account's other
+  sessions no longer move it up before its reset: they were paid some other way. A reset
+  the agent reports used still does.
+
+### Fixed
+- **Codex sessions from different days are one account.** Codex keeps rollouts in
+  dated folders, so a session started on another day wasn't matched to the same
+  account, for example to learn the reset time another session had reported.
+
 ## [0.13.0] - 2026-11-20
 
 ### Added

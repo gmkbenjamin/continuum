@@ -31,6 +31,7 @@ type codexPayload struct {
 	Error      json.RawMessage `json:"error"`
 	RateLimits *codexLimits    `json:"rate_limits"`
 	CodexError json.RawMessage `json:"codex_error_info"`
+	Role       string          `json:"role"`
 }
 
 type codexWindow struct {
@@ -39,6 +40,7 @@ type codexWindow struct {
 }
 
 type codexLimits struct {
+	LimitID              string       `json:"limit_id"`
 	Primary              *codexWindow `json:"primary"`
 	Secondary            *codexWindow `json:"secondary"`
 	RateLimitReachedType *string      `json:"rate_limit_reached_type"`
@@ -53,6 +55,39 @@ type CodexState struct {
 	// Headless: a `codex exec` run or a subagent thread. Nobody types into
 	// those, and continuing one would start work the user didn't ask for.
 	Headless bool `json:"headless,omitempty"`
+	// Trigger: when the latest request to the model went out (a turn
+	// started, or a tool's output was sent back), not yet answered.
+	// InFlight: the request the model is answering now.
+	Trigger  time.Time `json:"trigger,omitzero"`
+	InFlight time.Time `json:"in_flight,omitzero"`
+}
+
+// headroom: every window of the plan's limits has room left, and none is
+// reported reached. Answers paid from credits leave the windows at 100%.
+func (l *codexLimits) headroom() bool {
+	if l == nil || l.Primary == nil && l.Secondary == nil {
+		return false
+	}
+	if l.RateLimitReachedType != nil && *l.RateLimitReachedType != "" {
+		return false
+	}
+	for _, w := range []*codexWindow{l.Primary, l.Secondary} {
+		if w != nil && w.UsedPercent >= 99.5 {
+			return false
+		}
+	}
+	return true
+}
+
+// codexModelOutput: a response item the model wrote (not input sent to it).
+func codexModelOutput(p codexPayload) bool {
+	switch p.Type {
+	case "reasoning", "function_call", "custom_tool_call", "local_shell_call", "web_search_call":
+		return true
+	case "message":
+		return p.Role == "assistant"
+	}
+	return false
 }
 
 // codexHeadless reports whether a rollout's session_meta is a non-interactive
@@ -181,6 +216,15 @@ func ParseCodex(r *rules.Rules, path string, lines []Line, state *CodexState, lo
 		if cl.Type == "turn_context" && p.Cwd != "" {
 			state.Cwd = p.Cwd
 		}
+		if cl.Type == "response_item" {
+			switch {
+			case strings.HasSuffix(p.Type, "_call_output"):
+				state.Trigger = at // the tool's output goes back to the model
+			case codexModelOutput(p) && !state.Trigger.IsZero():
+				state.InFlight, state.Trigger = state.Trigger, time.Time{}
+			}
+			continue
+		}
 		if cl.Type != "event_msg" {
 			continue
 		}
@@ -192,7 +236,16 @@ func ParseCodex(r *rules.Rules, path string, lines []Line, state *CodexState, lo
 		case "token_count":
 			if p.RateLimits != nil {
 				state.Limits = p.RateLimits
+				if !state.InFlight.IsZero() && p.RateLimits.headroom() {
+					// Answered on the plan, with room left: after another
+					// session's limit, the limit is back (a banked reset).
+					ev := base
+					ev.Kind = core.KindActivity
+					ev.RequestAt, ev.LimitID = state.InFlight, p.RateLimits.LimitID
+					events = append(events, ev)
+				}
 			}
+			state.InFlight = time.Time{}
 		case "task_complete", "error", "turn_aborted", "stream_error":
 			msg, info := codexErr(p.Error)
 			if msg == "" && p.Type != "task_complete" {
@@ -226,10 +279,17 @@ func ParseCodex(r *rules.Rules, path string, lines []Line, state *CodexState, lo
 			}
 			if ev.Kind == core.KindUsageLimit {
 				ev.ResetAt = codexReset(state.Limits, msg, at, local)
+				if state.Limits != nil {
+					ev.LimitID = state.Limits.LimitID
+				}
 			}
+			state.Trigger, state.InFlight = time.Time{}, time.Time{}
 			events = append(events, ev)
 			lastActivity = nil
 		case "user_message", "task_started", "agent_message", "agent_reasoning", "exec_command_begin":
+			if p.Type == "user_message" || p.Type == "task_started" {
+				state.Trigger = at
+			}
 			ev := base
 			ev.Kind = core.KindActivity
 			lastActivity = &ev

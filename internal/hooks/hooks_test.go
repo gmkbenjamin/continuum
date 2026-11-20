@@ -348,3 +348,29 @@ func TestInstallCleansPartialLegacyEventGroup(t *testing.T) {
 		t.Fatalf("unexpected Notification group after upgrade:\n%s", got)
 	}
 }
+
+// Grok Build, Muse Code and the Cursor CLI: a turn that ended normally was
+// answered on the plan; Claude Code's hook leaves that to its transcript.
+func TestStopHookAnswers(t *testing.T) {
+	r, err := rules.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	for harness, want := range map[string]bool{"grok": true, "muse": true, "cursor": true, "claude": false, "codex": false} {
+		in := Input{HookEventName: "Stop", SessionID: "s1", Cwd: "/w", LastAssistantMessage: "All done."}
+		if harness == "cursor" {
+			in = Input{HookEventName: "afterAgentResponse", ConversationID: "s1", Text: "All done."}
+		}
+		ev, ok := BuildEvent(r, harness, in, nil, now)
+		if !ok || ev.Kind != core.KindActivity {
+			t.Fatalf("%s: %+v", harness, ev)
+		}
+		if got := !ev.RequestAt.IsZero(); got != want {
+			t.Errorf("%s: answer %v, want %v", harness, got, want)
+		}
+		if want && !ev.RequestAt.Equal(now.Add(-maxAnswerTime)) {
+			t.Errorf("%s: request no earlier than %v", harness, ev.RequestAt)
+		}
+	}
+}

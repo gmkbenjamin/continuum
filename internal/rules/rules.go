@@ -189,11 +189,16 @@ type Harness struct {
 	// LimitResetPatterns match what the agent prints when a limit reset is
 	// used in it (Claude Code's /limit-reset: "Reset used · 1 left"). The
 	// account's limits are then back early, so its waiting sessions go on.
-	LimitResetPatterns []string        `json:"limit_reset_patterns"`
-	UIMarkers          []string        `json:"ui_markers"`
-	NativeCommands     []NativeCommand `json:"native_commands"`
-	LiveSessions       *LiveSessions   `json:"live_sessions"`
-	Wrap               *Wrap           `json:"wrap"`
+	LimitResetPatterns []string `json:"limit_reset_patterns"`
+	// StopHookAnswers: a turn this agent's Stop hook reports as ended
+	// normally was answered by the model on the plan. An answer in one
+	// session after another's limit shows the limit is back early. For
+	// agents whose transcripts don't say more (Claude Code and Codex do).
+	StopHookAnswers bool            `json:"stop_hook_answers"`
+	UIMarkers       []string        `json:"ui_markers"`
+	NativeCommands  []NativeCommand `json:"native_commands"`
+	LiveSessions    *LiveSessions   `json:"live_sessions"`
+	Wrap            *Wrap           `json:"wrap"`
 	// ProcessArgPatterns match the full command line, for agents that run
 	// under an interpreter (node .../@google/gemini-cli/...).
 	ProcessArgPatterns []string `json:"process_arg_patterns"`

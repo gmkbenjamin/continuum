@@ -60,18 +60,18 @@ type Daemon struct {
 	// Compat, when set, enables the update watch (see compat.go).
 	Compat *Compat
 
-	baseline     bool
-	lookedBack   bool
-	timingSig    string
-	compatDirty  bool
-	lastBeat     time.Time
-	lastCompat   time.Time
-	lastDesktop  time.Time
-	paneSeen     map[string]string
-	replies      map[string]replySeen
+	baseline    bool
+	lookedBack  bool
+	timingSig   string
+	compatDirty bool
+	lastBeat    time.Time
+	lastCompat  time.Time
+	lastDesktop time.Time
+	paneSeen    map[string]string
+	replies     map[string]replySeen
 	// answered: per account, the latest model answer on the plan (see
 	// lifted.go), for limits reported after it is read.
-	answered map[string]core.Event
+	answered     map[string]core.Event
 	lastScan     time.Time
 	lastPaneScan time.Time
 	dirty        bool
@@ -825,7 +825,13 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 		Location: ev.Location, PID: ev.PID, Entrypoint: ev.Entrypoint,
 		Kind: ev.Kind, Message: ev.Message, ResetAt: ev.ResetAt, ResetKnown: !ev.ResetAt.IsZero(),
 		LimitAt: ev.At, CreatedAt: now, UpdatedAt: now, Attempts: attempts,
-		State: core.StatePending, Sources: []string{ev.Source}, Hit: ev.Hit,
+		State: core.StatePending, Sources: []string{ev.Source}, Hit: ev.Hit, LimitID: ev.LimitID,
+	}
+	if j != nil && j.State == core.StateDelivered && !j.LiftedAt.IsZero() && ev.Kind == core.KindUsageLimit && ev.At.Sub(j.DeliveredAt) < liftCheck {
+		// Resumed early because the limit looked lifted, and hit it again
+		// straight away: it wasn't. Wait for the reset this time.
+		nj.LiftFailed = true
+		d.logf("%s: the limit wasn't lifted after all; waiting for its reset", key)
 	}
 	if sess != nil {
 		if nj.Location == nil {
@@ -974,6 +980,9 @@ func (d *Daemon) merge(j *core.Job, ev core.Event) {
 	if j.Message == "" {
 		j.Message = ev.Message
 	}
+	if j.LimitID == "" {
+		j.LimitID = ev.LimitID
+	}
 	j.UpdatedAt = d.Now()
 	d.dirty = true
 	if j.State == core.StatePending && d.stopAtMaxAttempts(j) {
@@ -1066,8 +1075,7 @@ func sameAccount(a, b *core.Job) bool {
 	if a.TranscriptPath == "" || b.TranscriptPath == "" {
 		return true
 	}
-	root := func(p string) string { return filepath.Dir(filepath.Dir(filepath.Clean(p))) }
-	return root(a.TranscriptPath) == root(b.TranscriptPath)
+	return accountRoot(a.TranscriptPath) == accountRoot(b.TranscriptPath)
 }
 
 // limitWindow: how long before a known reset another stall of the same

@@ -159,3 +159,85 @@ func TestLiftNeverPostponesAResume(t *testing.T) {
 		t.Fatalf("due %v (was %v), lifted %v", j.DueAt, due, j.LiftedAt)
 	}
 }
+
+// Codex keeps rollouts in dated folders: sessions on other days are still one
+// account. Codex records the plan's limits with each answer.
+func TestCodexBankedReset(t *testing.T) {
+	h := setup(t)
+	rollout := func(day, id string) string {
+		return filepath.Join(h.codex, "sessions", "2026", "11", day, "rollout-2026-11-"+day+"T08-00-00-"+id+".jsonl")
+	}
+	h.d.Handle(core.Event{Harness: "codex", Kind: core.KindUsageLimit, SessionID: "c1", Cwd: "/work/app", Source: "rollout",
+		TranscriptPath: rollout("10", "c1"), At: h.now, ResetAt: h.now.Add(96 * time.Hour), LimitID: "codex", PID: deadPID,
+		Message: "You've hit your usage limit."})
+	j := h.d.Jobs["codex:c1"]
+	due := j.DueAt
+	h.now = h.now.Add(time.Hour)
+	other := core.Event{Harness: "codex", Kind: core.KindActivity, SessionID: "c2", Source: "rollout",
+		TranscriptPath: rollout("11", "c2"), At: h.now, RequestAt: h.now.Add(-time.Minute), LimitID: "codex-other"}
+	h.d.Handle(other)
+	if !j.DueAt.Equal(due) {
+		t.Fatalf("an answer counted against another limit lifted it: %v", j.DueAt)
+	}
+	other.LimitID = "codex"
+	h.d.Handle(other)
+	if j.LiftedAt.IsZero() || j.DueAt.After(h.now.Add(time.Minute)) {
+		t.Fatalf("not lifted: %+v", j)
+	}
+}
+
+// Grok Build, Muse Code and the Cursor CLI report answers through Stop hooks.
+func TestStopHookAnswerLiftsAHookAgentsLimit(t *testing.T) {
+	h := setup(t)
+	h.d.Handle(core.Event{Harness: "grok", Kind: core.KindUsageLimit, SessionID: "g1", Cwd: "/work/app", Source: "hook:StopFailure",
+		At: h.now, ResetAt: h.now.Add(72 * time.Hour), PID: deadPID, Location: &core.Location{Kind: "wrapper", Target: "w1"}})
+	j := h.d.Jobs["grok:g1"]
+	h.now = h.now.Add(time.Hour)
+	h.d.Handle(core.Event{Harness: "grok", Kind: core.KindActivity, SessionID: "g2", Source: "hook:Stop",
+		At: h.now, RequestAt: h.now.Add(-10 * time.Minute)})
+	if j.LiftedAt.IsZero() || j.DueAt.After(h.now.Add(time.Minute)) {
+		t.Fatalf("not lifted: %+v", j)
+	}
+	// Another agent's answer says nothing about Grok's limits.
+	h.d.Handle(core.Event{Harness: "muse", Kind: core.KindUsageLimit, SessionID: "m1", Cwd: "/work/app", Source: "hook:StopFailure",
+		At: h.now, ResetAt: h.now.Add(72 * time.Hour), PID: deadPID})
+	h.now = h.now.Add(time.Hour)
+	h.d.Handle(core.Event{Harness: "grok", Kind: core.KindActivity, SessionID: "g2", Source: "hook:Stop",
+		At: h.now, RequestAt: h.now.Add(-10 * time.Minute)})
+	if m := h.d.Jobs["muse:m1"]; !m.LiftedAt.IsZero() {
+		t.Fatalf("Grok's answer lifted Muse's limit: %+v", m)
+	}
+}
+
+// An early resume that hits the limit again straight away: the answers were
+// paid some other way. They don't lift the limit again before its reset.
+func TestFailedLiftIsNotRepeated(t *testing.T) {
+	h := setup(t)
+	limit := weeklyLimit(h, "s1", "You've hit your weekly limit · resets Nov 14, 9am")
+	h.d.Handle(limit)
+	h.now = h.now.Add(time.Hour)
+	h.d.Handle(answer(h, "s2", "claude-opus-5-5", h.now.Add(-time.Minute)))
+	h.advance(2 * time.Minute)
+	if len(h.delivered) != 1 {
+		t.Fatalf("not resumed early: %d", len(h.delivered))
+	}
+	again := weeklyLimit(h, "s1", limit.Message)
+	again.At, again.ResetAt = h.now.Add(time.Minute), limit.ResetAt
+	h.now = again.At
+	h.d.Handle(again)
+	j := h.d.Jobs["claude:s1"]
+	if !j.LiftFailed || j.State != core.StatePending || !j.ResetAt.Equal(limit.ResetAt) {
+		t.Fatalf("want a resume at the reset, marked lift-failed: %+v", j)
+	}
+	h.now = h.now.Add(10 * time.Minute)
+	h.d.Handle(answer(h, "s2", "claude-opus-5-5", h.now.Add(-time.Minute)))
+	if !j.ResetAt.Equal(limit.ResetAt) || j.DueAt.Before(limit.ResetAt) {
+		t.Fatalf("lifted again: due %v", j.DueAt)
+	}
+	// A reset the agent reports used still counts.
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindLimitReset, SessionID: "s2", Message: "Reset used · 0 left",
+		TranscriptPath: filepath.Join(h.claude, "projects", "-work-other", "s2.jsonl"), At: h.now, Source: "transcript"})
+	if j.DueAt.After(h.now.Add(time.Minute)) {
+		t.Fatalf("a reset used didn't lift it: due %v", j.DueAt)
+	}
+}

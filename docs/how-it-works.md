@@ -66,24 +66,33 @@ from the next one that does. Failing that, it retries with backoff. Transient er
 streams) get a short backoff.
 
 **Limits that come back early.** A limit can be lifted before the reset it announced:
-you spend a banked limit reset on claude.ai (Settings > Usage), in the Desktop app, or
-with Claude Code's `/limit-reset`. Continuum then moves the account's waiting resumes
-up to now, instead of leaving them until the original reset (days away for a weekly
-limit). It sees the reset in either of two ways:
+you spend a banked limit reset (Claude: claude.ai Settings > Usage, the Desktop app or
+`/limit-reset`; Codex: the usage summary in ChatGPT or the Codex app). Continuum then
+moves the account's waiting resumes up to now, instead of leaving them until the
+original reset (days away for a weekly limit). It sees the reset in either of two ways:
 
-- Claude Code reports a reset used (`Reset used · 1 left`) in any session of the
-  account.
-- Another session of the same account (same config folder) gets an answer from the
-  model to a request sent after the limit hit. Answers paid from usage credits
-  (`fallback_credit`), Claude Code's own messages, and the turn finishing on the grace
-  allowance don't count. When the limit was for one family of models ("You've hit your
-  Fable limit"), only an answer from that family counts.
+- The agent reports a reset used: Claude Code's `Reset used · 1 left`, in any session
+  of the account (`limit_reset_patterns` in the rules).
+- Another session of the same account (same agent and config folder) gets an answer
+  from the model, on the plan, to a request sent after the limit hit:
+  - **Claude Code:** its transcript. Answers paid from usage credits
+    (`fallback_credit`), Claude Code's own messages and the turn finishing on the grace
+    allowance don't count. When the limit was for one family of models ("You've hit
+    your Fable limit"), only an answer from that family counts.
+  - **Codex:** the plan's limits it records with each answer. Room left in every
+    window means the answer was on the plan (answers paid from credits leave them at
+    100%), and it must be the same limit (`limit_id`) that was hit.
+  - **Grok Build, Muse Code, the Cursor CLI:** a turn their Stop hook reports as ended
+    normally, more than 10 minutes after the limit hit (the hook doesn't say when the
+    request went out). `stop_hook_answers` in the rules turns this on per agent.
 
 The usual delay and the agent's own grace still apply. If the limit wasn't lifted
-after all, the resume hits it again and waits for the reset that message names. The
-old limit notice still on screen isn't taken for a new limit. If you used a reset and
-no other session is running, `continuum resume-now all` continues every waiting
-session.
+after all, the resume hits it again and waits for the reset that message names, and
+answers in the account's other sessions (paid some other way) don't move it up again
+before then. A reset the agent reports used still does. The old limit notice still on
+screen isn't taken for a new limit. For agents that report neither (or if you used a
+reset and no other session is running), `continuum resume-now all` continues every
+waiting session.
 
 **Before typing**, Continuum checks four things:
 

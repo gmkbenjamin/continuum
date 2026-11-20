@@ -14,22 +14,31 @@ import (
 // Limits lifted early.
 //
 // A usage limit can come back before the reset it announced: the user spends
-// a banked limit reset (claude.ai Settings > Usage, the Desktop app, or
-// Claude Code's /limit-reset). The waiting sessions would otherwise sit until
-// the original reset, days away for a weekly limit. Two things show the
-// account's limits are back:
+// a banked limit reset (claude.ai, the Claude Desktop app or Claude Code's
+// /limit-reset; the usage summary in ChatGPT or the Codex app; an agent's
+// own). The waiting sessions would otherwise sit until the original reset,
+// days away for a weekly limit. Two things show the account's limits are back:
 //
-//   - Claude Code reports a limit reset used in one of its sessions;
+//   - the agent reports a limit reset used (Claude Code: "Reset used");
 //   - another session of the same account gets an answer from the model, on
-//     the plan (not usage credits), to a request sent after the limit hit.
+//     the plan (not credits), to a request sent after the limit hit. Claude
+//     Code's transcript says which answers were paid from usage credits;
+//     Codex records the plan's limits with each answer (room left means it
+//     was on the plan); Grok Build, Muse Code and the Cursor CLI report a
+//     turn that ended normally through their Stop hooks.
 //
 // Either moves the account's waiting resumes up to now (plus the usual delay
 // and the agent's own grace). If the limit wasn't lifted after all, the
-// resume hits it again and waits for the reset that message names.
+// resume hits it again and waits for the reset that message names, and
+// answers no longer lift the account's limit until then.
 
 // liftMargin: an answer counts only for a request sent at least this long
 // after the limit hit, so a request already under way when it hit doesn't.
 const liftMargin = 30 * time.Second
+
+// liftCheck: an early resume that hits the limit again within this long
+// shows the limit wasn't lifted.
+const liftCheck = 15 * time.Minute
 
 // modelLimitRe finds a limit on one family of models ("You've hit your Fable
 // limit"): an answer from another model doesn't lift it.
@@ -44,13 +53,30 @@ func limitFamily(msg string) string {
 	return ""
 }
 
-// accountKey names the account a transcript belongs to: its agent and config
-// folder (see sameAccount). "" when there is no transcript to tell by.
+// accountRoot is the agent's config folder a transcript lives under, which
+// stands for the account: ~/.claude/projects/<folder>/<id>.jsonl and
+// ~/.codex/sessions/<y>/<m>/<d>/rollout-….jsonl.
+func accountRoot(transcript string) string {
+	p := filepath.Clean(transcript)
+	for dir, i := filepath.Dir(p), 0; i < 5; dir, i = filepath.Dir(dir), i+1 {
+		if b := filepath.Base(dir); b == "sessions" || b == "projects" {
+			return dir
+		}
+		if filepath.Dir(dir) == dir {
+			break
+		}
+	}
+	return filepath.Dir(filepath.Dir(p))
+}
+
+// accountKey names the account of a session: its agent and config folder.
+// Without a transcript (an agent reporting only through hooks) it is the
+// agent's one account as far as Continuum can tell.
 func accountKey(harness, transcript string) string {
 	if transcript == "" {
-		return ""
+		return harness + "|"
 	}
-	return harness + "|" + filepath.Dir(filepath.Dir(filepath.Clean(transcript)))
+	return harness + "|" + accountRoot(transcript)
 }
 
 // liftedFor reports whether ev shows that j's limit is lifted, and how.
@@ -58,7 +84,7 @@ func liftedFor(j *core.Job, ev core.Event) (string, bool) {
 	if j.State != core.StatePending || j.Kind != core.KindUsageLimit {
 		return "", false
 	}
-	if accountKey(j.Harness, j.TranscriptPath) != accountKey(ev.Harness, ev.TranscriptPath) || accountKey(ev.Harness, ev.TranscriptPath) == "" {
+	if accountKey(j.Harness, j.TranscriptPath) != accountKey(ev.Harness, ev.TranscriptPath) {
 		return "", false
 	}
 	switch {
@@ -78,13 +104,23 @@ func liftedFor(j *core.Job, ev core.Event) (string, bool) {
 		if f := limitFamily(j.Message); f != "" && !strings.Contains(strings.ToLower(ev.Model), f) {
 			return "", false
 		}
-		return fmt.Sprintf("session %s, on the same account, got an answer from %s", short(ev.SessionID), ev.Model), true
+		if j.LimitID != "" && ev.LimitID != "" && j.LimitID != ev.LimitID {
+			return "", false // another of the account's limits
+		}
+		if ev.Model != "" {
+			return fmt.Sprintf("session %s, on the same account, got an answer from %s", short(ev.SessionID), ev.Model), true
+		}
+		return fmt.Sprintf("session %s, on the same account, got an answer", short(ev.SessionID)), true
 	}
 	return "", false
 }
 
 // limitLifted moves up the resumes that ev shows are no longer limited.
 func (d *Daemon) limitLifted(ev core.Event) {
+	if !ev.RequestAt.IsZero() && d.liftFailed(accountKey(ev.Harness, ev.TranscriptPath)) {
+		d.debugf("%s %s: answered, but an early resume of this account hit the limit again; waiting for the reset", d.name(ev.Harness), short(ev.SessionID))
+		return
+	}
 	if !ev.RequestAt.IsZero() {
 		if d.answered == nil {
 			d.answered = map[string]core.Event{}
@@ -100,11 +136,24 @@ func (d *Daemon) limitLifted(ev core.Event) {
 	}
 }
 
+// liftFailed: an early resume of the account hit the limit again, and still
+// waits for its reset. Answers in its other sessions were paid some other way
+// (credits, another plan), so they don't lift its limits again before that.
+func (d *Daemon) liftFailed(acct string) bool {
+	for _, j := range d.Jobs {
+		if j.LiftFailed && j.State == core.StatePending && accountKey(j.Harness, j.TranscriptPath) == acct {
+			return true
+		}
+	}
+	return false
+}
+
 // liftIfAnswered: a new stall whose account was already seen answering a
 // request sent after it (read before the stall itself) is lifted already.
 func (d *Daemon) liftIfAnswered(j *core.Job) {
-	ev, ok := d.answered[accountKey(j.Harness, j.TranscriptPath)]
-	if !ok {
+	acct := accountKey(j.Harness, j.TranscriptPath)
+	ev, ok := d.answered[acct]
+	if !ok || d.liftFailed(acct) {
 		return
 	}
 	if why, ok := liftedFor(j, ev); ok {

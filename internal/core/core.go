@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-var Version = "0.13.0"
+var Version = "0.14.0"
 
 // Location says where an agent is running so input can be delivered to it
 // without focusing any window.
@@ -70,12 +70,15 @@ type Event struct {
 	TranscriptSize int64     `json:"transcript_size,omitempty"`
 	// Hit is the exact limit text matched on screen (wrapper and pane events).
 	Hit string `json:"hit,omitempty"`
-	// RequestAt, on activity: the model answered a request sent at this time,
-	// on the account's own plan (not usage credits). After another session's
-	// limit hit, that means the account's limit was lifted early (a banked
-	// reset). Model is the model that answered.
+	// RequestAt, on activity: the model answered, on the account's own plan
+	// (not usage credits), a request sent no earlier than this. After another
+	// session's limit hit, that means the account's limit was lifted early (a
+	// banked reset). Model is the model that answered, LimitID the limit the
+	// answer was counted against (Codex's rate-limit id), when known.
 	RequestAt time.Time `json:"request_at,omitzero"`
 	Model     string    `json:"model,omitempty"`
+	// LimitID, on a usage limit: which of the account's limits was hit.
+	LimitID string `json:"limit_id,omitempty"`
 }
 
 // Job states.
@@ -127,6 +130,12 @@ type Job struct {
 	// it was waiting for until then.
 	LiftedAt   time.Time `json:"lifted_at,omitzero"`
 	LiftedFrom time.Time `json:"lifted_from,omitzero"`
+	// LiftFailed: a resume moved up because the limit looked lifted hit the
+	// limit again straight away. Until this one's reset, answers seen in the
+	// account's other sessions (paid some other way) don't lift it again.
+	LiftFailed bool `json:"lift_failed,omitempty"`
+	// LimitID: which of the account's limits was hit, when the agent says.
+	LimitID string `json:"limit_id,omitempty"`
 }
 
 // Paths are Continuum's files under its home directory.

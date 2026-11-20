@@ -215,6 +215,7 @@
     },
 
     "grok": {
+      "stop_hook_answers": true,
       "display_name": "Grok Build",
       "homepage": "https://x.ai",
       "binary": "grok",
@@ -247,6 +248,7 @@
     },
 
     "muse": {
+      "stop_hook_answers": true,
       "display_name": "Muse Code",
       "binary": "muse",
       "_process_names": "`muse` is a launcher script that runs muse-bin-<version>; the prefix match covers both.",
@@ -310,6 +312,7 @@
     },
 
     "cursor": {
+      "stop_hook_answers": true,
       "display_name": "Cursor CLI",
       "homepage": "https://cursor.com/cli",
       "binary": "cursor-agent",

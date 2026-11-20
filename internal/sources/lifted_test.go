@@ -90,3 +90,58 @@ func TestLimitResetUsed(t *testing.T) {
 		}
 	}
 }
+
+func rolloutLine(ts, typ, payload string) string {
+	return `{"timestamp":"2026-11-20T10:` + ts + `Z","type":"` + typ + `","payload":` + payload + `}`
+}
+
+// Codex writes the plan's limits after each answer: room left after another
+// session's limit means it is back.
+func TestCodexAnswerOnThePlan(t *testing.T) {
+	r := loadRules(t)
+	path := "/c/sessions/2026/11/20/rollout-2026-11-20T10-00-00-0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000.jsonl"
+	turn := func(used string) []string {
+		return []string{
+			rolloutLine("00:00", "event_msg", `{"type":"task_started"}`),
+			rolloutLine("00:01", "response_item", `{"type":"message","role":"user","content":[]}`),
+			rolloutLine("00:05", "response_item", `{"type":"reasoning"}`),
+			rolloutLine("00:06", "response_item", `{"type":"function_call","name":"shell"}`),
+			rolloutLine("00:07", "response_item", `{"type":"function_call_output"}`),
+			rolloutLine("00:07", "event_msg", `{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":`+used+`,"window_minutes":300,"resets_at":1795000000},"secondary":null,"rate_limit_reached_type":null}}`),
+		}
+	}
+	st := &CodexState{SessionID: "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000"}
+	var got *core.Event
+	for _, ev := range ParseCodex(r, path, rawLines(turn("12.0")...), st, time.UTC) {
+		if !ev.RequestAt.IsZero() {
+			got = &ev
+		}
+	}
+	if got == nil || !got.RequestAt.Equal(time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)) || got.LimitID != "codex" {
+		t.Fatalf("answer %+v", got)
+	}
+	// The tool's output went back to the model: that is the next request.
+	if !st.Trigger.Equal(time.Date(2026, 11, 20, 10, 0, 7, 0, time.UTC)) || !st.InFlight.IsZero() {
+		t.Fatalf("state %+v", st)
+	}
+	// Still at the limit (paid from credits): not on the plan.
+	st = &CodexState{SessionID: "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000"}
+	for _, ev := range ParseCodex(r, path, rawLines(turn("100.0")...), st, time.UTC) {
+		if !ev.RequestAt.IsZero() {
+			t.Fatalf("an answer with the limit used up counted: %+v", ev)
+		}
+	}
+}
+
+func TestCodexLimitNamesItsLimit(t *testing.T) {
+	r := loadRules(t)
+	path := "/c/sessions/2026/11/20/rollout-2026-11-20T10-00-00-0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000.jsonl"
+	st := &CodexState{SessionID: "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000"}
+	evs := ParseCodex(r, path, rawLines(
+		rolloutLine("00:00", "event_msg", `{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":100.0,"window_minutes":300,"resets_at":1795000000},"secondary":null}}`),
+		rolloutLine("00:01", "event_msg", `{"type":"error","message":"You've hit your usage limit.","codex_error_info":"usage_limit_exceeded"}`),
+	), st, time.UTC)
+	if len(evs) != 1 || evs[0].Kind != core.KindUsageLimit || evs[0].LimitID != "codex" {
+		t.Fatalf("events %+v", evs)
+	}
+}

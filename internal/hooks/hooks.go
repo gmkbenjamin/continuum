@@ -143,6 +143,12 @@ func BuildEvent(r *rules.Rules, harness string, in Input, env map[string]string,
 			ev.Message = reply
 		} else {
 			ev.Kind = core.KindActivity
+			if h.StopHookAnswers && in.LastAssistantMessage != "" {
+				// The model answered. The hook doesn't say when the request
+				// went out, only that it was no earlier than an answer can
+				// take to stream.
+				ev.RequestAt = now.Add(-maxAnswerTime)
+			}
 		}
 	default:
 		ev.Kind = core.KindActivity
@@ -152,6 +158,10 @@ func BuildEvent(r *rules.Rules, harness string, in Input, env map[string]string,
 	}
 	return ev, true
 }
+
+// maxAnswerTime: the longest an answer is taken to stream, so a turn that
+// ended this long after a limit hit sent its last request after the limit.
+const maxAnswerTime = 10 * time.Minute
 
 func clip(s string, n int) string {
 	if len(s) > n {
