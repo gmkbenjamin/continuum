@@ -50,7 +50,7 @@ notification. Run `continuum` on its own for a menu, or:
 ```sh
 continuum status            # every session: what it's doing, where, whether it's covered
 continuum list              # scheduled and recent resumes
-continuum resume-now <id>   # don't wait for the reset
+continuum resume-now <id>   # don't wait for the reset (`all`: every waiting session)
 continuum cancel <id>       # leave a session stalled
 continuum doctor            # check everything
 ```

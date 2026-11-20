@@ -45,6 +45,7 @@ your shell tool. ` + "`this`" + ` means the session you are running in.
 | Go back to the default message | ` + "`continuum message reset --session this`" + ` |
 | Cancel a scheduled resume | ` + "`continuum cancel this`" + ` |
 | Resume now instead of waiting | ` + "`continuum resume-now this`" + ` |
+| The user used a limit reset (a banked reset) and wants every waiting session to go on now | ` + "`continuum resume-now all`" + ` |
 | Every session and its state | ` + "`continuum status`" + ` (` + "`--json`" + `) |
 | Stop or start Continuum | ` + "`continuum stop`" + ` / ` + "`continuum start`" + ` |
 | Turn auto-start off or on | ` + "`continuum disable`" + ` / ` + "`continuum enable`" + ` |

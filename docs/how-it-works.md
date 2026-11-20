@@ -65,6 +65,26 @@ account (same config folder) reported for the same limit, or, if none has, learn
 from the next one that does. Failing that, it retries with backoff. Transient errors (529 overloaded, 5xx, dropped
 streams) get a short backoff.
 
+**Limits that come back early.** A limit can be lifted before the reset it announced:
+you spend a banked limit reset on claude.ai (Settings > Usage), in the Desktop app, or
+with Claude Code's `/limit-reset`. Continuum then moves the account's waiting resumes
+up to now, instead of leaving them until the original reset (days away for a weekly
+limit). It sees the reset in either of two ways:
+
+- Claude Code reports a reset used (`Reset used · 1 left`) in any session of the
+  account.
+- Another session of the same account (same config folder) gets an answer from the
+  model to a request sent after the limit hit. Answers paid from usage credits
+  (`fallback_credit`), Claude Code's own messages, and the turn finishing on the grace
+  allowance don't count. When the limit was for one family of models ("You've hit your
+  Fable limit"), only an answer from that family counts.
+
+The usual delay and the agent's own grace still apply. If the limit wasn't lifted
+after all, the resume hits it again and waits for the reset that message names. The
+old limit notice still on screen isn't taken for a new limit. If you used a reset and
+no other session is running, `continuum resume-now all` continues every waiting
+session.
+
 **Before typing**, Continuum checks four things:
 
 1. **Nobody has continued yet.** New activity in the transcript means you or the agent

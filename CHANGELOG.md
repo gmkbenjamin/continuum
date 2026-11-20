@@ -4,6 +4,23 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-20
+
+### Added
+- **Banked limit resets.** When you spend a limit reset (claude.ai Settings > Usage,
+  the Desktop app, or Claude Code's `/limit-reset`), the account's limits come back
+  before the reset Claude Code announced. Continuum used to wait for that original reset,
+  which can be days away for a weekly limit. It now moves the account's waiting resumes
+  up when Claude Code reports a reset used (`Reset used · 1 left`), or when another
+  session of the same account gets an answer on the plan to a request sent after the
+  limit hit. Answers paid from usage credits, Claude Code's own messages and grace-stop
+  turns don't count, and a limit on one model family is lifted only by an answer from
+  that family. A wrong guess costs one resume that hits the limit again and then waits
+  for its reset. The old notice still on screen isn't taken for a new limit. The wording
+  is data (`limit_reset_patterns` in the rules). If no other session is running,
+  `continuum resume-now all` (now in the agent skill too) continues every waiting
+  session.
+
 ## [0.12.1] - 2026-11-20
 
 ### Fixed

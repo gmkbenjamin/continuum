@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-var Version = "0.12.1"
+var Version = "0.13.0"
 
 // Location says where an agent is running so input can be delivered to it
 // without focusing any window.
@@ -46,6 +46,9 @@ const (
 	// errors (Message is the reply). Limit text read off the screen that is
 	// part of such a reply is not a stall.
 	KindReply = "reply"
+	// KindLimitReset: a limit reset was used in the agent (Claude Code's
+	// /limit-reset), so the account's limits are back before their reset.
+	KindLimitReset = "limit_reset"
 )
 
 // Event is something an observer saw. Hooks, transcript tailers, the PTY
@@ -67,6 +70,12 @@ type Event struct {
 	TranscriptSize int64     `json:"transcript_size,omitempty"`
 	// Hit is the exact limit text matched on screen (wrapper and pane events).
 	Hit string `json:"hit,omitempty"`
+	// RequestAt, on activity: the model answered a request sent at this time,
+	// on the account's own plan (not usage credits). After another session's
+	// limit hit, that means the account's limit was lifted early (a banked
+	// reset). Model is the model that answered.
+	RequestAt time.Time `json:"request_at,omitzero"`
+	Model     string    `json:"model,omitempty"`
 }
 
 // Job states.
@@ -113,6 +122,11 @@ type Job struct {
 	WaitingOpen bool `json:"waiting_open,omitempty"`
 	// Hit is the limit text matched on screen, when the job came from there.
 	Hit string `json:"hit,omitempty"`
+	// LiftedAt: when the account's limit was seen lifted before its reset
+	// (a banked reset), which moved this resume up. LiftedFrom is the reset
+	// it was waiting for until then.
+	LiftedAt   time.Time `json:"lifted_at,omitzero"`
+	LiftedFrom time.Time `json:"lifted_from,omitzero"`
 }
 
 // Paths are Continuum's files under its home directory.

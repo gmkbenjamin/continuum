@@ -25,6 +25,12 @@ type claudeLine struct {
 	Message           *struct {
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
+		Model   string          `json:"model"`
+		Usage   *struct {
+			// FallbackCredit is set when the request was paid from usage
+			// credits instead of the plan's limits.
+			FallbackCredit json.RawMessage `json:"fallback_credit"`
+		} `json:"usage"`
 	} `json:"message"`
 	IsMeta     bool   `json:"isMeta"`
 	Entrypoint string `json:"entrypoint"` // cli, claude-desktop, sdk-*, ...
@@ -40,6 +46,49 @@ type ClaudeState struct {
 	// usage limit is reached and is finishing on a grace allowance. Such a
 	// turn ends normally, with no limit error, so its end is the stall.
 	WrapUp string `json:"wrap_up,omitempty"`
+	// RequestAt: when the request now waiting for the model was sent (the
+	// latest prompt or tool result), so its answer says the account could
+	// use the model from then on.
+	RequestAt time.Time `json:"request_at,omitzero"`
+}
+
+// Keep reports whether there is anything to carry to the next scan.
+func (st *ClaudeState) Keep() bool { return st.WrapUp != "" || !st.RequestAt.IsZero() }
+
+// planAnswer: an assistant line the model wrote, on the plan's own limits.
+// Claude Code's own lines ("<synthetic>": errors, "No response requested")
+// and answers paid from usage credits don't show the limit is lifted.
+func planAnswer(cl claudeLine) bool {
+	if cl.Type != "assistant" || cl.IsAPIErrorMessage || cl.Message == nil {
+		return false
+	}
+	m := cl.Message.Model
+	if m == "" || strings.HasPrefix(m, "<") {
+		return false
+	}
+	if u := cl.Message.Usage; u != nil {
+		switch strings.TrimSpace(string(u.FallbackCredit)) {
+		case "", "null", "false":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// localStdout returns what a local slash command printed, from Claude Code's
+// <local-command-stdout> wrapper, or "" for any other line.
+func localStdout(text string) string {
+	const open, closing = "<local-command-stdout>", "</local-command-stdout>"
+	i := strings.Index(text, open)
+	if i < 0 {
+		return ""
+	}
+	out := text[i+len(open):]
+	if j := strings.Index(out, closing); j >= 0 {
+		out = out[:j]
+	}
+	return out
 }
 
 // wrapUpNote: Claude Code's note that the usage limit is reached and the turn
@@ -147,7 +196,7 @@ func ParseClaudeState(r *rules.Rules, path string, lines []Line, st *ClaudeState
 	}
 	h := r.Harness("claude")
 	var events []core.Event
-	var lastActivity *core.Event
+	var lastActivity, answered *core.Event
 	sessionFromName := strings.TrimSuffix(filepath.Base(path), ".jsonl")
 	for _, ln := range lines {
 		var cl claudeLine
@@ -177,7 +226,24 @@ func ParseClaudeState(r *rules.Rules, path string, lines []Line, st *ClaudeState
 		if h.IgnoredEntrypoint(cl.Entrypoint) {
 			continue // print mode or an SDK script: nobody types into it
 		}
+		if cl.Type == "assistant" {
+			// The request in flight is answered (or failed) by this line.
+			if planAnswer(cl) && !st.RequestAt.IsZero() && st.WrapUp == "" {
+				ev := base
+				ev.Kind = core.KindActivity
+				ev.RequestAt, ev.Model = st.RequestAt, cl.Message.Model
+				answered = &ev
+			}
+			st.RequestAt = time.Time{}
+		}
 		switch {
+		case (cl.Type == "user" || cl.Type == "system") && h.LimitResetUsed(localStdout(text)):
+			// A limit reset used in this session (/limit-reset): the account's
+			// limits are back now, for every session waiting on them.
+			ev := base
+			ev.Kind = core.KindLimitReset
+			ev.Message = strings.TrimSpace(localStdout(text))
+			events = append(events, ev)
 		case cl.Type == "assistant" && cl.IsAPIErrorMessage:
 			ev := base
 			ev.Message = text
@@ -233,10 +299,18 @@ func ParseClaudeState(r *rules.Rules, path string, lines []Line, st *ClaudeState
 		case cl.Type == "assistant" || cl.Type == "user" && !notAPrompt(cl, text):
 			if cl.Type == "user" {
 				st.WrapUp = "" // a new prompt: the session went on
+				st.RequestAt = at
 			}
 			ev := base
 			ev.Kind = core.KindActivity
 			lastActivity = &ev
+		}
+	}
+	if answered != nil {
+		if lastActivity != nil && !lastActivity.At.After(answered.At) {
+			lastActivity.RequestAt, lastActivity.Model = answered.RequestAt, answered.Model
+		} else {
+			events = append(events, *answered)
 		}
 	}
 	if lastActivity != nil {

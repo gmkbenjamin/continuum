@@ -102,6 +102,8 @@
       ],
       "native_wait_patterns": ["(?i)continuing\\s+automatically"],
       "native_gave_up_patterns": ["(?i)will\\s+not\\s+resume\\s+on\\s+its\\s+own", "(?i)did\\s+not\\s+resume\\s+on\\s+its\\s+own", "(?i)continue\\s+cancelled"],
+      "limit_reset_patterns": ["(?i)\\breset\\s+used\\b"],
+      "_limit_reset_patterns": "Claude Code's /limit-reset prints this when a banked reset is used. Only the command's own output counts, never a prompt or a reply.",
       "never_resume_patterns": ["(?i)credit\\s+balance\\s+is\\s+too\\s+low", "(?i)out\\s+of\\s+usage\\s+credits", "(?i)spend\\s+limit", "(?i)add\\s+funds", "(?i)authentication_failed", "(?i)billing_error", "(?i)please\\s+run\\s+/login"],
       "ui_markers": ["(?i)esc to (?:cancel|interrupt)", "(?i)\\? for shortcuts", "(?i)/rate-limit-options", "╭", "❯"],
       "native_commands": [

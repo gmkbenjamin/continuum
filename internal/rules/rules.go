@@ -186,10 +186,14 @@ type Harness struct {
 	NativeWaitPatterns   []string          `json:"native_wait_patterns"`
 	NativeGaveUpPatterns []string          `json:"native_gave_up_patterns"`
 	NeverResumePatterns  []string          `json:"never_resume_patterns"`
-	UIMarkers            []string          `json:"ui_markers"`
-	NativeCommands       []NativeCommand   `json:"native_commands"`
-	LiveSessions         *LiveSessions     `json:"live_sessions"`
-	Wrap                 *Wrap             `json:"wrap"`
+	// LimitResetPatterns match what the agent prints when a limit reset is
+	// used in it (Claude Code's /limit-reset: "Reset used · 1 left"). The
+	// account's limits are then back early, so its waiting sessions go on.
+	LimitResetPatterns []string        `json:"limit_reset_patterns"`
+	UIMarkers          []string        `json:"ui_markers"`
+	NativeCommands     []NativeCommand `json:"native_commands"`
+	LiveSessions       *LiveSessions   `json:"live_sessions"`
+	Wrap               *Wrap           `json:"wrap"`
 	// ProcessArgPatterns match the full command line, for agents that run
 	// under an interpreter (node .../@google/gemini-cli/...).
 	ProcessArgPatterns []string `json:"process_arg_patterns"`
@@ -226,8 +230,8 @@ type Harness struct {
 	// when that program is installed.
 	HookRequiresCLI bool `json:"hook_requires_cli"`
 
-	nativeWait, nativeGaveUp, neverResume, uiMarkers, processRes, argRes, ignoreEntry []*regexp.Regexp
-	commonMerged                                                                      bool
+	nativeWait, nativeGaveUp, neverResume, uiMarkers, processRes, argRes, ignoreEntry, limitReset []*regexp.Regexp
+	commonMerged                                                                                  bool
 }
 
 // CommandAlias is another command name an agent is installed under, such as
@@ -471,6 +475,9 @@ func (r *Rules) compile() error {
 		if h.neverResume, err = compileAll(h.NeverResumePatterns); err != nil {
 			return fmt.Errorf("harness %s: %w", name, err)
 		}
+		if h.limitReset, err = compileAll(h.LimitResetPatterns); err != nil {
+			return fmt.Errorf("harness %s: %w", name, err)
+		}
 		if h.ignoreEntry, err = compileAll(h.IgnoreEntrypoints); err != nil {
 			return fmt.Errorf("harness %s: %w", name, err)
 		}
@@ -630,10 +637,11 @@ func anyMatch(res []*regexp.Regexp, text string) bool {
 	return false
 }
 
-func (h *Harness) NeverResume(text string) bool   { return h != nil && anyMatch(h.neverResume, text) }
-func (h *Harness) NativeWaiting(text string) bool { return h != nil && anyMatch(h.nativeWait, text) }
-func (h *Harness) NativeGaveUp(text string) bool  { return h != nil && anyMatch(h.nativeGaveUp, text) }
-func (h *Harness) HasUIMarker(text string) bool   { return h != nil && anyMatch(h.uiMarkers, text) }
+func (h *Harness) NeverResume(text string) bool    { return h != nil && anyMatch(h.neverResume, text) }
+func (h *Harness) LimitResetUsed(text string) bool { return h != nil && anyMatch(h.limitReset, text) }
+func (h *Harness) NativeWaiting(text string) bool  { return h != nil && anyMatch(h.nativeWait, text) }
+func (h *Harness) NativeGaveUp(text string) bool   { return h != nil && anyMatch(h.nativeGaveUp, text) }
+func (h *Harness) HasUIMarker(text string) bool    { return h != nil && anyMatch(h.uiMarkers, text) }
 
 // HookHarness returns the agent whose hook variables are set in env (an
 // agent that runs another agent's hooks), or "".

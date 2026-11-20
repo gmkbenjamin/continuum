@@ -69,6 +69,9 @@ type Daemon struct {
 	lastDesktop  time.Time
 	paneSeen     map[string]string
 	replies      map[string]replySeen
+	// answered: per account, the latest model answer on the plan (see
+	// lifted.go), for limits reported after it is read.
+	answered map[string]core.Event
 	lastScan     time.Time
 	lastPaneScan time.Time
 	dirty        bool
@@ -347,7 +350,7 @@ func (d *Daemon) scanSources() {
 				st = &sources.ClaudeState{}
 			}
 			evs := sources.ParseClaudeState(d.Rules, path, lines, st, d.Local)
-			if st.WrapUp != "" {
+			if st.Keep() {
 				d.Offsets.ClaudeState[path] = st
 			} else {
 				delete(d.Offsets.ClaudeState, path)
@@ -517,6 +520,11 @@ func (d *Daemon) Handle(ev core.Event) {
 	switch ev.Kind {
 	case core.KindActivity:
 		d.continued(ev, nil)
+		if !ev.RequestAt.IsZero() {
+			d.limitLifted(ev)
+		}
+	case core.KindLimitReset:
+		d.limitLifted(ev)
 	case core.KindSessionEnd:
 		// The agent quit: its pane (or wrapper) now holds something else, so
 		// a pending resume must not be typed there. It continues the closed
@@ -724,6 +732,10 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 		d.logf("ignoring %s %s event with no session or location", ev.Harness, ev.Kind)
 		return
 	}
+	if d.liftedNotice(ev) {
+		d.debugf("%s: the limit notice on screen is the one already lifted early; ignoring it", key)
+		return
+	}
 	if h := d.Rules.Harness(ev.Harness); h.IgnoredEntrypoint(ev.Entrypoint) || sess != nil && h.IgnoredEntrypoint(sess.Entrypoint) {
 		d.debugf("%s: a print-mode or SDK run; not resuming it", key)
 		return
@@ -860,6 +872,7 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 		d.shareReset(nj)
 	}
 	d.reschedule(nj)
+	d.liftIfAnswered(nj)
 	if nj.State == core.StatePending {
 		if ok, why := d.Scope.Covers(nj); !ok {
 			nj.State, nj.Result = core.StateIgnored, why
@@ -953,7 +966,9 @@ func (d *Daemon) merge(j *core.Job, ev core.Event) {
 	if ev.Kind == core.KindUsageLimit && j.Kind != core.KindUsageLimit {
 		j.Kind = core.KindUsageLimit
 	}
-	if !ev.ResetAt.IsZero() && (!j.ResetKnown || ev.ResetAt.After(j.ResetAt)) {
+	// A report of the stall read after its limit was lifted early names the
+	// reset it was lifted from: it doesn't put the resume back.
+	if !ev.ResetAt.IsZero() && (!j.ResetKnown || ev.ResetAt.After(j.ResetAt)) && (j.LiftedAt.IsZero() || ev.At.After(j.LiftedAt)) {
 		j.ResetAt, j.ResetKnown = ev.ResetAt, true
 	}
 	if j.Message == "" {
