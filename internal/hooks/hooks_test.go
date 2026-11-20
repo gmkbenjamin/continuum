@@ -366,11 +366,71 @@ func TestStopHookAnswers(t *testing.T) {
 		if !ok || ev.Kind != core.KindActivity {
 			t.Fatalf("%s: %+v", harness, ev)
 		}
-		if got := !ev.RequestAt.IsZero(); got != want {
-			t.Errorf("%s: answer %v, want %v", harness, got, want)
+		if ev.Answered != want {
+			t.Errorf("%s: answered %v, want %v", harness, ev.Answered, want)
 		}
-		if want && !ev.RequestAt.Equal(now.Add(-maxAnswerTime)) {
-			t.Errorf("%s: request no earlier than %v", harness, ev.RequestAt)
+		if !ev.RequestAt.IsZero() {
+			t.Errorf("%s: the hook can't know when the request went out: %v", harness, ev.RequestAt)
 		}
+	}
+}
+
+func TestPromptSubmitStartsATurn(t *testing.T) {
+	r := loadRules(t)
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	for harness, in := range map[string]Input{
+		"grok":   {HookEventName: "UserPromptSubmit", SessionID: "s1", Cwd: "/w"},
+		"muse":   {HookEventName: "UserPromptSubmit", SessionID: "s1", Cwd: "/w"},
+		"cursor": {HookEventName: "beforeSubmitPrompt", ConversationID: "s1", Model: "claude-fable-5-2"},
+	} {
+		ev, ok := BuildEvent(r, harness, in, nil, now)
+		if !ok || ev.Kind != core.KindActivity || !ev.TurnStart {
+			t.Fatalf("%s: %+v", harness, ev)
+		}
+		if harness == "cursor" && ev.Model != "claude-fable-5-2" {
+			t.Errorf("cursor: model %q", ev.Model)
+		}
+	}
+	ev, _ := BuildEvent(r, "cursor", Input{HookEventName: "afterAgentResponse", ConversationID: "s1", Text: "Done.", Model: "auto"}, nil, now)
+	if !ev.Answered || ev.Model != "auto" {
+		t.Errorf("cursor answer: %+v", ev)
+	}
+}
+
+func TestInstallNamesHooks(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		t    Target
+		want bool
+	}{
+		{Target{Harness: "codex", Path: filepath.Join(dir, "codex.json"), Events: []string{"SessionStart", "Stop"}, Timeout: 10, StatusMessage: HookStatusMessage}, true},
+		{Target{Harness: "cursor", Path: filepath.Join(dir, "cursor.json"), Events: []string{"stop"}, Flat: true}, false},
+	} {
+		if _, err := Install(tc.t, "/x/continuum", false); err != nil {
+			t.Fatal(err)
+		}
+		data, _ := os.ReadFile(tc.t.Path)
+		if got := strings.Contains(string(data), `"statusMessage": "`+HookStatusMessage+`"`); got != tc.want {
+			t.Errorf("%s: status message %v, want %v:\n%s", tc.t.Harness, got, tc.want, data)
+		}
+		if st, _ := Status(tc.t, "/x/continuum"); st != StateCurrent {
+			t.Errorf("%s: status %s after install", tc.t.Harness, st)
+		}
+	}
+	// A hook from before Continuum named its hooks is outdated, so the
+	// daemon rewrites it.
+	old := Target{Harness: "codex", Path: filepath.Join(dir, "old.json"), Events: []string{"SessionStart", "Stop"}, Timeout: 10}
+	if _, err := Install(old, "/x/continuum", false); err != nil {
+		t.Fatal(err)
+	}
+	old.StatusMessage = HookStatusMessage
+	if st, _ := Status(old, "/x/continuum"); st != StateOutdated {
+		t.Errorf("unnamed hooks: status %s, want outdated", st)
+	}
+	if changed, err := Install(old, "/x/continuum", false); err != nil || !changed {
+		t.Errorf("reinstall: changed %v, %v", changed, err)
+	}
+	if st, _ := Status(old, "/x/continuum"); st != StateCurrent {
+		t.Errorf("after reinstall: %s", st)
 	}
 }

@@ -55,6 +55,14 @@ type Result struct {
 // ErrNoRoute means no strategy could reach the session.
 var ErrNoRoute = errors.New("no delivery route reached the session")
 
+// ErrGone: no route can ever reach the session again. Its wrapper exited
+// (a wrapper id is never reused) and nothing else knows it: no session id
+// for the agent's own command, no pane. Retrying only waits for nothing.
+var ErrGone = errors.New("the terminal it ran in is closed, and nothing else can reach it")
+
+// errPermanent marks a route's error that retrying can't change.
+var errPermanent = errors.New("permanent")
+
 func (o Options) logf(format string, args ...any) {
 	if o.Log != nil {
 		o.Log(format, args...)
@@ -66,6 +74,7 @@ func Deliver(o Options, job *core.Job) (Result, error) {
 	h := o.Rules.Harness(job.Harness)
 	var errs []string
 	stillOpen := false
+	permanent := true // every route that applied failed for good
 	for _, s := range o.Strategies {
 		var res Result
 		var err error
@@ -99,10 +108,16 @@ func Deliver(o Options, job *core.Job) (Result, error) {
 		}
 		if !errors.Is(err, errSkip) {
 			errs = append(errs, s+": "+err.Error())
+			if !errors.Is(err, errPermanent) {
+				permanent = false
+			}
 		}
 	}
 	if len(errs) == 0 {
 		return Result{}, ErrNoRoute
+	}
+	if permanent && !stillOpen {
+		return Result{}, fmt.Errorf("%w; %w (%s)", ErrNoRoute, ErrGone, strings.Join(errs, "; "))
 	}
 	if stillOpen {
 		return Result{}, fmt.Errorf("%w; %w (%s)", ErrNoRoute, ErrStillOpen, strings.Join(errs, "; "))
@@ -111,6 +126,14 @@ func Deliver(o Options, job *core.Job) (Result, error) {
 }
 
 var errSkip = errors.New("not applicable")
+
+// quiet wraps err so errors.Is finds it without its text in the message.
+func quiet(err error) error { return quietErr{err} }
+
+type quietErr struct{ err error }
+
+func (quietErr) Error() string   { return "" }
+func (q quietErr) Unwrap() error { return q.err }
 
 // WrapperDir returns the directory of a wrapper instance.
 func WrapperDir(p core.Paths, id string) string { return filepath.Join(p.Wrappers, id) }
@@ -131,7 +154,7 @@ func viaWrapper(o Options, job *core.Job) (Result, error) {
 	}
 	id := job.Location.Target
 	if !WrapperAlive(o.Paths, id) {
-		return Result{}, fmt.Errorf("wrapper %s is no longer running", id)
+		return Result{}, fmt.Errorf("wrapper %s is no longer running%w", id, quiet(errPermanent))
 	}
 	if o.DryRun {
 		return Result{Via: "wrapper", Detail: "dry run: would type into wrapper " + id}, nil
@@ -423,7 +446,7 @@ func viaNative(o Options, h *rules.Harness, job *core.Job) (Result, error) {
 		return Result{}, errSkip
 	}
 	if job.SessionID == "" {
-		return Result{}, errors.New("session id unknown")
+		return Result{}, fmt.Errorf("session id unknown%w", quiet(errPermanent))
 	}
 	bin, err := Binary(o.Config, h)
 	if err != nil {

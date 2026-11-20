@@ -60,6 +60,10 @@ type CodexState struct {
 	// InFlight: the request the model is answering now.
 	Trigger  time.Time `json:"trigger,omitzero"`
 	InFlight time.Time `json:"in_flight,omitzero"`
+	// LimitsAt: when Limits was read. TurnAt: when the latest turn started.
+	// A snapshot older than the turn may be another model's limit.
+	LimitsAt time.Time `json:"limits_at,omitzero"`
+	TurnAt   time.Time `json:"turn_at,omitzero"`
 }
 
 // headroom: every window of the plan's limits has room left, and none is
@@ -235,7 +239,7 @@ func ParseCodex(r *rules.Rules, path string, lines []Line, state *CodexState, lo
 		switch p.Type {
 		case "token_count":
 			if p.RateLimits != nil {
-				state.Limits = p.RateLimits
+				state.Limits, state.LimitsAt = p.RateLimits, at
 				if !state.InFlight.IsZero() && p.RateLimits.headroom() {
 					// Answered on the plan, with room left: after another
 					// session's limit, the limit is back (a banked reset).
@@ -255,6 +259,11 @@ func ParseCodex(r *rules.Rules, path string, lines []Line, state *CodexState, lo
 				if info == "" {
 					info = i2
 				}
+			}
+			if p.Type != "stream_error" {
+				// The turn is over (or failed): no request is waiting for
+				// an answer, whatever comes next.
+				state.Trigger, state.InFlight = time.Time{}, time.Time{}
 			}
 			if msg == "" && info == "" {
 				continue
@@ -278,9 +287,16 @@ func ParseCodex(r *rules.Rules, path string, lines []Line, state *CodexState, lo
 				continue
 			}
 			if ev.Kind == core.KindUsageLimit {
-				ev.ResetAt = codexReset(state.Limits, msg, at, local)
-				if state.Limits != nil {
-					ev.LimitID = state.Limits.LimitID
+				// The snapshot describes the limit hit only if it was read in
+				// this turn; an older one may be another model's (a /model
+				// switch). Its id counts only if it shows the limit full.
+				var l *codexLimits
+				if !state.LimitsAt.Before(state.TurnAt) {
+					l = state.Limits
+				}
+				ev.ResetAt = codexReset(l, msg, at, local)
+				if l != nil && !l.headroom() {
+					ev.LimitID = l.LimitID
 				}
 			}
 			state.Trigger, state.InFlight = time.Time{}, time.Time{}
@@ -288,7 +304,7 @@ func ParseCodex(r *rules.Rules, path string, lines []Line, state *CodexState, lo
 			lastActivity = nil
 		case "user_message", "task_started", "agent_message", "agent_reasoning", "exec_command_begin":
 			if p.Type == "user_message" || p.Type == "task_started" {
-				state.Trigger = at
+				state.Trigger, state.TurnAt = at, at
 			}
 			ev := base
 			ev.Kind = core.KindActivity

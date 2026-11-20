@@ -192,18 +192,14 @@ func TestStopHookAnswerLiftsAHookAgentsLimit(t *testing.T) {
 	h.d.Handle(core.Event{Harness: "grok", Kind: core.KindUsageLimit, SessionID: "g1", Cwd: "/work/app", Source: "hook:StopFailure",
 		At: h.now, ResetAt: h.now.Add(72 * time.Hour), PID: deadPID, Location: &core.Location{Kind: "wrapper", Target: "w1"}})
 	j := h.d.Jobs["grok:g1"]
-	h.now = h.now.Add(time.Hour)
-	h.d.Handle(core.Event{Harness: "grok", Kind: core.KindActivity, SessionID: "g2", Source: "hook:Stop",
-		At: h.now, RequestAt: h.now.Add(-10 * time.Minute)})
+	h.handleAll(hookTurn(h, "grok", "g2", "", h.now.Add(50*time.Minute), h.now.Add(time.Hour)))
 	if j.LiftedAt.IsZero() || j.DueAt.After(h.now.Add(time.Minute)) {
 		t.Fatalf("not lifted: %+v", j)
 	}
 	// Another agent's answer says nothing about Grok's limits.
 	h.d.Handle(core.Event{Harness: "muse", Kind: core.KindUsageLimit, SessionID: "m1", Cwd: "/work/app", Source: "hook:StopFailure",
 		At: h.now, ResetAt: h.now.Add(72 * time.Hour), PID: deadPID})
-	h.now = h.now.Add(time.Hour)
-	h.d.Handle(core.Event{Harness: "grok", Kind: core.KindActivity, SessionID: "g2", Source: "hook:Stop",
-		At: h.now, RequestAt: h.now.Add(-10 * time.Minute)})
+	h.handleAll(hookTurn(h, "grok", "g2", "", h.now.Add(50*time.Minute), h.now.Add(time.Hour)))
 	if m := h.d.Jobs["muse:m1"]; !m.LiftedAt.IsZero() {
 		t.Fatalf("Grok's answer lifted Muse's limit: %+v", m)
 	}

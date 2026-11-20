@@ -519,7 +519,15 @@ func (d *Daemon) Handle(ev core.Event) {
 
 	switch ev.Kind {
 	case core.KindActivity:
-		d.continued(ev, nil)
+		if !ev.TurnStart {
+			// A prompt submitted isn't the session moving on: it may be a
+			// local command (/usage, /model) typed while it waits. The
+			// turn's end, or its new limit, says what happened.
+			d.continued(ev, nil)
+		}
+		if ev.Answered {
+			ev.RequestAt = hookRequestAt(ev, sess)
+		}
 		if !ev.RequestAt.IsZero() {
 			d.limitLifted(ev)
 		}
@@ -672,6 +680,12 @@ func (d *Daemon) touchSession(ev core.Event) *store.Session {
 	}
 	if ev.Entrypoint != "" {
 		s.Entrypoint = ev.Entrypoint
+	}
+	if ev.Model != "" {
+		s.Model = ev.Model
+	}
+	if ev.TurnStart && ev.At.After(s.TurnAt) {
+		s.TurnAt = ev.At
 	}
 	switch ev.Kind {
 	case core.KindSessionStart:
@@ -827,11 +841,29 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 		LimitAt: ev.At, CreatedAt: now, UpdatedAt: now, Attempts: attempts,
 		State: core.StatePending, Sources: []string{ev.Source}, Hit: ev.Hit, LimitID: ev.LimitID,
 	}
-	if j != nil && j.State == core.StateDelivered && !j.LiftedAt.IsZero() && ev.Kind == core.KindUsageLimit && ev.At.Sub(j.DeliveredAt) < liftCheck {
-		// Resumed early because the limit looked lifted, and hit it again
-		// straight away: it wasn't. Wait for the reset this time.
+	if nj.Model == "" {
+		if s := d.sessionAt(ev.Harness, ev.Location, sess); s != nil {
+			nj.Model = s.Model
+		}
+	}
+	if j != nil && j.State == core.StateDelivered && !j.LiftedAt.IsZero() && ev.Kind == core.KindUsageLimit && ev.At.Sub(j.DeliveredAt) < liftCheck && sameLimitOf(j, nj) {
+		// Resumed early because the limit looked lifted, and hit the same
+		// limit again straight away: it wasn't. Wait for the reset this
+		// time: the one it was lifted from, if this report names none.
 		nj.LiftFailed = true
+		if nj.ResetAt.IsZero() && j.LiftedFrom.After(ev.At) {
+			nj.ResetAt, nj.ResetKnown = j.LiftedFrom, true
+			stale = false
+		}
 		d.logf("%s: the limit wasn't lifted after all; waiting for its reset", key)
+	} else if j != nil && j.LiftFailed && j.ResetKnown && j.ResetAt.After(ev.At) && ev.Kind == core.KindUsageLimit && sameLimitOf(j, nj) {
+		// The same limit again before the reset a failed lift is waiting
+		// for (the session was continued by hand meanwhile): answers still
+		// don't lift it, and it waits for that reset.
+		nj.LiftFailed = true
+		if nj.ResetAt.IsZero() {
+			nj.ResetAt, nj.ResetKnown = j.ResetAt, true
+		}
 	}
 	if sess != nil {
 		if nj.Location == nil {
@@ -1313,6 +1345,15 @@ func (d *Daemon) runJob(j *core.Job) {
 	if err != nil {
 		j.Attempts++
 		j.Result = err.Error()
+		if errors.Is(err, deliver.ErrGone) {
+			// Nothing can ever reach it again: don't retry (and keep the
+			// computer awake) for nothing.
+			j.State = core.StateFailed
+			d.history("failed", j, map[string]any{"error": err.Error()})
+			d.notify(j, "Could not resume", deliver.ErrGone.Error())
+			d.warnf("%s · not resuming: %s", d.describe(j), deliver.ErrGone.Error())
+			return
+		}
 		if j.Attempts >= d.Rules.Defaults.MaxAttempts {
 			j.State = core.StateFailed
 			d.history("failed", j, map[string]any{"error": err.Error()})
@@ -1467,6 +1508,9 @@ func (d *Daemon) scanPanes() {
 func (d *Daemon) prune() {
 	cutoff := d.Now().Add(-72 * time.Hour)
 	for k, j := range d.Jobs {
+		if j.LiftFailed && j.ResetKnown && j.ResetAt.After(d.Now()) {
+			continue // still keeps answers from lifting its limit (lifted.go)
+		}
 		if j.State != core.StatePending && j.UpdatedAt.Before(cutoff) {
 			delete(d.Jobs, k)
 			d.dirty = true

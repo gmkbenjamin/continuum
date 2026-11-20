@@ -24,6 +24,10 @@ type Session struct {
 	Entrypoint     string         `json:"entrypoint,omitempty"`
 	Ended          bool           `json:"ended,omitempty"`
 	LastSeen       time.Time      `json:"last_seen"`
+	// TurnAt: when the session's latest turn started (a prompt-submit hook).
+	// Model: the model it last used, when its hooks say.
+	TurnAt time.Time `json:"turn_at,omitzero"`
+	Model  string    `json:"model,omitempty"`
 }
 
 func SessionKey(harness, id string) string { return harness + ":" + id }

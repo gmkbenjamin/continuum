@@ -44,6 +44,9 @@ type Input struct {
 	WorkspaceRoots []string `json:"workspace_roots"`
 	Status         string   `json:"status"`
 	Text           string   `json:"text"`
+	// Model: the model of the turn (Cursor sends it on beforeSubmitPrompt
+	// and afterAgentResponse).
+	Model string `json:"model"`
 }
 
 func rawString(raw json.RawMessage) string {
@@ -97,6 +100,11 @@ func BuildEvent(r *rules.Rules, harness string, in Input, env map[string]string,
 	switch strings.ToLower(in.HookEventName) {
 	case "sessionstart":
 		ev.Kind = core.KindSessionStart
+	case "userpromptsubmit", "beforesubmitprompt":
+		// A turn starts: its requests go out no earlier than now.
+		ev.Kind = core.KindActivity
+		ev.TurnStart = true
+		ev.Model = in.Model
 	case "sessionend":
 		ev.Kind = core.KindSessionEnd
 	case "stopfailure":
@@ -144,10 +152,11 @@ func BuildEvent(r *rules.Rules, harness string, in Input, env map[string]string,
 		} else {
 			ev.Kind = core.KindActivity
 			if h.StopHookAnswers && in.LastAssistantMessage != "" {
-				// The model answered. The hook doesn't say when the request
-				// went out, only that it was no earlier than an answer can
-				// take to stream.
-				ev.RequestAt = now.Add(-maxAnswerTime)
+				// The model answered. The hook doesn't say when the turn's
+				// requests went out: the daemon takes the turn's start,
+				// which the prompt-submit hook reported, and sets RequestAt.
+				ev.Answered = true
+				ev.Model = in.Model
 			}
 		}
 	default:
@@ -158,10 +167,6 @@ func BuildEvent(r *rules.Rules, harness string, in Input, env map[string]string,
 	}
 	return ev, true
 }
-
-// maxAnswerTime: the longest an answer is taken to stream, so a turn that
-// ended this long after a limit hit sent its last request after the limit.
-const maxAnswerTime = 10 * time.Minute
 
 func clip(s string, n int) string {
 	if len(s) > n {
@@ -485,6 +490,10 @@ type Target struct {
 	Path    string
 	Events  []string
 	Timeout int
+	// StatusMessage describes the hook to the agent, which shows it while
+	// the hook runs and in its hook lists (Codex shows hooks without one as
+	// unnamed). Empty for agents whose hook format has no such field.
+	StatusMessage string
 	// Flat: each event lists hook entries directly ({"command": ...}), as
 	// Cursor's hooks.json does, instead of Claude Code's groups of hooks.
 	Flat bool
@@ -499,18 +508,26 @@ type KeyValue struct {
 	Value any
 }
 
+// HookStatusMessage names Continuum's hooks in the agents that show one.
+const HookStatusMessage = "Continuum: tracks this session to resume it after usage limits"
+
+// Targets lists the settings files Continuum's hooks go in. Grok Build, Muse
+// Code and the Cursor CLI also get a prompt-submit hook: it says when a turn
+// started, so a turn their Stop hook reports answered shows the limit lifted
+// only if it started after the limit hit (see lifted.go).
 func Targets(c core.Config) []Target {
 	return []Target{
-		{Harness: "claude", Path: filepath.Join(c.ClaudeDir(), "settings.json"), Events: []string{"SessionStart", "StopFailure", "Stop", "SessionEnd"}, Timeout: 10},
-		{Harness: "codex", Path: filepath.Join(c.CodexDir(), "hooks.json"), Events: []string{"SessionStart", "Stop"}, Timeout: 10},
+		{Harness: "claude", Path: filepath.Join(c.ClaudeDir(), "settings.json"), Events: []string{"SessionStart", "StopFailure", "Stop", "SessionEnd"}, Timeout: 10, StatusMessage: HookStatusMessage},
+		{Harness: "codex", Path: filepath.Join(c.CodexDir(), "hooks.json"), Events: []string{"SessionStart", "Stop"}, Timeout: 10, StatusMessage: HookStatusMessage},
 		// Grok Build reads every JSON file in ~/.grok/hooks; this one is
 		// Continuum's own, removed whole on uninstall.
-		{Harness: "grok", Path: GrokHookFile(c), Events: []string{"SessionStart", "StopFailure", "Stop", "SessionEnd"}, Timeout: 10},
+		{Harness: "grok", Path: GrokHookFile(c), Events: []string{"SessionStart", "UserPromptSubmit", "StopFailure", "Stop", "SessionEnd"}, Timeout: 10, StatusMessage: HookStatusMessage},
 		// Muse Code runs Claude Code-style hooks from its settings.json.
-		{Harness: "muse", Path: filepath.Join(c.MuseDir(), "settings.json"), Events: []string{"SessionStart", "StopFailure", "Stop", "SessionEnd"}, Timeout: 10,
+		{Harness: "muse", Path: filepath.Join(c.MuseDir(), "settings.json"), Events: []string{"SessionStart", "UserPromptSubmit", "StopFailure", "Stop", "SessionEnd"}, Timeout: 10, StatusMessage: HookStatusMessage,
 			Init: []KeyValue{{"schema_version", json.Number("1")}}},
-		// Cursor CLI: ~/.cursor/hooks.json, version 1, flat entries.
-		{Harness: "cursor", Path: filepath.Join(c.CursorDir(), "hooks.json"), Events: []string{"sessionStart", "afterAgentResponse", "stop", "sessionEnd"}, Flat: true,
+		// Cursor CLI: ~/.cursor/hooks.json, version 1, flat entries (no
+		// status message in its format).
+		{Harness: "cursor", Path: filepath.Join(c.CursorDir(), "hooks.json"), Events: []string{"sessionStart", "beforeSubmitPrompt", "afterAgentResponse", "stop", "sessionEnd"}, Flat: true,
 			Init: []KeyValue{{"version", json.Number("1")}}},
 	}
 }
@@ -604,6 +621,9 @@ func Install(t Target, bin string, dryRun bool) (bool, error) {
 		entry.set("type", "command")
 		entry.set("command", want)
 		entry.set("timeout", json.Number(strconv.Itoa(t.Timeout)))
+		if t.StatusMessage != "" {
+			entry.set("statusMessage", t.StatusMessage)
+		}
 		group := newObject()
 		group.set("hooks", []any{entry})
 		list = append(list, group)
@@ -756,7 +776,7 @@ func Status(t Target, bin string) (string, string) {
 				n++
 				if !containsEvent(t.Events, event) {
 					stray++
-				} else if s == want {
+				} else if s == want && hasStatusMessage(hk, t) {
 					exact++
 				}
 			}
@@ -774,6 +794,17 @@ func Status(t Target, bin string) (string, string) {
 		return StatePartial, fmt.Sprintf("%d of %d events", found, len(t.Events))
 	}
 	return StateOutdated, "from an older Continuum or another location"
+}
+
+// hasStatusMessage: hk carries the status message Install writes for t, so
+// installs from before Continuum named its hooks count as outdated.
+func hasStatusMessage(hk *object, t Target) bool {
+	if t.StatusMessage == "" || t.Flat {
+		return true
+	}
+	v, _ := hk.get("statusMessage")
+	m, _ := v.(string)
+	return m == t.StatusMessage
 }
 
 // Backups lists the backups Continuum saved of t.Path before changing it.

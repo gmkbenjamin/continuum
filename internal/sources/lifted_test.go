@@ -145,3 +145,81 @@ func TestCodexLimitNamesItsLimit(t *testing.T) {
 		t.Fatalf("events %+v", evs)
 	}
 }
+
+// A snapshot from an earlier turn may be another model's limit (a /model
+// switch in between), and one with room left isn't the limit hit: the stall
+// then names no limit, rather than the wrong one.
+func TestCodexLimitIgnoresAnOlderOrRoomySnapshot(t *testing.T) {
+	r := loadRules(t)
+	path := "/c/sessions/2026/11/20/rollout-2026-11-20T10-00-00-0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000.jsonl"
+	limitErr := rolloutLine("00:09", "event_msg", `{"type":"error","message":"You've hit your usage limit.","codex_error_info":"usage_limit_exceeded"}`)
+	for name, lines := range map[string][]string{
+		"snapshot from the turn before": {
+			rolloutLine("00:00", "event_msg", `{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":100.0,"window_minutes":300,"resets_at":1795000000},"secondary":null}}`),
+			rolloutLine("00:05", "event_msg", `{"type":"task_started"}`),
+			limitErr,
+		},
+		"snapshot with room left": {
+			rolloutLine("00:00", "event_msg", `{"type":"task_started"}`),
+			rolloutLine("00:01", "event_msg", `{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":40.0,"window_minutes":300,"resets_at":1795000000},"secondary":null}}`),
+			limitErr,
+		},
+	} {
+		st := &CodexState{SessionID: "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000"}
+		evs := ParseCodex(r, path, rawLines(lines...), st, time.UTC)
+		var lim *core.Event
+		for i := range evs {
+			if evs[i].Kind == core.KindUsageLimit {
+				lim = &evs[i]
+			}
+		}
+		if lim == nil || lim.LimitID != "" {
+			t.Errorf("%s: %+v", name, lim)
+		}
+	}
+}
+
+// A turn that ends without an error message (finished, or interrupted)
+// leaves no request waiting for an answer.
+func TestCodexTurnEndClearsTheRequest(t *testing.T) {
+	r := loadRules(t)
+	path := "/c/sessions/2026/11/20/rollout-2026-11-20T10-00-00-0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000.jsonl"
+	for _, end := range []string{`{"type":"turn_aborted"}`, `{"type":"task_complete","last_agent_message":"done"}`} {
+		st := &CodexState{SessionID: "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000"}
+		ParseCodex(r, path, rawLines(
+			rolloutLine("00:00", "event_msg", `{"type":"task_started"}`),
+			rolloutLine("00:02", "response_item", `{"type":"reasoning"}`),
+			rolloutLine("00:03", "event_msg", end),
+		), st, time.UTC)
+		if !st.Trigger.IsZero() || !st.InFlight.IsZero() {
+			t.Errorf("%s: state %+v", end, st)
+		}
+	}
+}
+
+// The usual order in one turn: the turn starts, the 429's snapshot shows the
+// limit full, the error. The snapshot names the limit and its reset. One
+// from the turn before gives neither.
+func TestCodexLimitFromThisTurnsSnapshot(t *testing.T) {
+	r := loadRules(t)
+	path := "/c/sessions/2026/11/20/rollout-2026-11-20T10-00-00-0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000.jsonl"
+	full := `{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":100.0,"window_minutes":300,"resets_at":1795186800},"secondary":null}}`
+	limitErr := `{"type":"error","message":"You've hit your usage limit.","codex_error_info":"usage_limit_exceeded"}`
+	limitOf := func(lines ...string) *core.Event {
+		st := &CodexState{SessionID: "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000"}
+		for _, ev := range ParseCodex(r, path, rawLines(lines...), st, time.UTC) {
+			if ev.Kind == core.KindUsageLimit {
+				return &ev
+			}
+		}
+		return nil
+	}
+	ev := limitOf(rolloutLine("00:00", "event_msg", `{"type":"task_started"}`), rolloutLine("00:01", "event_msg", full), rolloutLine("00:02", "event_msg", limitErr))
+	if ev == nil || ev.LimitID != "codex" || !ev.ResetAt.Equal(time.Unix(1795186800, 0)) {
+		t.Fatalf("this turn's snapshot: %+v", ev)
+	}
+	ev = limitOf(rolloutLine("00:00", "event_msg", full), rolloutLine("00:01", "event_msg", `{"type":"task_started"}`), rolloutLine("00:02", "event_msg", limitErr))
+	if ev == nil || ev.LimitID != "" || ev.ResetAt.Equal(time.Unix(1795186800, 0)) {
+		t.Fatalf("the turn before's snapshot was used: %+v", ev)
+	}
+}

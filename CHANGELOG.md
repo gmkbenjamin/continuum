@@ -4,6 +4,46 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-11-21
+
+### Changed
+- **Continuum's hooks have a name.** Each hook entry now carries a `statusMessage`
+  ("Continuum: tracks this session to resume it after usage limits") in Claude Code,
+  Codex, Grok Build and Muse Code, so Codex no longer lists them as unnamed hooks. The
+  daemon updates existing installs; Codex asks once to trust the changed hooks.
+- **Grok Build, Muse Code and the Cursor CLI get a prompt-submit hook**
+  (`UserPromptSubmit`, `beforeSubmitPrompt`). It says when a turn started, which banked
+  reset detection now uses instead of assuming no answer takes over 10 minutes.
+  A prompt submitted in a waiting session (`/usage`, `/model`) doesn't drop its resume.
+
+### Fixed
+- **A failed early resume waits for the reset it already knew.** When it hit the limit
+  again with no reset time (a `rate_limit` StopFailure, a screen read), it retried on
+  backoff until it gave up, instead of waiting for the original reset.
+- **Banked resets for limits read off the screen.** A limit without a transcript (all
+  of Cursor's) never matched a hook answer, which carries one, so it was never moved up.
+- **A failed early resume only blocks its own limit.** It stopped answers from moving
+  up every limit on the account, including other model families' and Codex limit ids.
+  It now also keeps blocking until that limit's reset once the session is continued by
+  hand or given up on, and only marks a resume failed when it hit the same limit.
+- **Hook answers that don't show the limit lifted** no longer move resumes up: a turn
+  that started before the limit (a long answer), one from Cursor's editor, and one from
+  another model than the limited session's (Cursor's Auto).
+- **Codex limits name the right limit.** The limit id comes from a rate-limit snapshot
+  of the same turn that shows the limit full, not whatever snapshot was read last (a
+  `/model` switch between them tagged the wrong limit), and so does its reset time. A
+  turn that ends without an error no longer leaves a request marked in flight.
+- **Cursor: an early resume that hits the limit again is seen.** Its limits only show
+  on screen, and the notice after the resume was taken for the old one, so the session
+  sat at the limit with nothing scheduled. A turn started there after the resume now
+  makes it a new hit, which waits for the reset.
+- **A session nothing can reach any more fails at once.** When its wrapper had exited
+  (the terminal closed, or the computer restarted) and Continuum knew no session id or
+  pane for it, it retried for hours, keeping the computer awake, until the attempts ran
+  out. Seen with Antigravity CLI sessions after a restart.
+- **A failed early resume is remembered until its reset,** not dropped with other
+  finished resumes after 72 hours (a weekly reset can be further away).
+
 ## [0.14.0] - 2026-11-20
 
 ### Added

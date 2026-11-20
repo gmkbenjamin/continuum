@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-var Version = "0.14.0"
+var Version = "0.14.1"
 
 // Location says where an agent is running so input can be delivered to it
 // without focusing any window.
@@ -79,6 +79,13 @@ type Event struct {
 	Model     string    `json:"model,omitempty"`
 	// LimitID, on a usage limit: which of the account's limits was hit.
 	LimitID string `json:"limit_id,omitempty"`
+	// TurnStart, on activity from a prompt-submit hook: the user sent a
+	// prompt, so every request of the turn goes out no earlier than At.
+	TurnStart bool `json:"turn_start,omitempty"`
+	// Answered, on activity from a Stop hook: the model answered the turn.
+	// The hook doesn't say when the turn's requests went out; the daemon
+	// takes that from the turn's start (see TurnStart) and sets RequestAt.
+	Answered bool `json:"answered,omitempty"`
 }
 
 // Job states.
@@ -136,6 +143,10 @@ type Job struct {
 	LiftFailed bool `json:"lift_failed,omitempty"`
 	// LimitID: which of the account's limits was hit, when the agent says.
 	LimitID string `json:"limit_id,omitempty"`
+	// Model: the model the session was using when it hit the limit, when
+	// its hooks say (Cursor). An answer from another model doesn't show
+	// this limit lifted.
+	Model string `json:"model,omitempty"`
 }
 
 // Paths are Continuum's files under its home directory.

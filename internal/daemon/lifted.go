@@ -25,7 +25,8 @@ import (
 //     Code's transcript says which answers were paid from usage credits;
 //     Codex records the plan's limits with each answer (room left means it
 //     was on the plan); Grok Build, Muse Code and the Cursor CLI report a
-//     turn that ended normally through their Stop hooks.
+//     turn that ended normally through their Stop hooks, and when it
+//     started through their prompt-submit hooks.
 //
 // Either moves the account's waiting resumes up to now (plus the usual delay
 // and the agent's own grace). If the limit wasn't lifted after all, the
@@ -69,9 +70,19 @@ func accountRoot(transcript string) string {
 	return filepath.Dir(filepath.Dir(p))
 }
 
-// accountKey names the account of a session: its agent and config folder.
-// Without a transcript (an agent reporting only through hooks) it is the
-// agent's one account as far as Continuum can tell.
+// sameAccountOf: two sessions are on the same account: the same agent and
+// config folder. A session without a transcript (a limit read off the
+// screen, an agent reporting only through hooks) is on the agent's one
+// account as far as Continuum can tell, as in sameAccount.
+func sameAccountOf(h1, t1, h2, t2 string) bool {
+	if h1 != h2 {
+		return false
+	}
+	return t1 == "" || t2 == "" || accountRoot(t1) == accountRoot(t2)
+}
+
+// accountKey names the account of a session with a transcript, for
+// d.answered; "harness|" without one.
 func accountKey(harness, transcript string) string {
 	if transcript == "" {
 		return harness + "|"
@@ -79,12 +90,37 @@ func accountKey(harness, transcript string) string {
 	return harness + "|" + accountRoot(transcript)
 }
 
+// sameLimitOf: a and b are stalls on the same limit, as far as the agents
+// say: no different limit ids, and the same model family ("" for a limit on
+// every model).
+func sameLimitOf(a, b *core.Job) bool {
+	if a.LimitID != "" && b.LimitID != "" && a.LimitID != b.LimitID {
+		return false
+	}
+	return limitFamily(a.Message) == limitFamily(b.Message)
+}
+
+// hookRequestAt: for a turn a Stop hook reports answered, the earliest its
+// requests can have gone out: when the turn started, as the agent's
+// prompt-submit hook reported. Zero, so the answer counts for nothing, when
+// that isn't known, or the session isn't one Continuum sees running in a
+// terminal (Cursor's editor runs the same hooks as its CLI).
+func hookRequestAt(ev core.Event, sess *store.Session) time.Time {
+	if sess == nil || sess.TurnAt.IsZero() || sess.TurnAt.After(ev.At) {
+		return time.Time{}
+	}
+	if sess.PID == 0 && sess.Location == nil {
+		return time.Time{}
+	}
+	return sess.TurnAt
+}
+
 // liftedFor reports whether ev shows that j's limit is lifted, and how.
 func liftedFor(j *core.Job, ev core.Event) (string, bool) {
 	if j.State != core.StatePending || j.Kind != core.KindUsageLimit {
 		return "", false
 	}
-	if accountKey(j.Harness, j.TranscriptPath) != accountKey(ev.Harness, ev.TranscriptPath) {
+	if !sameAccountOf(j.Harness, j.TranscriptPath, ev.Harness, ev.TranscriptPath) {
 		return "", false
 	}
 	switch {
@@ -107,6 +143,11 @@ func liftedFor(j *core.Job, ev core.Event) (string, bool) {
 		if j.LimitID != "" && ev.LimitID != "" && j.LimitID != ev.LimitID {
 			return "", false // another of the account's limits
 		}
+		if ev.Answered && j.Model != "" && ev.Model != "" && !strings.EqualFold(j.Model, ev.Model) {
+			// A Stop hook's answer from another model (Cursor's Auto after
+			// a limit on the premium models) says nothing about this one.
+			return "", false
+		}
 		if ev.Model != "" {
 			return fmt.Sprintf("session %s, on the same account, got an answer from %s", short(ev.SessionID), ev.Model), true
 		}
@@ -117,31 +158,39 @@ func liftedFor(j *core.Job, ev core.Event) (string, bool) {
 
 // limitLifted moves up the resumes that ev shows are no longer limited.
 func (d *Daemon) limitLifted(ev core.Event) {
-	if !ev.RequestAt.IsZero() && d.liftFailed(accountKey(ev.Harness, ev.TranscriptPath)) {
-		d.debugf("%s %s: answered, but an early resume of this account hit the limit again; waiting for the reset", d.name(ev.Harness), short(ev.SessionID))
-		return
-	}
 	if !ev.RequestAt.IsZero() {
 		if d.answered == nil {
 			d.answered = map[string]core.Event{}
 		}
-		if k := accountKey(ev.Harness, ev.TranscriptPath); k != "" && ev.RequestAt.After(d.answered[k].RequestAt) {
+		if k := accountKey(ev.Harness, ev.TranscriptPath); ev.RequestAt.After(d.answered[k].RequestAt) {
 			d.answered[k] = ev // for limits reported after this answer is read
 		}
 	}
 	for _, j := range store.SortedJobs(d.Jobs) {
-		if why, ok := liftedFor(j, ev); ok {
-			d.lift(j, ev.At, why, false)
+		why, ok := liftedFor(j, ev)
+		if !ok {
+			continue
 		}
+		if !ev.RequestAt.IsZero() && d.liftFailed(j) {
+			d.debugf("%s: %s, but an early resume of this limit hit it again; waiting for the reset", j.Key, why)
+			continue
+		}
+		d.lift(j, ev.At, why, false)
 	}
 }
 
-// liftFailed: an early resume of the account hit the limit again, and still
-// waits for its reset. Answers in its other sessions were paid some other way
-// (credits, another plan), so they don't lift its limits again before that.
-func (d *Daemon) liftFailed(acct string) bool {
-	for _, j := range d.Jobs {
-		if j.LiftFailed && j.State == core.StatePending && accountKey(j.Harness, j.TranscriptPath) == acct {
+// liftFailed: an early resume of j's limit (on the same account) hit it
+// again, and that limit hasn't reset yet. Answers in the account's other
+// sessions were paid some other way (credits, another plan), so they don't
+// lift that limit again before its reset. The failed stall still counts
+// once it no longer waits (continued by hand, given up on), until its reset.
+func (d *Daemon) liftFailed(j *core.Job) bool {
+	now := d.Now()
+	for _, f := range d.Jobs {
+		if !f.LiftFailed || !sameAccountOf(f.Harness, f.TranscriptPath, j.Harness, j.TranscriptPath) || !sameLimitOf(f, j) {
+			continue
+		}
+		if f.State == core.StatePending || f.ResetKnown && f.ResetAt.After(now) {
 			return true
 		}
 	}
@@ -151,13 +200,22 @@ func (d *Daemon) liftFailed(acct string) bool {
 // liftIfAnswered: a new stall whose account was already seen answering a
 // request sent after it (read before the stall itself) is lifted already.
 func (d *Daemon) liftIfAnswered(j *core.Job) {
-	acct := accountKey(j.Harness, j.TranscriptPath)
-	ev, ok := d.answered[acct]
-	if !ok || d.liftFailed(acct) {
+	if d.liftFailed(j) {
 		return
 	}
-	if why, ok := liftedFor(j, ev); ok {
-		d.lift(j, ev.At, why, true)
+	var best *core.Event
+	for _, ev := range d.answered {
+		if !sameAccountOf(j.Harness, j.TranscriptPath, ev.Harness, ev.TranscriptPath) {
+			continue
+		}
+		if _, ok := liftedFor(j, ev); ok && (best == nil || ev.RequestAt.After(best.RequestAt)) {
+			e := ev
+			best = &e
+		}
+	}
+	if best != nil {
+		why, _ := liftedFor(j, *best)
+		d.lift(j, best.At, why, true)
 	}
 }
 
@@ -188,6 +246,24 @@ func (d *Daemon) lift(j *core.Job, at time.Time, why string, quiet bool) {
 	d.notify(j, "Limit back early", "Will continue at "+j.DueAt.In(d.Local).Format("Mon 3:04 PM"))
 }
 
+// sessionAt: the session of a stall, or for one read off the screen (no
+// session id), the open session of that agent last seen at the same place.
+func (d *Daemon) sessionAt(harness string, loc *core.Location, sess *store.Session) *store.Session {
+	if sess != nil || loc == nil {
+		return sess
+	}
+	var best *store.Session
+	for _, s := range d.Sessions {
+		if s.Harness != harness || s.Ended || s.Location == nil || s.Location.String() != loc.String() {
+			continue
+		}
+		if best == nil || s.LastSeen.After(best.LastSeen) {
+			best = s
+		}
+	}
+	return best
+}
+
 // liftedNotice: a limit read off the screen of a session whose limit was
 // lifted early, naming the reset it was lifted from (or none). It's the old
 // notice, still on screen or redrawn, not a new limit; a real new one is
@@ -202,6 +278,15 @@ func (d *Daemon) liftedNotice(ev core.Event) bool {
 		}
 		if j.State != core.StatePending && !recentlyDelivered(j, ev.At) {
 			continue
+		}
+		if j.State == core.StateDelivered {
+			// A turn started at that place after the resume (its prompt-
+			// submit hook) and the limit is back on screen after it: a new
+			// hit, not the old notice. For an agent whose limits only
+			// show on screen (Cursor) nothing else would report it.
+			if s := d.sessionAt(ev.Harness, ev.Location, nil); s != nil && s.TurnAt.After(j.DeliveredAt) && ev.At.After(s.TurnAt) {
+				return false
+			}
 		}
 		if ev.ResetAt.IsZero() || !j.LiftedFrom.IsZero() && !ev.ResetAt.After(j.LiftedFrom.Add(time.Minute)) {
 			return true

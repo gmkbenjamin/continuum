@@ -83,13 +83,19 @@ original reset (days away for a weekly limit). It sees the reset in either of tw
     window means the answer was on the plan (answers paid from credits leave them at
     100%), and it must be the same limit (`limit_id`) that was hit.
   - **Grok Build, Muse Code, the Cursor CLI:** a turn their Stop hook reports as ended
-    normally, more than 10 minutes after the limit hit (the hook doesn't say when the
-    request went out). `stop_hook_answers` in the rules turns this on per agent.
+    normally, that their prompt-submit hook (`UserPromptSubmit`, Cursor's
+    `beforeSubmitPrompt`) says started after the limit hit, in a session Continuum sees
+    running in a terminal (Cursor's editor runs the CLI's hooks too). When the agent
+    says which model answered (Cursor), it must be the model the limited session used:
+    Cursor's Auto still answering after a limit on the premium models doesn't count.
+    `stop_hook_answers` in the rules turns this on per agent.
 
 The usual delay and the agent's own grace still apply. If the limit wasn't lifted
-after all, the resume hits it again and waits for the reset that message names, and
-answers in the account's other sessions (paid some other way) don't move it up again
-before then. A reset the agent reports used still does. The old limit notice still on
+after all, the resume hits it again and waits for the reset that message names (or,
+if it names none, the reset it was moved up from), and answers in the account's other
+sessions (paid some other way) don't move that limit up again before then, even once
+that session is continued by hand. Other limits of the account (another model
+family's, another Codex `limit_id`) still can be. A reset the agent reports used still does. The old limit notice still on
 screen isn't taken for a new limit. For agents that report neither (or if you used a
 reset and no other session is running), `continuum resume-now all` continues every
 waiting session.

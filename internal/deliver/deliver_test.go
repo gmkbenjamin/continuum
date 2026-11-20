@@ -265,3 +265,26 @@ func TestDesktopSessions(t *testing.T) {
 		t.Fatalf("codex called with %q", got)
 	}
 }
+
+// A wrapper that exited, for a session nothing else knows (no id, no pane):
+// no route can ever reach it, which the daemon must not retry.
+func TestGoneWrapperWithNothingElseIsPermanent(t *testing.T) {
+	r, _ := rules.Load("")
+	dir := t.TempDir()
+	claude, _ := fakeAgent(t, dir, "claude", "nothing useful")
+	o := Options{Rules: r, Paths: core.Paths{Wrappers: filepath.Join(dir, "wrappers")}, Config: core.Config{Binaries: map[string]string{"claude": claude}},
+		Prompt: "x", Strategies: []string{"wrapper", "multiplexer", "native"}, Live: closed}
+	gone := &core.Job{Harness: "claude", Location: &core.Location{Kind: "wrapper", Target: "dead0000"}}
+	_, err := Deliver(o, gone)
+	if !errors.Is(err, ErrNoRoute) || !errors.Is(err, ErrGone) {
+		t.Fatalf("got %v", err)
+	}
+	if strings.Contains(err.Error(), "permanent") {
+		t.Errorf("the marker shows in the message: %v", err)
+	}
+	// With a session id the agent's own command may still continue it.
+	known := &core.Job{Harness: "claude", SessionID: "s1", Location: gone.Location}
+	if _, err := Deliver(o, known); err == nil || errors.Is(err, ErrGone) {
+		t.Fatalf("with a session id: %v", err)
+	}
+}
