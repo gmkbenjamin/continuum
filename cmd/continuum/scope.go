@@ -12,7 +12,6 @@ import (
 	"github.com/continuum-dev/continuum/internal/core"
 	"github.com/continuum-dev/continuum/internal/deliver"
 	"github.com/continuum-dev/continuum/internal/live"
-	"github.com/continuum-dev/continuum/internal/mux"
 	"github.com/continuum-dev/continuum/internal/proc"
 	"github.com/continuum-dev/continuum/internal/rules"
 	"github.com/continuum-dev/continuum/internal/scope"
@@ -98,11 +97,14 @@ func knownSessions() []knownSession {
 		seen[s.Harness+s.SessionID] = true
 		ks := knownSession{Harness: s.Harness, ID: s.SessionID, Cwd: s.Cwd, Where: "seen " + ago(s.LastSeen), LastSeen: s.LastSeen,
 			Location: s.Location, Entrypoint: s.Entrypoint, PID: s.PID}
+		if s.Harness == "codex" && s.PID > 0 && live.CodexAppServer(proc.Args(s.PID)) {
+			ks.Location, ks.PID = nil, 0
+		}
 		// Agents without a session list (Codex, ...): ask the process table
 		// whether a recent session is still open.
 		if h := r.Harness(s.Harness); h != nil && time.Since(s.LastSeen) < 12*time.Hour && (h.LiveSessions != nil || len(h.DesktopApps) > 0) {
-			pid := s.PID
-			if s.Location != nil && s.Location.Kind == "wrapper" && !deliver.WrapperAlive(p, s.Location.Target) {
+			pid := ks.PID
+			if ks.Location != nil && ks.Location.Kind == "wrapper" && !deliver.WrapperAlive(p, ks.Location.Target) {
 				pid = 0
 			} else if pid > 0 {
 				if _, name, ok := proc.Info(pid); !ok || !h.IsHarnessProcess(name) {
@@ -113,6 +115,13 @@ func knownSessions() []knownSession {
 			st := live.Default().Lookup(h, live.Query{SessionID: s.SessionID, Cwd: s.Cwd, PID: pid, Bin: bin, Entrypoint: s.Entrypoint,
 				Homes: cfg.Homes()})
 			ks.Open = st.Open
+			if s.Harness == "codex" && st.Source == "processes" && !st.ProcessMatch {
+				ks.Open = pid > 0 && st.Session != nil && st.Session.PID == pid
+			}
+			if st.ProcessMatch {
+				ks.PID = st.Session.PID
+				ks.Location = nil // use the matched process's current route below
+			}
 		}
 		out = append(out, ks)
 	}
@@ -123,12 +132,8 @@ func knownSessions() []knownSession {
 			continue
 		}
 		env := proc.Environ(out[i].PID)
-		if id := env["CONTINUUM_WRAPPER_ID"]; id != "" {
-			out[i].Location = &core.Location{Kind: "wrapper", Target: id}
-		} else if out[i].Location == nil {
-			if loc := mux.LocateFromEnv(r, env); loc != nil {
-				out[i].Location = loc
-			}
+		if loc := deliver.LocationFromEnv(p, r, env); loc != nil && (loc.Kind == "wrapper" || out[i].Location == nil) {
+			out[i].Location = loc
 		}
 		out[i].Host = hostFromEnv(r, env)
 	}

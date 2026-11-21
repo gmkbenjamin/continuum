@@ -66,6 +66,25 @@ func TestSessionEndForgetsThePane(t *testing.T) {
 	}
 }
 
+func TestDifferentConversationActivityDoesNotCancelResume(t *testing.T) {
+	h := setup(t)
+	oldWrapper := &core.Location{Kind: "wrapper", Target: "old"}
+	stall := core.Event{Harness: "codex", SessionID: "stalled", Kind: core.KindUsageLimit,
+		At: h.now, ResetAt: h.now.Add(time.Hour), Source: "rollout", Location: oldWrapper}
+	h.d.Handle(stall)
+	j := h.d.Jobs["codex:stalled"]
+	h.d.Handle(core.Event{Harness: "codex", SessionID: "unrelated", Kind: core.KindActivity,
+		At: h.now.Add(2 * time.Minute), Source: "hook:Stop", Location: oldWrapper})
+	if j == nil || j.State != core.StatePending {
+		t.Fatalf("an unrelated conversation cancelled the resume: %+v", j)
+	}
+	h.d.Handle(core.Event{Harness: "codex", SessionID: "stalled", Kind: core.KindActivity,
+		At: h.now.Add(3 * time.Minute), Source: "rollout", Location: &core.Location{Kind: "wrapper", Target: "new"}})
+	if j.State != core.StateSkipped {
+		t.Fatalf("activity in the stalled conversation left its resume pending: %+v", j)
+	}
+}
+
 // After hitting the limit the user runs a local slash command (/usage). Claude
 // Code records a meta "local-command-caveat" user line plus the command; no
 // model turn happens. Continuum treats it as the session having continued.

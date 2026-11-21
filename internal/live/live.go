@@ -58,6 +58,9 @@ type State struct {
 	MovedOn bool     `json:"moved_on,omitempty"`
 	Session *Session `json:"session,omitempty"`
 	Source  string   `json:"source,omitempty"`
+	// ProcessMatch means the process names the session explicitly. A process
+	// found by directory alone can block a native resume but can't route input.
+	ProcessMatch bool `json:"process_match,omitempty"`
 	// DesktopApp names the desktop app that holds (or may hold) the session.
 	DesktopApp string `json:"desktop_app,omitempty"`
 	// OnlyDesktop: open only in the sense that the desktop app may hold it;
@@ -87,6 +90,7 @@ type Query struct {
 type Finder struct {
 	Run     func(timeout time.Duration, argv ...string) (string, error)
 	Procs   func() ([]proc.Process, error)
+	Args    func(pid int) []string
 	Cwd     func(pid int) string
 	Alive   func(pid int) bool
 	HelpOK  func(bin string, tokens []string) bool
@@ -98,6 +102,7 @@ func Default() *Finder {
 	return &Finder{
 		Run:   func(t time.Duration, argv ...string) (string, error) { return proc.Run(t, "", argv...) },
 		Procs: proc.List,
+		Args:  proc.Args,
 		Cwd:   proc.Cwd,
 		Alive: proc.Alive,
 		HelpOK: func(bin string, tokens []string) bool {
@@ -145,6 +150,7 @@ func (f *Finder) Lookup(h *rules.Harness, q Query) State {
 	st := State{}
 	ls := h.LiveSessions
 	var all []Session
+	var matchedPID int
 	if ls != nil {
 		if len(ls.Command) > 0 && q.Bin != "" && (len(ls.RequiresHelp) == 0 || f.HelpOK == nil || f.HelpOK(q.Bin, ls.RequiresHelp)) {
 			if list, ok := f.fromCommand(ls, q); ok {
@@ -171,13 +177,16 @@ func (f *Finder) Lookup(h *rules.Harness, q Query) State {
 			}
 		}
 		if ls.ScanProcesses && q.SessionID != "" {
-			if s, ok, checked := f.fromProcesses(h, q); checked {
+			if s, match, checked := f.fromProcesses(h, q); checked {
 				if !st.Checked {
 					st.Source = "processes"
 				}
 				st.Checked = true
-				if ok {
+				if s.PID > 0 {
 					all = append(all, s)
+					if match {
+						matchedPID = s.PID
+					}
 				}
 			}
 		}
@@ -187,6 +196,7 @@ func (f *Finder) Lookup(h *rules.Harness, q Query) State {
 		if q.SessionID != "" && s.SessionID == q.SessionID {
 			st.Open = true
 			st.Session = s
+			st.ProcessMatch = matchedPID != 0 && st.Source == "processes"
 			break
 		}
 	}
@@ -319,9 +329,8 @@ func (f *Finder) fromRegistryFile(path string) ([]Session, bool) {
 	return list, true
 }
 
-// fromProcesses finds an agent process that holds the session: one whose
-// command line names the session id, or else one running in the session's
-// directory (it may hold the session; Continuum then assumes it does).
+// fromProcesses finds an agent process that may hold the session. The second
+// result distinguishes an explicit resume from a working-directory guess.
 func (f *Finder) fromProcesses(h *rules.Harness, q Query) (Session, bool, bool) {
 	if f.Procs == nil {
 		return Session{}, false, false
@@ -331,15 +340,37 @@ func (f *Finder) fromProcesses(h *rules.Harness, q Query) (Session, bool, bool) 
 		return Session{}, false, false
 	}
 	self := os.Getpid()
+	var matched Session
+	ambiguous := false
+	var possible Session
 	var inDir []proc.Process
 	for _, p := range ps {
 		if p.PID == self || !isAgentProcess(h, p) {
 			continue
 		}
-		if q.SessionID != "" && strings.Contains(p.Line, q.SessionID) {
-			return Session{SessionID: q.SessionID, PID: p.PID, Cwd: q.Cwd, Kind: "interactive"}, true, true
+		if strings.Contains(p.Line, q.SessionID) {
+			s := Session{SessionID: q.SessionID, PID: p.PID, Cwd: q.Cwd, Kind: "interactive"}
+			if h.Name == "codex" {
+				args := p.Args
+				if f.Args != nil {
+					args = f.Args(p.PID)
+				}
+				if resumesSession(args, q.SessionID) {
+					ambiguous = matched.PID > 0
+					matched = s
+				}
+			}
+			if possible.PID == 0 {
+				possible = s
+			}
 		}
 		inDir = append(inDir, p)
+	}
+	if matched.PID > 0 {
+		return matched, !ambiguous, true
+	}
+	if possible.PID > 0 {
+		return possible, false, true
 	}
 	if q.Cwd != "" && f.Cwd != nil {
 		want := filepath.Clean(q.Cwd)
@@ -347,7 +378,7 @@ func (f *Finder) fromProcesses(h *rules.Harness, q Query) (Session, bool, bool) 
 		for _, p := range inDir {
 			c := f.Cwd(p.PID)
 			if c != "" && filepath.Clean(c) == want {
-				return Session{SessionID: q.SessionID, PID: p.PID, Cwd: c, Kind: "interactive"}, true, true
+				return Session{SessionID: q.SessionID, PID: p.PID, Cwd: c, Kind: "interactive"}, false, true
 			}
 			if c == "" && unknown == 0 && runtime.GOOS == "windows" {
 				unknown = p.PID
@@ -356,12 +387,27 @@ func (f *Finder) fromProcesses(h *rules.Harness, q Query) (Session, bool, bool) 
 		if unknown > 0 {
 			// Windows doesn't say which folder a process runs in: it may hold
 			// the session, so it counts as open. Never a copy.
-			return Session{SessionID: q.SessionID, PID: unknown, Cwd: q.Cwd, Kind: "interactive"}, true, true
+			return Session{SessionID: q.SessionID, PID: unknown, Cwd: q.Cwd, Kind: "interactive"}, false, true
 		}
 	} else if len(inDir) > 0 && f.Cwd == nil {
-		return Session{SessionID: q.SessionID, PID: inDir[0].PID, Cwd: q.Cwd, Kind: "interactive"}, true, true
+		return Session{SessionID: q.SessionID, PID: inDir[0].PID, Cwd: q.Cwd, Kind: "interactive"}, false, true
 	}
 	return Session{}, false, true
+}
+
+// resumesSession recognizes an explicit `codex resume SESSION_ID`, including
+// the npm launcher. An id elsewhere in argv may be part of a prompt.
+func resumesSession(args []string, id string) bool {
+	if len(args) > 1 && filepath.Base(args[1]) == "codex.js" {
+		args = args[1:]
+	}
+	return len(args) >= 3 && args[1] == "resume" && id != "" && args[2] == id
+}
+
+// CodexAppServer reports whether args belong to Codex's backend rather than
+// an interactive client. A shared backend can run hooks for many clients.
+func CodexAppServer(args []string) bool {
+	return len(args) >= 2 && args[1] == "app-server"
 }
 
 func isAgentProcess(h *rules.Harness, p proc.Process) bool {

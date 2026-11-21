@@ -122,6 +122,7 @@ func TestCodexProcessScan(t *testing.T) {
 	f.Procs = func() ([]proc.Process, error) {
 		return []proc.Process{
 			{PID: 1, Args: []string{"/x/codex", "app-server", "daemon"}, Line: "/x/codex app-server daemon"},
+			{PID: 5, Args: []string{"/x/codex", "resume t-123"}, Line: "/x/codex resume t-123"},
 			{PID: 2, Args: []string{"node", "/x/bin/codex.js", "resume", "t-123"}, Line: "node /x/bin/codex.js resume t-123"},
 			{PID: 3, Args: []string{"/x/codex"}, Line: "/x/codex"},
 			{PID: 4, Args: []string{"/x/codex", "exec", "hi"}, Line: "/x/codex exec hi"},
@@ -129,10 +130,10 @@ func TestCodexProcessScan(t *testing.T) {
 	}
 	f.Cwd = func(pid int) string { return map[int]string{1: "/w/a", 3: "/w/b", 4: "/w/c"}[pid] }
 
-	if st := f.Lookup(h, Query{SessionID: "t-123"}); !st.Open || st.Session.PID != 2 {
+	if st := f.Lookup(h, Query{SessionID: "t-123"}); !st.Open || !st.ProcessMatch || st.Session.PID != 2 {
 		t.Fatalf("by id: %+v", st)
 	}
-	if st := f.Lookup(h, Query{SessionID: "t-9", Cwd: "/w/b"}); !st.Open || st.Session.PID != 3 {
+	if st := f.Lookup(h, Query{SessionID: "t-9", Cwd: "/w/b"}); !st.Open || st.ProcessMatch || st.Session.PID != 3 {
 		t.Fatalf("by dir: %+v", st)
 	}
 	// The app server and `codex exec` are not the TUI holding a session.

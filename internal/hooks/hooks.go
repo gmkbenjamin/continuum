@@ -19,6 +19,7 @@ import (
 	"unicode"
 
 	"github.com/continuum-dev/continuum/internal/core"
+	"github.com/continuum-dev/continuum/internal/live"
 	"github.com/continuum-dev/continuum/internal/mux"
 	"github.com/continuum-dev/continuum/internal/proc"
 	"github.com/continuum-dev/continuum/internal/resettime"
@@ -374,6 +375,17 @@ func Handle(harness string, stdin io.Reader, environ []string) {
 	if !ok {
 		debugHook(p, harness, in.HookEventName+": nothing to report")
 		return
+	}
+	if harness == "codex" {
+		_, pid := NearestAgent(r, tree, os.Getppid())
+		if ev.PID > 0 {
+			pid = ev.PID
+		}
+		if pid > 0 && live.CodexAppServer(ProcArgs(pid)) {
+			// The server inherited its launcher's terminal, which may
+			// belong to an entirely different conversation.
+			ev.Location, ev.PID = nil, 0
+		}
 	}
 	if h := r.Harness(harness); h.HookRequiresCLI && len(tree) > 0 {
 		if a, _ := NearestAgent(r, tree, os.Getppid()); a != harness {

@@ -571,9 +571,16 @@ func (d *Daemon) continued(ev core.Event, only func(*core.Job) bool) {
 		if j.State != core.StatePending || !ev.At.After(j.LimitAt.Add(time.Second)) {
 			continue
 		}
-		sameSession := ev.SessionID != "" && j.SessionID == ev.SessionID && j.Harness == ev.Harness
-		sameLoc := ev.Location != nil && j.Location != nil && ev.Location.String() == j.Location.String()
-		if !sameSession && !sameLoc || only != nil && !only(j) {
+		if ev.SessionID != "" && j.SessionID != "" {
+			// A pane can be reused, and Codex's shared backend used to
+			// report its launcher's wrapper for unrelated conversations.
+			if ev.SessionID != j.SessionID || ev.Harness != j.Harness {
+				continue
+			}
+		} else if ev.Location == nil || j.Location == nil || ev.Location.String() != j.Location.String() {
+			continue
+		}
+		if only != nil && !only(j) {
 			continue
 		}
 		if screenSourced(ev.Source) && !onlyScreenSources(j.Sources) {
@@ -1228,19 +1235,6 @@ func (d *Daemon) runJob(j *core.Job) {
 		d.logf("%s: %s", j.Key, j.Result)
 		return
 	}
-	// Never type into the same pane twice for one stall.
-	if j.Location != nil && j.Location.Kind != "" {
-		for _, o := range d.Jobs {
-			if o != j && o.State == core.StateDelivered && o.Location != nil &&
-				o.Location.String() == j.Location.String() && o.DeliveredAt.After(j.LimitAt.Add(-time.Minute)) {
-				j.State = core.StateSkipped
-				j.Result = "already resumed through " + o.Key
-				j.UpdatedAt = d.Now()
-				d.history("skipped", j, map[string]any{"reason": j.Result})
-				return
-			}
-		}
-	}
 	// Refresh what we know about where the session lives (not from a session
 	// that has ended: its pane belongs to whatever runs there now).
 	sess := d.Sessions[store.SessionKey(j.Harness, j.SessionID)]
@@ -1250,6 +1244,14 @@ func (d *Daemon) runJob(j *core.Job) {
 		}
 		if sess.PID > 0 {
 			j.PID = sess.PID
+		}
+	}
+	if j.Harness == "codex" {
+		if sess != nil && live.CodexAppServer(proc.Args(sess.PID)) && j.Location.String() == sess.Location.String() {
+			j.Location = nil // the shared server's inherited pane
+		}
+		if j.PID > 0 && live.CodexAppServer(proc.Args(j.PID)) {
+			j.Location, j.PID = nil, 0
 		}
 	}
 	var st *live.State
@@ -1265,6 +1267,7 @@ func (d *Daemon) runJob(j *core.Job) {
 	} else if st == nil {
 		d.debugf("%s: whether the session is open can't be checked for this agent", j.Key)
 	}
+	ambiguousProcess := j.Harness == "codex" && st != nil && st.Source == "processes" && !st.ProcessMatch
 	if st != nil {
 		s := st.Session
 		switch {
@@ -1276,8 +1279,11 @@ func (d *Daemon) runJob(j *core.Job) {
 			return
 		}
 		if s != nil {
-			if s.PID > 0 {
+			if s.PID > 0 && !ambiguousProcess {
 				j.PID = s.PID
+			}
+			if st.ProcessMatch && (j.Location == nil || j.Location.Kind == "wrapper" && !deliver.WrapperAlive(d.Paths, j.Location.Target)) {
+				j.Location = deliver.LocationFromEnv(d.Paths, d.Rules, proc.Environ(s.PID))
 			}
 			// The agent's own record of its pane is the freshest; only a
 			// Continuum wrapper (an even more direct route) takes precedence.
@@ -1286,18 +1292,28 @@ func (d *Daemon) runJob(j *core.Job) {
 			}
 		}
 	}
-	if j.Location == nil && j.PID > 0 && d.isAgentPID(j) {
+	if j.Location == nil && !ambiguousProcess && j.PID > 0 && d.isAgentPID(j) {
 		// A session started before Continuum's hooks: its process's
 		// environment says which pane (or wrapper) it runs in.
-		if loc := mux.LocateFromEnv(d.Rules, proc.Environ(j.PID)); loc != nil {
+		if loc := deliver.LocationFromEnv(d.Paths, d.Rules, proc.Environ(j.PID)); loc != nil {
 			j.Location = loc
 			d.debugf("%s: found its pane from the agent's environment: %s", j.Key, loc.String())
 		}
 	}
 	sessEnded := sess != nil && sess.Ended
 	liveClosed := st != nil && st.Checked && !st.Open && (st.Authoritative || st.Source == "pid")
-	if j.Location == nil && !sessEnded && !liveClosed {
+	if j.Location == nil && !sessEnded && !liveClosed && !ambiguousProcess {
 		j.Location = d.findPane(j)
+	}
+	// Compare the current route, after resolving a reopened session.
+	if j.Location != nil && j.Location.Kind != "" {
+		for _, o := range d.Jobs {
+			if o != j && o.State == core.StateDelivered && o.Location != nil &&
+				o.Location.String() == j.Location.String() && o.DeliveredAt.After(j.LimitAt.Add(-time.Minute)) {
+				d.skip(j, "already resumed through "+o.Key)
+				return
+			}
+		}
 	}
 
 	h := d.Rules.Harness(j.Harness)
@@ -1367,6 +1383,7 @@ func (d *Daemon) runJob(j *core.Job) {
 	}
 	j.Attempts++
 	j.State = core.StateDelivered
+	j.WaitingOpen = false
 	j.DeliveredAt = now
 	j.DeliveredVia = res.Via
 	j.Result = res.Detail

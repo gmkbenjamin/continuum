@@ -4,6 +4,17 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-11-21
+
+### Fixed
+- A Codex conversation reopened with `codex resume <session-id>` appears once
+  in status. Continuum sends the scheduled resume to its current wrapper
+  when the old wrapper has closed.
+- Codex hooks from the shared app server no longer record its inherited
+  terminal as the conversation's location. Activity from a different
+  conversation no longer cancels a pending resume with the same recorded
+  terminal.
+
 ## [0.14.1] - 2026-11-21
 
 ### Changed
@@ -497,6 +508,7 @@ First public release.
   sign-in errors.
 - Help for every command (`-h`), `doctor`, and docs in `docs/`.
 
+[0.14.2]: ../../releases/tag/v0.14.2
 [0.11.0]: ../../releases/tag/v0.11.0
 [0.10.2]: ../../releases/tag/v0.10.2
 [0.10.0]: ../../releases/tag/v0.10.0

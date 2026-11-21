@@ -148,6 +148,15 @@ func WrapperAlive(p core.Paths, id string) bool {
 	return proc.Alive(pid)
 }
 
+// LocationFromEnv takes a route from a known agent process, preferring its
+// wrapper over the surrounding multiplexer pane.
+func LocationFromEnv(p core.Paths, r *rules.Rules, env map[string]string) *core.Location {
+	if id := env["CONTINUUM_WRAPPER_ID"]; id != "" && WrapperAlive(p, id) {
+		return &core.Location{Kind: "wrapper", Target: id}
+	}
+	return mux.LocateFromEnv(r, env)
+}
+
 func viaWrapper(o Options, job *core.Job) (Result, error) {
 	if job.Location == nil || job.Location.Kind != "wrapper" {
 		return Result{}, errSkip
