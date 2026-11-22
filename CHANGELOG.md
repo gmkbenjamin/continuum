@@ -4,6 +4,16 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-11-23
+
+### Fixed
+
+- Continuum can resume a Codex thread already loaded by the local shared app
+  server when it has no usable terminal route.
+- The detached Codex fallback waits for a turn to start in the target thread
+  before reporting success. An unconfirmed launch needs attention and does
+  not send a second prompt automatically.
+
 ## [0.15.0] - 2026-11-22
 
 ### Added

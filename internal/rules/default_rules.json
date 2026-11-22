@@ -149,7 +149,7 @@
       "ui_markers": ["(?i)esc to interrupt", "(?i)context left", "›", "▌"],
       "native_commands": [
         {"name": "codex-queue", "when": "stopped", "reaches_desktop": true, "queued_warning": "Warning: message was queued, but could not resume thread", "requires_help": ["queue"], "requires_subcommand_help": {"queue": ["--thread", "--message", "--resume"]}, "args": ["{bin}", "queue", "--thread", "{session}", "--message", "{prompt}", "--resume"], "cwd": "{cwd}"},
-        {"name": "codex-exec-resume", "when": "stopped", "requires_help": ["exec"], "requires_subcommand_help": {"exec": ["resume"]}, "args": ["{bin}", "exec", "resume", "{session}", "{prompt}"], "cwd": "{cwd}", "detach": true}
+        {"name": "codex-exec-resume", "when": "stopped", "requires_help": ["exec"], "requires_subcommand_help": {"exec": ["resume", "--json"]}, "args": ["{bin}", "exec", "--json", "resume", "{session}", "{prompt}"], "cwd": "{cwd}", "detach": true}
       ]
     },
 

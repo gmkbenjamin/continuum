@@ -1361,10 +1361,10 @@ func (d *Daemon) runJob(j *core.Job) {
 	case errors.Is(err, opencode.ErrChanged):
 		d.skip(j, err.Error())
 		return
-	case errors.Is(err, opencode.ErrBusy):
+	case errors.Is(err, opencode.ErrBusy), errors.Is(err, deliver.ErrCodexBusy):
 		j.DueAt, j.Result = now.Add(15*time.Second), err.Error()
 		return
-	case errors.Is(err, opencode.ErrUncertain), errors.Is(err, deliver.ErrQueued):
+	case errors.Is(err, opencode.ErrUncertain), errors.Is(err, deliver.ErrQueued), errors.Is(err, deliver.ErrUnconfirmed):
 		j.State, j.Result = core.StateNeedsUser, err.Error()
 		j.ManualResumeOnly = true
 		d.history("needs_user", j, map[string]any{"error": err.Error()})

@@ -60,6 +60,11 @@ var ErrNoRoute = errors.New("no delivery route reached the session")
 // ErrQueued means the agent has the prompt and needs the session reopened.
 var ErrQueued = errors.New("the prompt is queued in Codex and will run when you reopen the session")
 
+var ErrCodexBusy = errors.New("the Codex thread already has an active turn")
+
+// ErrUnconfirmed stops fallback delivery when a prompt may already have arrived.
+var ErrUnconfirmed = errors.New("the resume could not be confirmed")
+
 // ErrGone: no route can ever reach the session again. Its wrapper exited
 // (a wrapper id is never reused) and nothing else knows it: no session id
 // for the agent's own command, no pane. Retrying only waits for nothing.
@@ -106,8 +111,8 @@ func Deliver(o Options, job *core.Job) (Result, error) {
 			o.logf("route %s: delivered (%s)", s, res.Detail)
 			return res, nil
 		}
-		if errors.Is(err, ErrQueued) {
-			return Result{}, err // the prompt is already queued
+		if errors.Is(err, ErrQueued) || errors.Is(err, ErrUnconfirmed) || errors.Is(err, ErrCodexBusy) {
+			return Result{}, err
 		}
 		if errors.Is(err, errSkip) {
 			o.logf("route %s: not applicable", s)
@@ -471,6 +476,11 @@ func viaNative(o Options, h *rules.Harness, job *core.Job) (Result, error) {
 	if job.SessionID == "" {
 		return Result{}, fmt.Errorf("session id unknown%w", quiet(errPermanent))
 	}
+	if h.Name == "codex" {
+		if res, err := resumeCodexServer(o, job); !errors.Is(err, errSkip) {
+			return res, err
+		}
+	}
 	bin, err := Binary(o.Config, h)
 	if err != nil {
 		return Result{}, err
@@ -538,6 +548,10 @@ func viaNative(o Options, h *rules.Harness, job *core.Job) (Result, error) {
 		}
 		logPath := filepath.Join(logDir, "native-"+nc.Name+".log")
 		if nc.Detach {
+			if h.Name == "codex" && nc.Name == "codex-exec-resume" {
+				detail, err := startCodexExec(argv, dir, env, logDir, job.SessionID, 10*time.Second)
+				return Result{Via: nc.Name, Detail: detail}, err
+			}
 			pid, err := proc.StartDetached(argv, dir, env, logPath)
 			if err != nil {
 				reasons = append(reasons, nc.Name+": "+err.Error())

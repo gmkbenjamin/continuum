@@ -174,10 +174,13 @@ this:
   need to quit the app. When Desktop updates its bundled Claude Code, Continuum goes
   back to the safe default until it sees a Desktop session in the list again.
 
-**Codex app.** `codex queue` sends the resume prompt to the local Codex app server,
-which the Codex app itself uses. So the session continues inside the app, with no copy
-and no need to close it. If Codex accepts the prompt and reports that it could not
-reopen the thread, Continuum asks you to open the thread to run the queued message.
+**Codex shared app server.** If the terminal route is unavailable, Continuum
+can start a turn in the exact thread already loaded by the local server. This
+works for the Codex app and CLI sessions connected to that server. For closed
+sessions, Continuum can use `codex queue`. If Codex accepts a queued prompt and
+reports that it could not reopen the thread, Continuum asks you to open it.
+The detached `codex exec resume` fallback reports success after it sees a turn
+start in the target thread.
 
 **OpenCode.** With a [shared server configured](agents.md#opencode-desktop-and-cli),
 Continuum reads final turn errors from the local API. Before resuming it checks that
