@@ -436,11 +436,12 @@ Options:
 continuum recover - Retry a Codex resume that an older Continuum marked delivered
 
 Usage:
-  continuum recover CODEX_THREAD_ID
+  continuum recover CODEX_THREAD_ID|all
 
   Use when an older Continuum marked a detached Codex launch as delivered.
   Continuum checks the thread transcript for a new turn before retrying.
-  Find the full thread ID with `continuum list --all --json`.
+  Use `all` to check and retry every eligible Codex thread. Find full thread IDs
+  with `continuum list --all --json`.
 
 Options:
   -h, --help             Show this help.

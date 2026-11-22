@@ -190,9 +190,9 @@ and recent resumes for open sessions (--all includes closed sessions). States:
 		ArgsHelp: [][2]string{{"ID", "a resume from `continuum list`, a session id, or its first 4+ characters (it must name one session)"}, {"this", "the agent session running this command (for agents)"}, {"all", "every pending resume"}},
 	},
 	{
-		Name: "recover", Group: "Sessions and resumes", Args: "CODEX_THREAD_ID",
+		Name: "recover", Group: "Sessions and resumes", Args: "CODEX_THREAD_ID|all",
 		Summary: "Retry a Codex resume that an older Continuum marked delivered",
-		Detail:  "Use when an older Continuum marked a detached Codex launch as delivered.\nContinuum checks the thread transcript for a new turn before retrying.\nFind the full thread ID with `continuum list --all --json`.",
+		Detail:  "Use when an older Continuum marked a detached Codex launch as delivered.\nContinuum checks the thread transcript for a new turn before retrying.\nUse `all` to check and retry every eligible Codex thread. Find full thread IDs\nwith `continuum list --all --json`.",
 	},
 	{
 		Name: "this", Aliases: []string{"self"}, Group: "For agents", Args: "[options]",

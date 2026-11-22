@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -333,7 +334,6 @@ func TestRecoverLegacyCodexLaunch(t *testing.T) {
 		want     bool
 	}{
 		{name: "missed turn", want: true},
-		{name: "all refused", selector: "all"},
 		{name: "prefix refused", selector: "codex:01a202ab"},
 		{name: "already verified", detail: "Codex started a turn (pid 42)"},
 		{name: "turn started", tail: "{\"timestamp\":\"2026-11-11T08:01:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n"},
@@ -367,6 +367,59 @@ func TestRecoverLegacyCodexLaunch(t *testing.T) {
 				t.Fatalf("delivered %d times, want recovery %v", len(h.delivered), tc.want)
 			}
 		})
+	}
+}
+
+func TestRecoverAllOnlyRequeuesEligibleCodexThreads(t *testing.T) {
+	h := setup(t)
+	want := map[string]bool{}
+	for i, name := range []string{"eligible", "also eligible", "continued", "missing transcript", "excluded", "verified", "needs user", "claude"} {
+		id := fmt.Sprintf("01a202ab-358f-70e3-9ff4-%012d", i)
+		path := filepath.Join(h.codex, "rollout-"+id+".jsonl")
+		initial := "{\"type\":\"session_meta\",\"payload\":{\"id\":\"" + id + "\"}}\n"
+		content := initial
+		if name == "continued" {
+			content += "{\"timestamp\":\"2026-11-11T08:01:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n"
+		}
+		if name != "missing transcript" {
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		j := &core.Job{
+			Key: "codex:" + id, Harness: "codex", SessionID: id, Kind: core.KindUsageLimit,
+			State: core.StateDelivered, DeliveredVia: "codex-exec-resume",
+			Result:  "started codex (pid 42), output in native-codex-exec-resume.log",
+			LimitAt: h.now.Add(-2 * time.Hour), DeliveredAt: h.now.Add(-time.Hour), Attempts: 1,
+			TranscriptPath: path, TranscriptSize: int64(len(initial)),
+		}
+		switch name {
+		case "eligible", "also eligible":
+			want[j.Key] = true
+		case "excluded":
+			h.d.Scope.Excluded = append(h.d.Scope.Excluded, scope.Entry{Harness: "codex", Session: id})
+		case "verified":
+			j.Result = "Codex started a turn (pid 42)"
+		case "needs user":
+			j.State, j.ManualResumeOnly = core.StateNeedsUser, true
+		case "claude":
+			j.Harness, j.Key = "claude", "claude:"+id
+		}
+		h.d.Jobs[j.Key] = j
+	}
+	h.d.control("recover all")
+	h.d.control("recover all")
+	h.d.runDue()
+	h.d.control("recover all")
+	h.d.runDue()
+	for _, j := range h.delivered {
+		if !want[j.Key] {
+			t.Errorf("unexpected or duplicate recovery for %s", j.Key)
+		}
+		delete(want, j.Key)
+	}
+	if len(want) != 0 {
+		t.Errorf("eligible threads were not recovered: %v", want)
 	}
 }
 

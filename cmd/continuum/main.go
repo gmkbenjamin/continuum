@@ -431,7 +431,10 @@ func cmdList(args []string) error {
 
 func cmdRecover(args []string) error {
 	if len(args) != 1 {
-		return errors.New("usage: continuum recover CODEX_THREAD_ID")
+		return errors.New("usage: continuum recover CODEX_THREAD_ID|all")
+	}
+	if args[0] == "all" {
+		return cmdControl("recover", args)
 	}
 	id := strings.TrimPrefix(args[0], "codex:")
 	if len(id) != 36 {

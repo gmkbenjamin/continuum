@@ -4,6 +4,13 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.15.3] - 2026-11-23
+
+### Added
+
+- `continuum recover all` checks every eligible Codex resume and retries each
+  thread whose transcript shows no newer turn.
+
 ## [0.15.2] - 2026-11-23
 
 ### Added
