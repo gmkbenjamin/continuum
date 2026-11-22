@@ -4,6 +4,24 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-22
+
+### Added
+
+- OpenCode Desktop and CLI can resume through an opt-in shared local server.
+  Continuum checks the original session, its latest failure, and its queue
+  before sending the continuation. See the [OpenCode setup guide](docs/agents.md#opencode-desktop-and-cli).
+
+### Fixed
+
+- If Codex queues a continuation and fails to reopen its thread, Continuum
+  reports the queued message and prevents a second send.
+- Terminal redraws no longer reschedule a stale usage limit. Changes to a
+  reset time on a neighboring line still update the wait.
+- Qwen Code's numeric UTC reset dates now retain their date and seconds.
+- The shell hook recognizes the current `kilo` command and handles more
+  one-shot, interactive, and administrative CLI invocations correctly.
+
 ## [0.14.2] - 2026-11-21
 
 ### Fixed
@@ -508,6 +526,7 @@ First public release.
   sign-in errors.
 - Help for every command (`-h`), `doctor`, and docs in `docs/`.
 
+[0.15.0]: ../../releases/tag/v0.15.0
 [0.14.2]: ../../releases/tag/v0.14.2
 [0.11.0]: ../../releases/tag/v0.11.0
 [0.10.2]: ../../releases/tag/v0.10.2

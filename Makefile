@@ -1,4 +1,4 @@
-VERSION ?= 0.14.2
+VERSION ?= 0.15.0
 LDFLAGS := -s -w -X github.com/continuum-dev/continuum/internal/core.Version=$(VERSION)
 PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64 windows/arm64
 
