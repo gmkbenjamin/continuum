@@ -104,6 +104,8 @@ func main() {
 		err = cmdControl("cancel", args)
 	case "resume-now", "now":
 		err = cmdControl("resume-now", args)
+	case "recover":
+		err = cmdRecover(args)
 	case "install":
 		err = cmdInstall(args)
 	case "update":
@@ -427,6 +429,25 @@ func cmdList(args []string) error {
 	return tw.Flush()
 }
 
+func cmdRecover(args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: continuum recover CODEX_THREAD_ID")
+	}
+	id := strings.TrimPrefix(args[0], "codex:")
+	if len(id) != 36 {
+		return errors.New("give the full Codex thread ID shown by continuum list --all --json")
+	}
+	key := store.SessionKey("codex", id)
+	jobs, err := store.LoadJobs(core.GetPaths().Jobs)
+	if err != nil {
+		return err
+	}
+	if err := daemon.CheckCodexRecovery(jobs[key]); err != nil {
+		return err
+	}
+	return cmdControl("recover", []string{key})
+}
+
 func cmdControl(action string, args []string) error {
 	if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
 		return fmt.Errorf("usage: continuum %s ID|all", action)
@@ -448,7 +469,7 @@ func cmdControl(action string, args []string) error {
 	if err := p.Ensure(); err != nil {
 		return err
 	}
-	if sel != "all" {
+	if sel != "all" && action != "recover" {
 		jobs, _ := store.LoadJobs(p.Jobs)
 		var keys []string
 		sessions := map[string]bool{}
@@ -498,7 +519,7 @@ func cmdControl(action string, args []string) error {
 		return err
 	}
 	fmt.Printf("%s %s: done\n", action, args[0])
-	if action == "resume-now" {
+	if action == "resume-now" || action == "recover" {
 		if rec, inst := daemon.LoadInstall(p); inst && rec.Standalone {
 			fmt.Println("Continuum runs standalone: it resumes as soon as `continuum watch` is running.")
 			return nil

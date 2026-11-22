@@ -4,6 +4,14 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.15.2] - 2026-11-23
+
+### Added
+
+- `continuum recover CODEX_THREAD_ID` can retry a detached Codex launch that an
+  older Continuum marked delivered. It checks the exact thread's transcript
+  for a newer turn before requeueing.
+
 ## [0.15.1] - 2026-11-23
 
 ### Fixed

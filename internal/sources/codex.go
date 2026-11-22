@@ -3,6 +3,7 @@ package sources
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -121,6 +122,46 @@ func CodexSessionFromPath(path string) string {
 		return ""
 	}
 	return ids[len(ids)-1]
+}
+
+// CodexTurnStartedSince checks the saved rollout from its last known offset.
+// A partial or missing tail is inconclusive and must not permit a resend.
+func CodexTurnStartedSince(path string, offset int64, since time.Time) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	if offset <= 0 || info.Size() < offset {
+		return false, errors.New("the saved transcript offset is unavailable")
+	}
+	pos := offset
+	for _, line := range ReadFrom(path, offset) {
+		pos = line.EndPos
+		var event codexLine
+		if err := json.Unmarshal(line.Data, &event); err != nil {
+			return false, err
+		}
+		if event.Type != "event_msg" {
+			continue
+		}
+		var payload struct{ Type string }
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return false, err
+		}
+		if payload.Type == "task_started" {
+			at := parseTime(event.Timestamp)
+			if at.IsZero() {
+				return false, errors.New("a turn in the transcript has no valid timestamp")
+			}
+			if !at.Before(since) {
+				return true, nil
+			}
+		}
+	}
+	if pos != info.Size() {
+		return false, errors.New("the transcript changed or has an incomplete record; try again")
+	}
+	return false, nil
 }
 
 // codexMeta reads the session_meta line at the start of a rollout file.

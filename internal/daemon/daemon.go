@@ -1648,6 +1648,10 @@ func (d *Daemon) control(cmd string) {
 		return // a selector is required; an empty one never means "all"
 	}
 	action, sel := f[0], f[1]
+	if action == "recover" {
+		d.recoverCodex(sel)
+		return
+	}
 	for _, j := range d.Jobs {
 		if !SelectorMatches(j, sel) {
 			continue

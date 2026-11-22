@@ -323,6 +323,53 @@ func TestResumeNowDoesNotResendAPossiblyDeliveredCodexPrompt(t *testing.T) {
 	}
 }
 
+func TestRecoverLegacyCodexLaunch(t *testing.T) {
+	const id = "01a202ab-358f-70e3-9ff4-b2b19e96e4d1"
+	for _, tc := range []struct {
+		name     string
+		selector string
+		detail   string
+		tail     string
+		want     bool
+	}{
+		{name: "missed turn", want: true},
+		{name: "all refused", selector: "all"},
+		{name: "prefix refused", selector: "codex:01a202ab"},
+		{name: "already verified", detail: "Codex started a turn (pid 42)"},
+		{name: "turn started", tail: "{\"timestamp\":\"2026-11-11T08:01:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n"},
+		{name: "incomplete transcript", tail: "{\"timestamp\":\"2026-11-11T08:01:00Z\""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := setup(t)
+			path := filepath.Join(h.codex, "rollout-"+id+".jsonl")
+			initial := "{\"type\":\"session_meta\",\"payload\":{\"id\":\"" + id + "\"}}\n"
+			if err := os.WriteFile(path, []byte(initial+tc.tail), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			j := &core.Job{
+				Key: "codex:" + id, Harness: "codex", SessionID: id, Kind: core.KindUsageLimit,
+				State: core.StateDelivered, DeliveredVia: "codex-exec-resume", Result: tc.detail,
+				LimitAt: h.now.Add(-2 * time.Hour), DeliveredAt: h.now.Add(-time.Hour), Attempts: 1,
+				TranscriptPath: path, TranscriptSize: int64(len(initial)),
+			}
+			if j.Result == "" {
+				j.Result = "started codex (pid 42), output in native-codex-exec-resume.log"
+			}
+			h.d.Jobs[j.Key] = j
+			selector := tc.selector
+			if selector == "" {
+				selector = j.Key
+			}
+			h.d.control("recover " + selector)
+			h.d.control("recover " + selector) // a repeated request still delivers once
+			h.d.runDue()
+			if (len(h.delivered) == 1) != tc.want || len(h.delivered) > 1 {
+				t.Fatalf("delivered %d times, want recovery %v", len(h.delivered), tc.want)
+			}
+		})
+	}
+}
+
 func TestResumeNowNeverRevivesABillingStop(t *testing.T) {
 	h := setup(t)
 	ev := limitEvent(h, "s1", 0)

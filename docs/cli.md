@@ -32,6 +32,7 @@ Sessions and resumes:
   list         Show scheduled and recent resumes
   cancel       Cancel scheduled resumes
   resume-now   Resume now instead of waiting for the reset
+  recover      Retry a Codex resume that an older Continuum marked delivered
 
 All or chosen sessions:
   scope        Resume every session, or only the ones you choose
@@ -424,6 +425,22 @@ Arguments:
   ID         a resume from `continuum list`, a session id, or its first 4+ characters (it must name one session)
   this       the agent session running this command (for agents)
   all        every pending resume
+
+Options:
+  -h, --help             Show this help.
+```
+
+## recover
+
+```text
+continuum recover - Retry a Codex resume that an older Continuum marked delivered
+
+Usage:
+  continuum recover CODEX_THREAD_ID
+
+  Use when an older Continuum marked a detached Codex launch as delivered.
+  Continuum checks the thread transcript for a new turn before retrying.
+  Find the full thread ID with `continuum list --all --json`.
 
 Options:
   -h, --help             Show this help.
