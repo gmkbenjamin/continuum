@@ -551,13 +551,15 @@ func TestPaneScanFindsOtherAgents(t *testing.T) {
 	h := setup(t)
 	orig := mux.Runner
 	defer func() { mux.Runner = orig }()
+	const limit = "Error: rate limit exceeded. Quota resets in 30 minutes."
+	screen := "> fix the tests\n" + limit + "\n> "
 	mux.Runner = func(_ time.Duration, _ string, argv ...string) (string, error) {
 		joined := strings.Join(argv, " ")
 		switch {
 		case strings.Contains(joined, "list-panes"):
 			return "%1\tzsh\n%2\taider\n%3\tclaude\n", nil
 		case strings.Contains(joined, "capture-pane") && strings.Contains(joined, "%2"):
-			return "> fix the tests\nError: rate limit exceeded. Quota resets in 30 minutes.\n> ", nil
+			return screen, nil
 		case strings.Contains(joined, "capture-pane"):
 			return "You've hit your session limit · resets 10am\n", nil // claude: transcripts cover it
 		}
@@ -577,10 +579,42 @@ func TestPaneScanFindsOtherAgents(t *testing.T) {
 	if len(h.d.Jobs) != 1 {
 		t.Fatalf("rescan duplicated: %d jobs", len(h.d.Jobs))
 	}
-	for _, j := range h.d.Jobs {
+	for key, j := range h.d.Jobs {
 		if len(j.Sources) != 1 {
 			t.Fatalf("rescan merged again: %v", j.Sources)
 		}
+		j.State, j.DeliveredAt = core.StateDelivered, h.now
+		h.now = h.now.Add(time.Minute)
+		screen += "Continue where you left off.\n> "
+		h.d.scanPanes()
+		if h.d.Jobs[key].State != core.StateDelivered {
+			t.Fatal("a redraw rescheduled the visible limit")
+		}
+		screen += "\n" + limit + "\n> "
+		h.d.scanPanes()
+		if h.d.Jobs[key].State != core.StatePending {
+			t.Fatal("a second copy of the limit did not schedule a resume")
+		}
+	}
+
+	screen = "> fix the tests\nError: rate limit exceeded.\nAvailable again at 15:23.\n> "
+	h.now = h.now.Add(time.Minute)
+	h.d.scanPanes()
+	j := h.d.Jobs["aider@tmux:%2"]
+	if j == nil || !j.ResetKnown || j.ResetAt.Hour() != 15 {
+		t.Fatalf("first multiline reset: %+v", j)
+	}
+	screen = strings.Replace(screen, "15:23", "16:23", 1)
+	h.now = h.now.Add(time.Minute)
+	h.d.scanPanes()
+	if j = h.d.Jobs["aider@tmux:%2"]; j.ResetAt.Hour() != 16 {
+		t.Fatalf("updated reset was lost: %+v", j)
+	}
+	screen = strings.Replace(screen, "Available again at 16:23.", "Please check billing.", 1)
+	h.now = h.now.Add(time.Minute)
+	h.d.scanPanes()
+	if j = h.d.Jobs["aider@tmux:%2"]; j.State != core.StateNeedsUser {
+		t.Fatalf("updated failure needs user action: %+v", j)
 	}
 }
 

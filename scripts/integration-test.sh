@@ -46,7 +46,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 agent_cmd() { # harness session [event]
   # env -u: the fake agents must not inherit the pid of a real Claude session
   # running this script (Continuum would rightly refuse to touch it).
-  printf 'env -u CLAUDE_PID -u CLAUDECODE CONTINUUM_HOME=%q CONTINUUM_BIN=%q %q %q %q %q' \
+  printf 'env -u CLAUDE_PID -u CLAUDECODE -u CONTINUUM_WRAPPER_ID CONTINUUM_HOME=%q CONTINUUM_BIN=%q %q %q %q %q' \
     "$CONTINUUM_HOME" "$CONTINUUM_BIN" "$WORK/bin/$1" "$2" "$WORK/markers/$2" "${3:-StopFailure}"
 }
 

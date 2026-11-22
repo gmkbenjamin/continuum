@@ -5,6 +5,7 @@
 package deliver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/continuum-dev/continuum/internal/core"
 	"github.com/continuum-dev/continuum/internal/live"
 	"github.com/continuum-dev/continuum/internal/mux"
+	"github.com/continuum-dev/continuum/internal/opencode"
 	"github.com/continuum-dev/continuum/internal/proc"
 	"github.com/continuum-dev/continuum/internal/rules"
 )
@@ -55,6 +57,9 @@ type Result struct {
 // ErrNoRoute means no strategy could reach the session.
 var ErrNoRoute = errors.New("no delivery route reached the session")
 
+// ErrQueued means the agent has the prompt and needs the session reopened.
+var ErrQueued = errors.New("the prompt is queued in Codex and will run when you reopen the session")
+
 // ErrGone: no route can ever reach the session again. Its wrapper exited
 // (a wrapper id is never reused) and nothing else knows it: no session id
 // for the agent's own command, no pane. Retrying only waits for nothing.
@@ -91,12 +96,18 @@ func Deliver(o Options, job *core.Job) (Result, error) {
 			} else {
 				res, err = viaNative(o, h, job)
 			}
+			if job.Location != nil && job.Location.Kind == opencode.LocationKind {
+				return res, err // preserve the server's busy and changed outcomes
+			}
 		default:
 			err = fmt.Errorf("unknown strategy %q", s)
 		}
 		if err == nil {
 			o.logf("route %s: delivered (%s)", s, res.Detail)
 			return res, nil
+		}
+		if errors.Is(err, ErrQueued) {
+			return Result{}, err // the prompt is already queued
 		}
 		if errors.Is(err, errSkip) {
 			o.logf("route %s: not applicable", s)
@@ -194,7 +205,7 @@ func viaWrapper(o Options, job *core.Job) (Result, error) {
 
 func viaMultiplexer(o Options, h *rules.Harness, job *core.Job) (Result, error) {
 	loc := job.Location
-	if loc == nil || loc.Kind == "" || loc.Kind == "wrapper" {
+	if loc == nil || loc.Kind == "" || loc.Kind == "wrapper" || loc.Kind == opencode.LocationKind {
 		return Result{}, errSkip
 	}
 	if _, ok := o.Rules.Multiplexers[loc.Kind]; !ok {
@@ -451,6 +462,9 @@ func sessionStopped(o Options, job *core.Job) (bool, string) {
 }
 
 func viaNative(o Options, h *rules.Harness, job *core.Job) (Result, error) {
+	if h.Name == "opencode" && job.Location != nil && job.Location.Kind == opencode.LocationKind {
+		return viaOpenCode(o, job)
+	}
 	if len(h.NativeCommands) == 0 {
 		return Result{}, errSkip
 	}
@@ -536,6 +550,9 @@ func viaNative(o Options, h *rules.Harness, job *core.Job) (Result, error) {
 			reasons = append(reasons, nc.Name+": "+err.Error())
 			continue
 		}
+		if nc.QueuedWarning != "" && strings.Contains(out, nc.QueuedWarning) {
+			return Result{}, ErrQueued
+		}
 		return Result{Via: nc.Name, Detail: strings.TrimSpace(firstLine(out))}, nil
 	}
 	if len(reasons) == 0 {
@@ -546,6 +563,22 @@ func viaNative(o Options, h *rules.Harness, job *core.Job) (Result, error) {
 		err = fmt.Errorf("%w: %v", ErrStillOpen, err)
 	}
 	return Result{}, err
+}
+
+func viaOpenCode(o Options, job *core.Job) (Result, error) {
+	client, err := opencode.New(o.Config.OpenCodeServer)
+	if err != nil || job.Location.Socket != client.Endpoint() || job.Location.Target != job.SessionID {
+		return Result{}, fmt.Errorf("%w: configured OpenCode server or target changed", opencode.ErrChanged)
+	}
+	if o.DryRun {
+		return Result{Via: opencode.LocationKind, Detail: "dry run: would send to the OpenCode session"}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Resume(ctx, job.SessionID, job.Location.Extra["failed_message"], job.Cwd, o.Prompt); err != nil {
+		return Result{}, err
+	}
+	return Result{Via: opencode.LocationKind, Detail: "OpenCode accepted the prompt for the existing session"}, nil
 }
 
 func firstLine(s string) string {

@@ -300,6 +300,9 @@ func wantWrap(harness string, argv []string) bool {
 	if os.Getenv("CONTINUUM_WRAPPER_ID") != "" || os.Getenv("CONTINUUM_NO_WRAP") != "" {
 		return false
 	}
+	if !stdinIsTerminal() || !term.IsTerminal(int(os.Stdout.Fd())) {
+		return false
+	}
 	p := core.GetPaths()
 	cfg, _ := core.LoadConfig(p.Config)
 	if !cfg.IsEnabled() {
@@ -313,6 +316,9 @@ func wantWrap(harness string, argv []string) bool {
 		harness = wrapper.DetectHarness(r, argv)
 	}
 	if !cfg.HarnessEnabled(harness) {
+		return false
+	}
+	if harness == "opencode" && cfg.OpenCodeServer != "" {
 		return false
 	}
 	return r.Harness(harness).Wrap.Wants(argv[1:])

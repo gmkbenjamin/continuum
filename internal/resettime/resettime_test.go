@@ -38,6 +38,7 @@ func TestParse(t *testing.T) {
 		{"codex date", "You've hit your usage limit. Try again at 12 Nov 2026 9:05 AM.", time.Date(2026, 11, 12, 9, 5, 0, 0, syd)},
 		{"short relative", "Rate limited. Try again in 45s", ref.Add(45 * time.Second)},
 		{"24h clock", "Quota exceeded; resets at 14:00", time.Date(2026, 11, 11, 14, 0, 0, 0, syd)},
+		{"qwen token-plan reset", "Quota exhausted: Your token-plan 1-week quota has been exhausted. The quota will reset at 11-15 09:25:32 UTC.", time.Date(2026, 11, 15, 9, 25, 32, 0, time.UTC)},
 		{"iso utc", "limit reached, resets at 2026-11-11T03:00:00Z", time.Date(2026, 11, 11, 3, 0, 0, 0, time.UTC)},
 		{"epoch field", `{"error":"rate_limit","resets_at": 1793742179}`, time.Unix(1793742179, 0)},
 		{"weekday", "Weekly limit reached, resets Monday 9am", time.Date(2026, 11, 16, 9, 0, 0, 0, syd)},
@@ -126,6 +127,7 @@ func TestParseEdgeCases(t *testing.T) {
 		"Try again at 15am",
 		"Resets 0am",
 		"Resets 13pm",
+		"Resets at 11-31 09:25:00 UTC",
 	} {
 		if got, ok := Parse(bad, ref, syd); ok {
 			t.Errorf("Parse(%q) = (%v, true), want ok=false", bad, got)

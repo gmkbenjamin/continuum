@@ -21,14 +21,14 @@ Generated from the built-in rules by `make docs` (`continuum rules --agents`).
 | [Goose](https://block.github.io/goose) | `goose` | screen (wrapper, tmux) | opt-in | in place (wrapper, multiplexer pane) |
 | [Grok Build](https://x.ai) | `grok` | hooks, session list, screen (wrapper, tmux) | default | in place (wrapper, multiplexer pane); closed sessions by id |
 | [Junie CLI](https://www.jetbrains.com/junie) | `junie` | screen (wrapper, tmux) | default | in place (wrapper, multiplexer pane) |
-| [Kilo Code CLI](https://kilocode.ai) | `kilocode` | screen (wrapper, tmux) | default | in place (wrapper, multiplexer pane) |
+| [Kilo Code CLI](https://kilocode.ai) | `kilo` or `kilocode` | screen (wrapper, tmux) | default | in place (wrapper, multiplexer pane) |
 | [Kimi CLI](https://github.com/MoonshotAI/kimi-cli) | `kimi` | screen (wrapper, tmux) | default | in place (wrapper, multiplexer pane) |
 | [Kiro CLI](https://kiro.dev/cli) | `kiro-cli` | screen (wrapper, tmux) | default | in place (wrapper, multiplexer pane) |
 | [Letta Code](https://letta.com) | `letta` | screen (wrapper, tmux) | default | in place (wrapper, multiplexer pane) |
 | Muse Code | `muse` | hooks, session list, screen (wrapper, tmux) | default | in place (wrapper, multiplexer pane) |
 | [opencode](https://opencode.ai) | `opencode` | screen (wrapper, tmux) | default | in place (wrapper, multiplexer pane) |
 | [OpenHands CLI](https://openhands.dev) | `openhands` | screen (wrapper, tmux) | default | in place (wrapper, multiplexer pane) |
-| [Pi coding agent](https://github.com/badlogic/pi-mono) | `pi` | screen (wrapper, tmux) | opt-in | in place (wrapper, multiplexer pane) |
+| [Pi coding agent](https://github.com/earendil-works/pi) | `pi` | screen (wrapper, tmux) | opt-in | in place (wrapper, multiplexer pane) |
 | [Plandex](https://plandex.ai) | `plandex` | screen (wrapper, tmux) | default | in place (wrapper, multiplexer pane) |
 | [Qwen Code](https://github.com/QwenLM/qwen-code) | `qwen` | screen (wrapper, tmux) | default | in place (wrapper, multiplexer pane) |
 | [Rovo Dev CLI](https://www.atlassian.com/rovo) | `acli rovodev` | screen (wrapper, tmux) | opt-in | in place (wrapper, multiplexer pane) |
@@ -76,9 +76,10 @@ doesn't say which error ended a turn, so limits are still read off the screen. C
 now installs its command as `agent`: the shell hook wraps `agent` too, but only while
 that name is a link into Cursor's own install. Cursor also runs Claude Code's hooks;
 with its own hook installed, those runs are ignored rather than reported twice.
+Cursor's `agent persist` manages its own terminal sessions and bypasses the shell
+wrapper.
 
-opencode 2 runs its sessions in a shared background service; its terminal interface
-is wrapped and resumed in place.
+OpenCode's terminal interface is wrapped and resumed in place by default.
 
 Continuum's skill in `~/.claude/skills` is read by Grok Build, Muse Code, the Cursor
 CLI and opencode as well as Claude Code.
@@ -86,6 +87,49 @@ CLI and opencode as well as Claude Code.
 Print-mode and SDK runs (`claude -p`, Agent SDK scripts, `codex exec`, Codex subagent
 threads, `grok -p`, `muse exec`, `agent -p`), and agents started by another agent's tool, are left alone: nobody types into
 them, and continuing one would start work nobody asked for.
+
+## Compatibility checks
+
+Continuum's tests exercise interactive and one-shot launch rules and replay usage
+errors with simulated resets. Actual limits depend on the provider, plan, and
+client version.
+
+- Kilo's current terminal command is `kilo`. The shell hook also recognises
+  `kilocode`. `kilo run` and server commands run directly.
+  [Kilo CLI reference](https://kilo.ai/docs/code-with-ai/platforms/cli)
+- Cline's bare command and `cline --tui` start interactive sessions. A positional
+  prompt alone runs once. OpenHands can seed an interactive session with `--task`
+  or `--file`. [Cline CLI source guide](https://github.com/cline/cline/blob/main/apps/cli/README.md) ·
+  [OpenHands CLI reference](https://github.com/OpenHands/docs/blob/main/openhands/usage/cli/command-reference.mdx)
+- Qwen Code can report token-plan reset times as `MM-DD HH:MM:SS UTC`. Continuum
+  uses that date and time when scheduling a resume.
+  [Qwen Code quota handling](https://github.com/QwenLM/qwen-code/blob/main/packages/core/src/utils/quotaErrorDetection.ts)
+
+## OpenCode desktop and CLI
+
+Continuum can watch and resume sessions through the OpenCode v2 server shared by
+the desktop app and terminal. The API behavior was checked against OpenCode 2.3.2.
+
+1. Start a local server with `opencode serve --hostname 127.0.0.1 --port 4096`.
+2. In the shell where you connect, export `OPENCODE_PASSWORD` with the server
+   password. For the CLI, run `opencode --server http://127.0.0.1:4096`. For the
+   desktop app, run `opencode api --server http://127.0.0.1:4096 server.pair` and
+   paste `http://127.0.0.1:4096/auth/connect/<code>` into the app's server address
+   field, using the returned `code`.
+3. Set `"opencode_server": "http://127.0.0.1:4096"` in Continuum's
+   `config.json`. The daemon needs the server password in `OPENCODE_PASSWORD`.
+   To run it in the foreground, stop any existing Continuum daemon and export
+   the password before running `continuum watch`.
+
+Server mode replaces OpenCode's screen-based detection. It watches the 20 most
+recent top-level sessions on that server, including top-level sessions created by
+scripts. Continuum's scope and exclusions apply. Delivery uses the `native`
+strategy with `allow_headless` enabled. Continuum lets OpenCode finish any built-in
+retries and checks for activity and queued work before sending a resume prompt to
+the existing session. The check and submission are separate API calls, so
+messages arriving concurrently can also enter the queue.
+[OpenCode server setup](https://opencode.ai/docs/cli/web) ·
+[OpenCode session API](https://opencode.ai/docs/api#session)
 
 ## Shell hook: "default" and "opt-in"
 
@@ -134,7 +178,7 @@ own agents, VS Code Copilot Chat, Cline and Roo in VS Code, Zed's agent, the Ant
 editor, Claude and ChatGPT desktop chats) have no terminal Continuum can type into. Their
 command-line agents are covered: Cursor CLI (`agent`, `cursor-agent`), Antigravity CLI (`agy`),
 and any agent you run in an editor's built-in terminal. Claude Code and Codex sessions in their
-desktop apps are the exception. Codex app sessions are continued inside the app,
-through its local server. Claude Desktop sessions are continued by themselves as soon
+desktop apps and OpenCode's shared server are supported. Codex app sessions continue
+inside the app through its local server. Claude Desktop sessions continue as soon
 as Desktop lets go of them, never copied while it may still hold them. See
 [How it works](how-it-works.md#desktop-apps).

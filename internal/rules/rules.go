@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -66,6 +67,9 @@ type NativeCommand struct {
 	// backend (e.g. codex queue → the local Codex app server), so it reaches
 	// a session the desktop app has open instead of starting a copy.
 	ReachesDesktop bool `json:"reaches_desktop"`
+	// QueuedWarning is the command's success-path warning that the message
+	// was queued but the session could not be resumed.
+	QueuedWarning string `json:"queued_warning"`
 }
 
 // DesktopApp describes an agent's desktop app, which can hold a session open
@@ -132,8 +136,14 @@ type LiveSessions struct {
 type Wrap struct {
 	PassthroughFlags       []string `json:"passthrough_flags"`
 	PassthroughSubcommands []string `json:"passthrough_subcommands"`
+	ValueFlags             []string `json:"value_flags"`
+	// Some CLIs treat a positional prompt as a one-shot run unless an
+	// interactive flag is supplied. The count includes subcommand words.
+	MaxPositionals   *int     `json:"max_positionals"`
+	InteractiveFlags []string `json:"interactive_flags"`
 	// OnlySubcommands, for CLIs built around subcommands: wrap the bare
-	// command and these subcommands only.
+	// command and these subcommands only. A subcommand can be a space-separated
+	// path (e.g. "rovodev run").
 	OnlySubcommands []string `json:"only_subcommands"`
 }
 
@@ -143,34 +153,55 @@ func (w *Wrap) Wants(args []string) bool {
 	if w == nil {
 		return true
 	}
-	positional := ""
-	for _, a := range args {
-		if a == "--" {
-			break
+	var positionals []string
+	options, interactive := true, false
+	commandWords := 0
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if options && arg == "--" {
+			options = false
+			continue
 		}
-		for _, f := range w.PassthroughFlags {
-			if a == f || strings.HasPrefix(a, f+"=") {
-				return false
+		if !options || !strings.HasPrefix(arg, "-") || arg == "-" {
+			positionals = append(positionals, arg)
+			if options {
+				commandWords++
 			}
+			continue
 		}
-		if positional == "" && !strings.HasPrefix(a, "-") {
-			positional = a
+		flag, _, assigned := strings.Cut(arg, "=")
+		if slices.Contains(w.PassthroughFlags, flag) {
+			return false
+		}
+		interactive = interactive || slices.Contains(w.InteractiveFlags, flag)
+		if !assigned && slices.Contains(w.ValueFlags, flag) &&
+			i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+			i++
 		}
 	}
+	if w.MaxPositionals != nil && len(positionals) > *w.MaxPositionals && !interactive {
+		return false
+	}
+	command := positionals[:commandWords]
 	for _, s := range w.PassthroughSubcommands {
-		if positional == s {
+		if hasSubcommand(command, s) {
 			return false
 		}
 	}
-	if len(w.OnlySubcommands) > 0 && positional != "" {
+	if len(w.OnlySubcommands) > 0 && len(command) > 0 {
 		for _, s := range w.OnlySubcommands {
-			if positional == s {
+			if hasSubcommand(command, s) {
 				return true
 			}
 		}
 		return false
 	}
 	return true
+}
+
+func hasSubcommand(args []string, command string) bool {
+	words := strings.Fields(command)
+	return len(words) > 0 && len(args) >= len(words) && slices.Equal(args[:len(words)], words)
 }
 
 type Harness struct {
@@ -582,6 +613,7 @@ func (h *Harness) Grace(d Defaults) int {
 
 // Match is one detection hit.
 type Match struct {
+	Line string // the matched line without its neighboring screen lines
 	Kind string // usage_limit | transient
 	Text string // the matched line, with a line of context either side
 	Hit  string // the text the pattern matched
@@ -626,7 +658,7 @@ func (h *Harness) Classify(text string, tailLines int) *Match {
 				if i > 0 {
 					ctx = lines[i-1] + "\n" + ctx
 				}
-				return &Match{Kind: p.Kind, Text: strings.TrimSpace(ctx), Hit: p.re.FindString(line)}
+				return &Match{Kind: p.Kind, Text: strings.TrimSpace(ctx), Hit: p.re.FindString(line), Line: strings.TrimSpace(line)}
 			}
 		}
 	}

@@ -266,6 +266,28 @@ func TestDesktopSessions(t *testing.T) {
 	}
 }
 
+func TestCodexQueueWarningDoesNotResumeAgain(t *testing.T) {
+	r, _ := rules.Load("")
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "codex")
+	calls := filepath.Join(dir, "calls")
+	script := `#!/bin/sh
+case "$*" in *--help*) echo 'queue exec resume --thread --message --resume'; exit 0;; esac
+echo "$1" >> "` + calls + `"
+echo 'Warning: message was queued, but could not resume thread t1' >&2
+`
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	o := Options{Rules: r, Config: core.Config{Binaries: map[string]string{"codex": bin}}, Prompt: "Continue.", Strategies: []string{"native"}, Live: closed}
+	if _, err := Deliver(o, &core.Job{Harness: "codex", SessionID: "t1", Cwd: dir}); !errors.Is(err, ErrQueued) {
+		t.Fatalf("expected a queued prompt requiring the session to reopen, got %v", err)
+	}
+	if got := waitFile(calls); got != "queue\n" {
+		t.Fatalf("expected one queue and no fallback, got %q", got)
+	}
+}
+
 // A wrapper that exited, for a session nothing else knows (no id, no pane):
 // no route can ever reach it, which the daemon must not retry.
 func TestGoneWrapperWithNothingElseIsPermanent(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/continuum-dev/continuum/internal/core"
+	"github.com/continuum-dev/continuum/internal/deliver"
 	"github.com/continuum-dev/continuum/internal/hooks"
 	"github.com/continuum-dev/continuum/internal/live"
 	"github.com/continuum-dev/continuum/internal/mux"
@@ -305,6 +306,20 @@ func TestSelectors(t *testing.T) {
 }
 
 // Naming a billing stop never resumes it.
+func TestResumeNowDoesNotRequeueAnAcceptedCodexPrompt(t *testing.T) {
+	h := setup(t)
+	j := &core.Job{Harness: "codex", SessionID: "thread-123", Key: "codex:thread-123", State: core.StatePending}
+	h.d.Jobs[j.Key] = j
+	h.d.DeliverFn = func(deliver.Options, *core.Job) (deliver.Result, error) {
+		return deliver.Result{}, deliver.ErrQueued
+	}
+	h.d.runJob(j)
+	h.d.control("resume-now " + j.Key)
+	if j.State != core.StateNeedsUser || !j.ManualResumeOnly {
+		t.Fatalf("queued prompt can be sent again: %+v", j)
+	}
+}
+
 func TestResumeNowNeverRevivesABillingStop(t *testing.T) {
 	h := setup(t)
 	ev := limitEvent(h, "s1", 0)

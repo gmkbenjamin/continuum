@@ -1,7 +1,7 @@
 # Continuum
 
-**When your AI coding agent hits its usage limit, Continuum picks the work back up the
-moment the limit resets.**
+**When your AI coding agent hits its usage limit, Continuum picks the work back up
+after the limit resets.**
 
 Continuum watches Claude Code, Codex, Grok Build, Muse Code, Cursor CLI, opencode and
 about 25 other coding agents. When
@@ -21,6 +21,24 @@ You've hit your session limit · resets 10am
 - **Your agents can control it:** ask one "don't auto-resume this session" or "when you
   resume, re-run the tests first".
 - **Local:** nothing is sent anywhere. macOS, Linux and Windows.
+
+## Queued prompts and usage resets
+
+Some agents let you queue follow-up prompts while a turn is running. Codex CLI and
+GitHub Copilot CLI queue these follow-ups for the next turn. Whether a queued prompt
+waits for a usage reset depends on the client.
+[Codex CLI queue](https://learn.chatgpt.com/docs/cli/reference) ·
+[GitHub Copilot CLI queue](https://docs.github.com/en/copilot/how-tos/copilot-cli/use-copilot-cli/steer-agents#queue-a-prompt-to-be-processed-next)
+
+Claude Code can wait in an eligible interactive session signed in with a claude.ai
+subscription and continue the interrupted task after the reset. Keep the session
+open for this to work. If you send a new prompt during the wait, Claude Code submits
+it immediately and starts waiting again if it hits the limit.
+[Claude Code usage-limit behavior](https://code.claude.com/docs/en/interactive-mode#wait-for-a-usage-limit-to-reset)
+
+Continuum schedules a resume for a stalled session and skips it if the session has
+already continued. For Claude Code, it gives the running agent five minutes by
+default after a known reset to continue on its own. [Grace period settings](docs/cli.md#grace)
 
 ## Install
 
@@ -99,7 +117,9 @@ agent-guide`.
 - **Fully:** Claude Code (CLI, IDE, Desktop), Codex (CLI, app), Grok Build, Muse Code.
 - **With hooks:** Cursor CLI (`agent`), which reports its sessions; limits are read
   off its screen.
-- **In any terminal:** opencode, Gemini CLI, Antigravity CLI, Qwen Code, Aider, GitHub
+- **OpenCode:** terminal support and an optional shared server connection for the
+  desktop app and CLI. [OpenCode setup](docs/agents.md#opencode-desktop-and-cli)
+- **In any terminal:** Gemini CLI, Antigravity CLI, Qwen Code, Aider, GitHub
   Copilot CLI and more: [the full list](docs/agents.md).
 - **Not covered:** agents inside an editor window (the Cursor, Windsurf and Antigravity
   editors' own agents, VS Code Copilot Chat). Their command-line agents work.
@@ -119,8 +139,8 @@ install gets back its exact original bytes.
 
 - A sleeping computer can't resume anything. Continuum keeps it awake while a resume is
   near, but closing a laptop lid on battery still sleeps it; overdue resumes run on wake.
-- A session open where Continuum can't type (a plain terminal window opened before
-  installing, a desktop app) gets a notification instead of a copy.
+- Continuum sends a notification when a session is still open and no delivery
+  route can reach it.
 - Windows, WezTerm, kitty and Ghostty support is built but not yet tested on real systems.
 
 ## More

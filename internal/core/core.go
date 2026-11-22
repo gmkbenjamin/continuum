@@ -127,6 +127,9 @@ type Job struct {
 	Sources        []string  `json:"sources,omitempty"`
 	DeliveredAt    time.Time `json:"delivered_at,omitempty"`
 	DeliveredVia   string    `json:"delivered_via,omitempty"`
+	// ManualResumeOnly prevents another send when the prompt is known to
+	// have been queued or may already have arrived.
+	ManualResumeOnly bool `json:"manual_resume_only,omitempty"`
 	// WaitingOpen: the session is open somewhere Continuum can't type; it is
 	// re-checked every couple of minutes (the user was told once).
 	WaitingOpen bool `json:"waiting_open,omitempty"`
@@ -230,6 +233,7 @@ type Config struct {
 	CodexHome         string            `json:"codex_home,omitempty"`
 	GrokHome          string            `json:"grok_home,omitempty"`
 	MuseHome          string            `json:"muse_home,omitempty"`
+	OpenCodeServer    string            `json:"opencode_server,omitempty"` // local shared v2 API
 	ResetHintsCommand []string          `json:"reset_hints_command,omitempty"`
 	Binaries          map[string]string `json:"binaries,omitempty"`
 	AutostartDaemon   *bool             `json:"autostart_daemon,omitempty"`

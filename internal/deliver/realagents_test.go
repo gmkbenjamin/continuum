@@ -27,7 +27,7 @@ func TestRealAgentPanes(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	sock := "continuum-real"
+	sock := "continuum-real-" + core.NewID()
 	tm := func(args ...string) string {
 		out, err := exec.Command("tmux", append([]string{"-L", sock}, args...)...).CombinedOutput()
 		if err != nil {
@@ -71,13 +71,13 @@ func TestRealAgentPanes(t *testing.T) {
 			tm("send-keys", "-t", pane, "Enter")
 			time.Sleep(3 * time.Second)
 		}
-		if err := VerifyPane(r, h, loc); err != nil && strings.Contains(err.Error(), "menu or prompt") {
+		if err := VerifyPane(r, h, nil, loc); err != nil && strings.Contains(err.Error(), "menu or prompt") {
 			// e.g. Codex's "Update available" menu, where Enter means "Update now".
 			t.Logf("%s: correctly refused to type into an open menu: %v", harness, err)
 			tm("send-keys", "-t", pane, "Escape")
 			time.Sleep(3 * time.Second)
 		}
-		if err := VerifyPane(r, h, loc); err != nil {
+		if err := VerifyPane(r, h, nil, loc); err != nil {
 			after, _ := mux.Capture(r, loc)
 			t.Errorf("%s (process %q): %v\n%s", harness, name, err, tail(after))
 			continue

@@ -176,7 +176,13 @@ this:
 
 **Codex app.** `codex queue` sends the resume prompt to the local Codex app server,
 which the Codex app itself uses. So the session continues inside the app, with no copy
-and no need to close it.
+and no need to close it. If Codex accepts the prompt and reports that it could not
+reopen the thread, Continuum asks you to open the thread to run the queued message.
+
+**OpenCode.** With a [shared server configured](agents.md#opencode-desktop-and-cli),
+Continuum reads final turn errors from the local API. Before resuming it checks that
+the same failure is still the latest message, the session is idle, and the inbox
+is empty. The original session receives the prompt through the API.
 
 ## Waiting for the agent's own resume
 

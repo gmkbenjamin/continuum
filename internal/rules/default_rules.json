@@ -132,7 +132,8 @@
       },
       "wrap": {
         "passthrough_flags": ["-V", "--version", "-h", "--help"],
-        "passthrough_subcommands": ["exec", "e", "login", "logout", "mcp", "mcp-server", "app-server", "app", "completion", "apply", "a", "sandbox", "debug", "queue", "cloud", "features", "help", "generate-ts", "proto"]
+        "passthrough_subcommands": ["exec", "e", "login", "logout", "mcp", "mcp-server", "app-server", "app", "completion", "apply", "a", "sandbox", "debug", "queue", "cloud", "features", "help", "generate-ts", "proto", "archive", "delete", "doctor", "exec-server", "migrate-nfs-db", "migrate-rollouts", "plugin", "remote-control", "unarchive", "update"],
+        "value_flags": ["-a", "-c", "-C", "-i", "-m", "-p", "-s", "--add-dir", "--ask-for-approval", "--cd", "--config", "--disable", "--enable", "--image", "--local-provider", "--model", "--profile", "--remote", "--remote-auth-token-env", "--sandbox"]
       },
       "patterns": [
         {"kind": "usage_limit", "regex": "(?i)you[’']?ve\\s+hit\\s+your\\s+usage\\s+limit"},
@@ -147,7 +148,7 @@
       "never_resume_patterns": ["(?i)credit\\s+balance\\s+is\\s+too\\s+low", "(?i)out\\s+of\\s+credits", "(?i)spend\\s+cap", "(?i)request\\s+a\\s+limit\\s+increase", "(?i)send\\s+a\\s+request\\s+to\\s+your\\s+admin"],
       "ui_markers": ["(?i)esc to interrupt", "(?i)context left", "›", "▌"],
       "native_commands": [
-        {"name": "codex-queue", "when": "stopped", "reaches_desktop": true, "requires_help": ["queue"], "requires_subcommand_help": {"queue": ["--thread", "--message", "--resume"]}, "args": ["{bin}", "queue", "--thread", "{session}", "--message", "{prompt}", "--resume"], "cwd": "{cwd}"},
+        {"name": "codex-queue", "when": "stopped", "reaches_desktop": true, "queued_warning": "Warning: message was queued, but could not resume thread", "requires_help": ["queue"], "requires_subcommand_help": {"queue": ["--thread", "--message", "--resume"]}, "args": ["{bin}", "queue", "--thread", "{session}", "--message", "{prompt}", "--resume"], "cwd": "{cwd}"},
         {"name": "codex-exec-resume", "when": "stopped", "requires_help": ["exec"], "requires_subcommand_help": {"exec": ["resume"]}, "args": ["{bin}", "exec", "resume", "{session}", "{prompt}"], "cwd": "{cwd}", "detach": true}
       ]
     },
@@ -162,7 +163,7 @@
       "patterns": [{"kind": "usage_limit", "regex": "(?i)quota\\s+exceeded\\s+for\\s+quota\\s+metric"}, {"kind": "usage_limit", "regex": "(?i)reached\\s+your\\s+daily\\s+(?:\\S+\\s+)?(?:request\\s+)?(?:limit|quota)"}, {"kind": "usage_limit", "regex": "(?i)usage\\s+limit\\s+reached\\s+for"}],
       "never_resume_patterns": [],
       "ui_markers": ["(?i)type\\s+your\\s+message", "(?i)esc\\s+to\\s+cancel", "(?i)context\\s+left", "(?i)gemini-\\d"],
-      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--prompt", "--version"], "passthrough_subcommands": ["mcp", "extensions", "hooks"]},
+      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--prompt", "--version", "--list-sessions", "--delete-session"], "passthrough_subcommands": ["mcp", "extensions", "hooks"]},
       "live_sessions": {"scan_processes": true, "process_exclude_args": ["mcp", "extensions"]},
       "native_commands": []
     },
@@ -192,7 +193,7 @@
       "patterns": [{"kind": "transient", "regex": "(?i)litellm\\.(?:RateLimitError|ServiceUnavailableError|InternalServerError|APIConnectionError)"}],
       "never_resume_patterns": ["(?i)AuthenticationError"],
       "ui_markers": ["(?im)^(?:architect|ask|code|diff|multi|context|help)?>\\s*$", "(?i)tokens:\\s+\\S+\\s+sent"],
-      "wrap": {"passthrough_flags": ["-V", "-f", "-h", "-m", "-v", "--exit", "--help", "--lint", "--test", "--apply", "--commit", "--models", "--message", "--version", "--list-models", "--message-file", "--show-prompts", "--show-repo-map"]},
+      "wrap": {"passthrough_flags": ["-V", "-f", "-h", "-m", "-v", "--exit", "--help", "--lint", "--test", "--apply", "--commit", "--models", "--message", "--version", "--list-models", "--message-file", "--show-prompts", "--show-repo-map", "--browser", "--gui", "--msg"]},
       "live_sessions": {"scan_processes": true, "process_exclude_args": []},
       "native_commands": []
     },
@@ -331,7 +332,7 @@
       ],
       "never_resume_patterns": ["(?i)usage-based\\s+pricing", "(?i)on-demand\\s+usage\\s+(?:is\\s+)?(?:off|disabled|limit)", "(?i)upgrade\\s+to\\s+(?:pro|ultra)"],
       "ui_markers": ["(?i)ctrl\\+c\\s+to\\s+stop", "(?i)/\\s*for\\s+commands", "(?i)cursor\\s+agent", "(?i)add\\s+a\\s+follow-up"],
-      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--print", "--version", "--output-format", "--list-models"], "passthrough_subcommands": ["login", "logout", "status", "whoami", "mcp", "plugin", "worker", "models", "team", "bedrock", "update", "upgrade", "install-shell-integration", "uninstall-shell-integration", "generate-rule", "rule", "create-chat", "about", "help"]},
+      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--print", "--version", "--output-format", "--list-models"], "passthrough_subcommands": ["login", "logout", "status", "whoami", "mcp", "plugin", "worker", "models", "team", "bedrock", "update", "upgrade", "install-shell-integration", "uninstall-shell-integration", "generate-rule", "rule", "create-chat", "about", "help", "persist"]},
       "live_sessions": {"scan_processes": true, "process_exclude_args": ["mcp", "login", "status", "update", "worker", "plugin", "models"]},
       "native_commands": []
     },
@@ -367,7 +368,7 @@
       "patterns": [{"kind": "usage_limit", "regex": "(?i)(?:quota|limit|allowance)\\s+(?:of|for)\\s+premium\\s+requests"}, {"kind": "usage_limit", "regex": "(?i)rate[\\s-]?limit(?:ed)?.{0,80}try\\s+again"}],
       "never_resume_patterns": [],
       "ui_markers": ["(?i)esc\\s+to\\s+(?:cancel|interrupt)", "(?i)ctrl\\+c\\s+exit", "(?i)@\\s+to\\s+mention"],
-      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--prompt", "--version"], "passthrough_subcommands": ["help", "login", "logout", "plugin", "mcp", "update", "version"]},
+      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--prompt", "--version", "--acp", "--headless", "--server"], "passthrough_subcommands": ["help", "login", "logout", "plugin", "mcp", "update", "version", "agent", "config", "instruction", "lsp", "memories", "plugins", "sandbox", "skill", "workflow"]},
       "live_sessions": {"scan_processes": true, "process_exclude_args": ["mcp", "login"]},
       "native_commands": []
     },
@@ -397,7 +398,7 @@
       "patterns": [],
       "never_resume_patterns": [],
       "ui_markers": ["(?im)^\\s*>\\s*$", "(?i)/help", "(?i)ctrl\\+c"],
-      "wrap": {"passthrough_flags": ["-V", "-h", "-v", "--help", "--version"], "only_subcommands": ["chat"]},
+      "wrap": {"passthrough_flags": ["-V", "-h", "-v", "--help", "--version", "--no-interactive"], "only_subcommands": ["chat"]},
       "live_sessions": {"scan_processes": true, "process_exclude_args": ["login", "logout", "settings", "doctor", "mcp", "update", "translate", "diagnostic", "integrations"]},
       "native_commands": []
     },
@@ -427,7 +428,7 @@
       "patterns": [],
       "never_resume_patterns": [],
       "ui_markers": ["(?i)esc\\s+to\\s+(?:cancel|interrupt)", "(?i)ctrl\\+c"],
-      "wrap": {"passthrough_flags": ["-V", "-h", "-o", "-v", "-y", "--help", "--yolo", "--oneshot", "--version"], "passthrough_subcommands": ["auth", "config", "version", "instance", "update", "mcp", "history", "help"]},
+      "wrap": {"passthrough_flags": ["-V", "-h", "-o", "-v", "-y", "--help", "--yolo", "--oneshot", "--version", "--json", "--zen"], "passthrough_subcommands": ["auth", "config", "version", "instance", "update", "mcp", "history", "help", "connect", "schedule"], "value_flags": ["-k", "-m", "-P", "-s", "--api-key", "--apikey", "--provider", "--model", "--modelid", "--system-prompt", "--config", "--auto-approve", "--retries", "--team-name"], "max_positionals": 0, "interactive_flags": ["-i", "--tui"]},
       "live_sessions": {"scan_processes": true, "process_exclude_args": ["instance", "mcp", "auth"]},
       "native_commands": []
     },
@@ -473,7 +474,7 @@
       "patterns": [],
       "never_resume_patterns": [],
       "ui_markers": ["(?i)ctrl\\+[cdj]", "(?i)kimi"],
-      "wrap": {"passthrough_flags": ["-V", "-c", "-h", "-v", "--acp", "--help", "--print", "--command", "--version"], "passthrough_subcommands": ["info", "mcp", "acp", "login", "logout"]},
+      "wrap": {"passthrough_flags": ["-V", "-c", "-h", "-v", "--acp", "--help", "--print", "--command", "--version", "--prompt"], "passthrough_subcommands": ["info", "mcp", "acp", "login", "logout"]},
       "live_sessions": {"scan_processes": true, "process_exclude_args": ["acp", "mcp"]},
       "native_commands": []
     },
@@ -488,7 +489,7 @@
       "patterns": [],
       "never_resume_patterns": [],
       "ui_markers": ["(?i)ctrl\\+[cpq]", "(?i)openhands"],
-      "wrap": {"passthrough_flags": ["-V", "-f", "-h", "-t", "-v", "--file", "--help", "--task", "--version", "--headless"], "passthrough_subcommands": ["serve", "mcp", "login", "logout", "cloud", "acp"]},
+      "wrap": {"passthrough_flags": ["-V", "-h", "-v", "--help", "--version", "--headless"], "passthrough_subcommands": ["serve", "mcp", "login", "logout", "cloud", "acp", "web"], "value_flags": ["-f", "-t", "--file", "--task", "--resume"]},
       "live_sessions": {"scan_processes": true, "process_exclude_args": ["serve", "acp", "mcp"]},
       "native_commands": []
     },
@@ -504,7 +505,7 @@
       "patterns": [],
       "never_resume_patterns": [],
       "ui_markers": ["(?i)ctrl\\+[cj]", "(?i)vibe"],
-      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--prompt", "--version"]},
+      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--prompt", "--version", "--prompt-file"]},
       "live_sessions": {"scan_processes": true, "process_exclude_args": []},
       "native_commands": []
     },
@@ -512,14 +513,15 @@
     "kilocode": {
       "display_name": "Kilo Code CLI",
       "homepage": "https://kilocode.ai",
-      "binary": "kilocode",
+      "binary": "kilo",
+      "command_aliases": [{"command": "kilocode", "resolves_to": "kilo"}],
       "process_names": ["kilocode", "kilo"],
       "process_arg_patterns": ["@kilocode/cli"],
       "use_common_patterns": true,
       "patterns": [],
       "never_resume_patterns": [],
       "ui_markers": ["(?i)esc\\s+to\\s+(?:cancel|interrupt)", "(?i)ctrl\\+c"],
-      "wrap": {"passthrough_flags": ["-V", "-h", "-v", "--auto", "--help", "--json", "--version"], "passthrough_subcommands": ["auth", "config", "models", "mcp", "update"]},
+      "wrap": {"passthrough_flags": ["-V", "-h", "-v", "--auto", "--help", "--json", "--version"], "passthrough_subcommands": ["auth", "config", "models", "mcp", "update", "acp", "agent", "auto", "cloud", "completion", "console", "daemon", "db", "debug", "export", "github", "help", "import", "plugin", "pr", "profile", "remote", "roll-call", "run", "serve", "session", "stats", "uninstall", "upgrade"]},
       "live_sessions": {"scan_processes": true, "process_exclude_args": ["mcp"]},
       "native_commands": []
     },
@@ -577,14 +579,14 @@
       "patterns": [],
       "never_resume_patterns": [],
       "ui_markers": ["(?i)esc\\s+to\\s+(?:cancel|interrupt)", "(?i)ctrl\\+c", "(?i)junie"],
-      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--task", "--print", "--version"], "passthrough_subcommands": ["login", "logout", "update"]},
+      "wrap": {"passthrough_flags": ["-V", "-h", "-v", "--help", "--task", "--print", "--version", "--output-format"], "passthrough_subcommands": ["login", "logout", "update"], "value_flags": ["-p", "--auth", "--model", "--project", "--prompt", "--session-id", "--guidelines-filename", "--system-prompt"]},
       "live_sessions": {"scan_processes": true, "process_exclude_args": []},
       "native_commands": []
     },
 
     "pi": {
       "display_name": "Pi coding agent",
-      "homepage": "https://github.com/badlogic/pi-mono",
+      "homepage": "https://github.com/earendil-works/pi",
       "binary": "pi",
       "shell_hook": false,
       "process_names": [],
@@ -593,7 +595,7 @@
       "patterns": [],
       "never_resume_patterns": [],
       "ui_markers": ["(?i)esc\\s+to\\s+(?:abort|cancel|interrupt)", "(?i)ctrl\\+[cl]"],
-      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--mode", "--print", "--version"]},
+      "wrap": {"passthrough_flags": ["-V", "-h", "-p", "-v", "--help", "--mode", "--print", "--version"], "passthrough_subcommands": ["install", "uninstall", "update", "list", "config"]},
       "live_sessions": {"scan_processes": true, "process_exclude_args": []},
       "native_commands": []
     },
@@ -604,12 +606,12 @@
       "binary": "acli",
       "shell_hook": false,
       "process_names": [],
-      "process_arg_patterns": ["acli\\s+rovodev\\s+run", "rovodev"],
+      "process_arg_patterns": ["(?:^|[/\\\\\\\\])acli(?:\\.exe)?\\s+rovodev\\s+run(?:\\s|$)"],
       "use_common_patterns": true,
       "patterns": [],
       "never_resume_patterns": [],
       "ui_markers": ["(?i)ctrl\\+c", "(?i)rovo\\s+dev"],
-      "wrap": {"passthrough_flags": ["-V", "-h", "-v", "--help", "--version"], "only_subcommands": ["rovodev"]},
+      "wrap": {"passthrough_flags": ["-V", "-h", "-v", "--help", "--version", "--web"], "only_subcommands": ["rovodev run"], "value_flags": ["--config-file", "--restore", "--worktree"], "max_positionals": 2},
       "live_sessions": {"scan_processes": true, "process_exclude_args": []},
       "native_commands": []
     },

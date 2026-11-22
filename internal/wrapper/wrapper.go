@@ -21,6 +21,7 @@ import (
 	"github.com/continuum-dev/continuum/internal/core"
 	"github.com/continuum-dev/continuum/internal/deliver"
 	"github.com/continuum-dev/continuum/internal/messages"
+	"github.com/continuum-dev/continuum/internal/proc"
 	"github.com/continuum-dev/continuum/internal/resettime"
 	"github.com/continuum-dev/continuum/internal/rules"
 	"github.com/continuum-dev/continuum/internal/scope"
@@ -58,9 +59,24 @@ func DetectHarness(r *rules.Rules, argv []string) string {
 	if len(argv) == 0 {
 		return "generic"
 	}
+	command := strings.TrimSuffix(strings.ToLower(filepath.Base(argv[0])), ".exe")
 	for _, name := range r.HarnessNames() {
-		if r.Harness(name).IsHarnessProcess(argv[0]) {
+		if name == "generic" {
+			continue
+		}
+		h := r.Harness(name)
+		if h.IsHarnessProcess(argv[0]) || strings.EqualFold(command, h.Binary) {
 			return name
+		}
+		for _, alias := range h.CommandAliases {
+			if !strings.EqualFold(command, alias.Command) {
+				continue
+			}
+			if path, err := proc.LookPath(argv[0]); err == nil {
+				if resolved, err := filepath.EvalSymlinks(path); err == nil && alias.Matches(resolved) {
+					return name
+				}
+			}
 		}
 	}
 	return "generic"

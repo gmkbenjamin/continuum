@@ -11,19 +11,20 @@ import (
 )
 
 var (
-	unitPat  = `(?:days?|d|hours?|hrs?|hr|h|minutes?|mins?|min|m|seconds?|secs?|sec|s)`
-	anchorRe = regexp.MustCompile(`(?i)(?:\bresets?|\breset\s+(?:at|on|in)|try\s+again|available\s+(?:again\s+)?(?:at|on|in)|will\s+reset|until|wait\s+until)\b`)
-	relRe    = regexp.MustCompile(`(?i)\b(?:in|after)\s+(\d+(?:\.\d+)?\s*` + unitPat + `(?:[\s,]*(?:and\s+)?\d+(?:\.\d+)?\s*` + unitPat + `)*)\b`)
-	relPart  = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(` + unitPat + `)`)
-	tzRe     = regexp.MustCompile(`\(\s*([A-Za-z]+(?:/[A-Za-z0-9_+\-]+)+|UTC|GMT|[A-Z]{3,4})\s*\)|\b(UTC|GMT)\b`)
-	isoRe    = regexp.MustCompile(`\b(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?\s*(Z|[+-]\d{2}:?\d{2})?)?`)
-	months   = `(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)`
-	mdRe     = regexp.MustCompile(`(?i)\b` + months + `\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+(\d{4})\b)?`)
-	dmRe     = regexp.MustCompile(`(?i)\b(\d{1,2})(?:st|nd|rd|th)?\s+` + months + `\.?(?:,?\s+(\d{4})\b)?`)
-	ampmRe   = regexp.MustCompile(`(?i)\b(\d{1,2})(?:[:.](\d{2}))?\s*([ap])\.?\s?m\b\.?`)
-	hhmmRe   = regexp.MustCompile(`\b([01]?\d|2[0-3]):([0-5]\d)\b`)
-	dowRe    = regexp.MustCompile(`(?i)\b(tomorrow|today|mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b`)
-	epochRe  = regexp.MustCompile(`(?i)resets?_?at["'\s:=]+(\d{10})(?:\d{3})?\b`)
+	unitPat     = `(?:days?|d|hours?|hrs?|hr|h|minutes?|mins?|min|m|seconds?|secs?|sec|s)`
+	anchorRe    = regexp.MustCompile(`(?i)(?:\bresets?|\breset\s+(?:at|on|in)|try\s+again|available\s+(?:again\s+)?(?:at|on|in)|will\s+reset|until|wait\s+until)\b`)
+	relRe       = regexp.MustCompile(`(?i)\b(?:in|after)\s+(\d+(?:\.\d+)?\s*` + unitPat + `(?:[\s,]*(?:and\s+)?\d+(?:\.\d+)?\s*` + unitPat + `)*)\b`)
+	relPart     = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(` + unitPat + `)`)
+	tzRe        = regexp.MustCompile(`\(\s*([A-Za-z]+(?:/[A-Za-z0-9_+\-]+)+|UTC|GMT|[A-Z]{3,4})\s*\)|\b(UTC|GMT)\b`)
+	isoRe       = regexp.MustCompile(`\b(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?\s*(Z|[+-]\d{2}:?\d{2})?)?`)
+	months      = `(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)`
+	mdRe        = regexp.MustCompile(`(?i)\b` + months + `\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+(\d{4})\b)?`)
+	dmRe        = regexp.MustCompile(`(?i)\b(\d{1,2})(?:st|nd|rd|th)?\s+` + months + `\.?(?:,?\s+(\d{4})\b)?`)
+	numericMDRe = regexp.MustCompile(`\b(0?[1-9]|1[0-2])-(0?[1-9]|[12]\d|3[01])\s+(?:[01]?\d|2[0-3]):[0-5]\d\b`)
+	ampmRe      = regexp.MustCompile(`(?i)\b(\d{1,2})(?:[:.](\d{2}))?\s*([ap])\.?\s?m\b\.?`)
+	hhmmRe      = regexp.MustCompile(`\b([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?\b`)
+	dowRe       = regexp.MustCompile(`(?i)\b(tomorrow|today|mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b`)
+	epochRe     = regexp.MustCompile(`(?i)resets?_?at["'\s:=]+(\d{10})(?:\d{3})?\b`)
 )
 
 // Parse finds the reset moment described in text. ref is when the message was
@@ -143,6 +144,15 @@ func parseSegment(seg string, ref time.Time, local *time.Location) (time.Time, b
 			explicitYear = true
 		}
 		haveDate = true
+	} else if m := numericMDRe.FindStringSubmatch(seg); m != nil {
+		// Qwen Code surfaces token-plan reset times as MM-DD HH:MM:SS UTC.
+		mo, _ := strconv.Atoi(m[1])
+		month = time.Month(mo)
+		day, _ = strconv.Atoi(m[2])
+		if time.Date(year, month, day, 0, 0, 0, 0, loc).Month() != month {
+			return time.Time{}, false
+		}
+		haveDate = true
 	}
 	dayShift := -1
 	todayOnly := false
@@ -154,7 +164,7 @@ func parseSegment(seg string, ref time.Time, local *time.Location) (time.Time, b
 		}
 	}
 
-	hour, minute := 0, 0
+	hour, minute, second := 0, 0, 0
 	haveTime := false
 	if m := ampmRe.FindStringSubmatch(seg); m != nil {
 		hour, _ = strconv.Atoi(m[1])
@@ -174,13 +184,14 @@ func parseSegment(seg string, ref time.Time, local *time.Location) (time.Time, b
 	} else if m := hhmmRe.FindStringSubmatch(seg); m != nil {
 		hour, _ = strconv.Atoi(m[1])
 		minute, _ = strconv.Atoi(m[2])
+		second, _ = strconv.Atoi(m[3])
 		haveTime = true
 	}
 	if !haveTime && (!haveDate && dayShift < 0 || todayOnly) {
 		return time.Time{}, false
 	}
 
-	t := time.Date(year, month, day, hour, minute, 0, 0, loc)
+	t := time.Date(year, month, day, hour, minute, second, 0, loc)
 	switch {
 	case haveDate:
 		if !explicitYear && t.Before(ref.Add(-36*time.Hour)) {

@@ -12,13 +12,14 @@
 | `native_grace_seconds` | Claude 300, Codex 30 | Wait for the agent's own resume first. Easier to set with `continuum grace`. |
 | `keep_awake_hours` | `8` | Hold off idle sleep while a resume is due this soon; `0` turns it off. |
 | `allow_copies` | `false` | Let the agent CLI continue a session that's still open elsewhere (starts a copy). |
-| `allow_headless` | `true` | `false`: only type into wrappers and panes, never run agent commands. |
+| `allow_headless` | `true` | Allow native delivery through agent commands and the OpenCode API. |
 | `strategies` | `["wrapper","multiplexer","terminal-app","native"]` | Delivery routes, in order. |
 | `shell_hook_agents` | installed agents | Commands the shell hook wraps (replaces the default list). |
 | `max_wait_hours` | `192` | Don't schedule resets further away than this. |
 | `catch_up_hours` | `12` | How far back to catch up after the daemon was off. Sessions still open and waiting on a limit are resumed from further back (up to 8 days). |
 | `notify` | `true` | Desktop notifications. |
 | `watch_transcripts` | `true` | Read Claude transcripts and Codex rollouts. |
+| `opencode_server` | none | Loopback URL for the [OpenCode v2 shared server](agents.md#opencode-desktop-and-cli). Its native API covers both the CLI and desktop. The daemon reads the server password from `OPENCODE_PASSWORD`. |
 | `scan_panes` | `true` | Scan tmux panes for other agents. |
 | `scan_tmux_socket` | your default tmux server | The tmux server (socket path) the pane scanner watches. |
 | `poll_seconds` | `5` | How often the daemon checks. |

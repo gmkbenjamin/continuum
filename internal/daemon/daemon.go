@@ -22,6 +22,7 @@ import (
 	"github.com/continuum-dev/continuum/internal/messages"
 	"github.com/continuum-dev/continuum/internal/mux"
 	"github.com/continuum-dev/continuum/internal/notify"
+	"github.com/continuum-dev/continuum/internal/opencode"
 	"github.com/continuum-dev/continuum/internal/proc"
 	"github.com/continuum-dev/continuum/internal/resettime"
 	"github.com/continuum-dev/continuum/internal/rules"
@@ -67,14 +68,15 @@ type Daemon struct {
 	lastBeat    time.Time
 	lastCompat  time.Time
 	lastDesktop time.Time
-	paneSeen    map[string]string
+	paneSeen    map[string]paneLimit
 	replies     map[string]replySeen
 	// answered: per account, the latest model answer on the plan (see
 	// lifted.go), for limits reported after it is read.
-	answered     map[string]core.Event
-	lastScan     time.Time
-	lastPaneScan time.Time
-	dirty        bool
+	answered         map[string]core.Event
+	lastScan         time.Time
+	lastPaneScan     time.Time
+	lastOpenCodeScan time.Time
+	dirty            bool
 }
 
 // New loads state from disk.
@@ -90,7 +92,7 @@ func New(p core.Paths) (*Daemon, error) {
 		Local:     time.Local,
 		Log:       logx.New(logx.Sink{W: os.Stderr, Level: logx.LevelFromEnv(logx.Info)}),
 		Sessions:  map[string]*store.Session{},
-		paneSeen:  map[string]string{},
+		paneSeen:  map[string]paneLimit{},
 		Awake:     awake.New(),
 	}
 	d.LiveFn = d.liveState
@@ -239,6 +241,13 @@ func (d *Daemon) Tick() {
 	if d.Config.TranscriptsWatched() && now.Sub(d.lastScan) >= 2*d.Config.Poll() {
 		d.lastScan = now
 		d.scanSources()
+	}
+	if d.Config.OpenCodeServer != "" && d.Config.IsEnabled() && d.Config.HarnessEnabled("opencode") &&
+		now.Sub(d.lastOpenCodeScan) >= 15*time.Second {
+		d.lastOpenCodeScan = now
+		if err := d.pollOpenCode(now); err != nil {
+			d.debugf("OpenCode server scan: %v", err)
+		}
 	}
 	if d.Config.PanesScanned() && now.Sub(d.lastPaneScan) >= 15*time.Second {
 		d.lastPaneScan = now
@@ -511,6 +520,9 @@ func (d *Daemon) Handle(ev core.Event) {
 	}
 	if !d.Config.HarnessEnabled(ev.Harness) {
 		return
+	}
+	if ev.Harness == "opencode" && d.Config.OpenCodeServer != "" && screenSourced(ev.Source) {
+		return // the configured server reports session outcomes by ID
 	}
 	if ev.At.IsZero() {
 		ev.At = d.Now()
@@ -802,7 +814,8 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 	}
 	if j != nil {
 		switch {
-		case j.State == core.StatePending && !ev.At.After(j.LimitAt.Add(2*time.Minute)):
+		case j.State == core.StatePending && ev.Source != opencode.LocationKind &&
+			ev.Kind != core.KindNeverResume && !ev.At.After(j.LimitAt.Add(2*time.Minute)):
 			// The same limit seen by another observer (hook + transcript).
 			d.merge(j, ev)
 			return
@@ -1111,6 +1124,12 @@ func sameAccount(a, b *core.Job) bool {
 	if a.Harness != b.Harness {
 		return false
 	}
+	// An OpenCode server can host several providers and credentials. Its
+	// final outcome does not identify the account that reported the limit.
+	if (a.Location != nil && a.Location.Kind == opencode.LocationKind) ||
+		(b.Location != nil && b.Location.Kind == opencode.LocationKind) {
+		return false
+	}
 	if a.TranscriptPath == "" || b.TranscriptPath == "" {
 		return true
 	}
@@ -1226,6 +1245,11 @@ func (d *Daemon) sessionActiveSince(j *core.Job) bool {
 
 func (d *Daemon) runJob(j *core.Job) {
 	d.dirty = true
+	if j.Harness == "opencode" && d.Config.OpenCodeServer != "" &&
+		(j.Location == nil || j.Location.Kind != opencode.LocationKind) {
+		d.skip(j, "OpenCode now uses the configured server for resume")
+		return
+	}
 	d.debugf("%s: due (attempt %d, reset %s, limit at %s); checking", j.Key, j.Attempts+1, j.ResetAt.Local().Format("15:04"), j.LimitAt.Local().Format("15:04"))
 	if d.sessionActiveSince(j) {
 		j.State = core.StateSkipped
@@ -1333,6 +1357,20 @@ func (d *Daemon) runJob(j *core.Job) {
 	res, err := d.DeliverFn(opts, j)
 	now := d.Now()
 	j.UpdatedAt = now
+	switch {
+	case errors.Is(err, opencode.ErrChanged):
+		d.skip(j, err.Error())
+		return
+	case errors.Is(err, opencode.ErrBusy):
+		j.DueAt, j.Result = now.Add(15*time.Second), err.Error()
+		return
+	case errors.Is(err, opencode.ErrUncertain), errors.Is(err, deliver.ErrQueued):
+		j.State, j.Result = core.StateNeedsUser, err.Error()
+		j.ManualResumeOnly = true
+		d.history("needs_user", j, map[string]any{"error": err.Error()})
+		d.notify(j, "Resume needs attention", err.Error())
+		return
+	}
 	if err != nil && errors.Is(err, deliver.ErrStillOpen) {
 		// Open somewhere Continuum can't type (a desktop app, a terminal
 		// started before the shell hook). Never start a copy: keep checking,
@@ -1472,6 +1510,14 @@ func (d *Daemon) findPane(j *core.Job) *core.Location {
 	return nil
 }
 
+type paneLimit struct {
+	line    string
+	count   int
+	kind    string
+	seenAt  time.Time
+	resetAt time.Time
+}
+
 // scanPanes finds limit messages in tmux panes running agents that have no
 // transcript source (any harness other than Claude and Codex).
 func (d *Daemon) scanPanes() {
@@ -1488,7 +1534,7 @@ func (d *Daemon) scanPanes() {
 	d.debugf("pane scan: %d tmux panes", len(panes))
 	for _, p := range panes {
 		h := d.paneHarness(p)
-		if h == nil {
+		if h == nil || h.Name == "opencode" && d.Config.OpenCodeServer != "" {
 			continue
 		}
 		d.debugf("pane %s runs %s", p.Location.String(), h.DisplayName)
@@ -1496,29 +1542,47 @@ func (d *Daemon) scanPanes() {
 		if err != nil {
 			continue
 		}
+		key := p.Location.String()
 		// Only the bottom of the pane counts: that is where a stalled agent's
 		// last message sits, just above its input box.
 		m := h.Classify(text, 12)
 		if m == nil {
+			delete(d.paneSeen, key)
 			continue
 		}
-		// The message stays on screen after a resume. Only a changed screen
-		// with a limit at the bottom is a new stall.
-		screen := strings.Join(rules.TailLines(text, 12), "\n")
-		if d.paneSeen[p.Location.String()] == screen {
-			continue
-		}
-		d.paneSeen[p.Location.String()] = screen
-		ev := core.Event{Harness: h.Name, Kind: m.Kind, Message: m.Text, At: d.Now(), Source: "pane-scan", Location: p.Location, Hit: m.Hit}
-		if h.NeverResume(m.Text) {
-			ev.Kind = core.KindNeverResume
-		}
-		if ev.Kind == core.KindUsageLimit {
-			if t, ok := resettime.Parse(m.Text, ev.At, d.Local); ok {
-				ev.ResetAt = t
+		// A resume can echo a prompt or redraw the footer while the earlier
+		// limit remains visible. Count copies of the matched line so only a
+		// new line, or a new copy of the same line, reports another stall.
+		at := d.Now()
+		limit := paneLimit{line: m.Line, kind: m.Kind, seenAt: at}
+		for line := range strings.SplitSeq(text, "\n") {
+			if strings.TrimSpace(line) == m.Line {
+				limit.count++
 			}
 		}
-		d.Handle(ev)
+		previous := d.paneSeen[key]
+		sameLine := limit.line == previous.line && limit.count <= previous.count
+		if sameLine {
+			// Compare relative reset text against the same reference time.
+			limit.seenAt = previous.seenAt
+		}
+		if h.NeverResume(m.Text) {
+			limit.kind = core.KindNeverResume
+		}
+		if limit.kind == core.KindUsageLimit {
+			limit.resetAt, _ = resettime.Parse(m.Text, limit.seenAt, d.Local)
+		}
+		if sameLine && limit.kind == previous.kind &&
+			(limit.resetAt.IsZero() || limit.resetAt.Equal(previous.resetAt)) {
+			previous.count = limit.count
+			d.paneSeen[key] = previous
+			continue
+		}
+		d.paneSeen[key] = limit
+		d.Handle(core.Event{
+			Harness: h.Name, Kind: limit.kind, Message: m.Text, At: at, ResetAt: limit.resetAt,
+			Source: "pane-scan", Location: p.Location, Hit: m.Hit,
+		})
 	}
 }
 
@@ -1598,6 +1662,10 @@ func (d *Daemon) control(cmd string) {
 			j.UpdatedAt = d.Now()
 			d.history("cancelled", j, nil)
 		case "resume-now":
+			if j.ManualResumeOnly {
+				d.logf("%s: %s", j.Key, j.Result)
+				continue
+			}
 			if j.Kind == core.KindNeverResume {
 				d.logf("%s: not resuming: it needs you (billing, credits, spend cap or sign-in)", j.Key)
 				continue
@@ -1668,6 +1736,9 @@ func (d *Daemon) skip(j *core.Job, why string) {
 // liveState asks the agent (or the process table) whether the job's session
 // is open right now.
 func (d *Daemon) liveState(j *core.Job) *live.State {
+	if j.Location != nil && j.Location.Kind == opencode.LocationKind {
+		return nil // the API verifies the exact session before delivery
+	}
 	h := d.Rules.Harness(j.Harness)
 	if (h.LiveSessions == nil && len(h.DesktopApps) == 0) || j.SessionID == "" {
 		return nil
