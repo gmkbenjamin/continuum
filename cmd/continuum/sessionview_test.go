@@ -41,6 +41,10 @@ func TestSessionStates(t *testing.T) {
 		{knownSession{Open: false, Checked: true, ResumesClosed: true}, &core.Job{State: core.StatePending, Kind: core.KindUsageLimit, DueAt: now.Add(2 * time.Hour)}, "limit", "closed · usage limit · continues it in the background 11:00"},
 		// No resume command for a closed session (or headless off): say so.
 		{knownSession{Open: false, Checked: true}, &core.Job{State: core.StatePending, Kind: core.KindUsageLimit, DueAt: now.Add(2 * time.Hour)}, "limit", "closed · usage limit · reopen it"},
+		// Only an out-of-date copy is open: shown, and not typed into.
+		{knownSession{Open: true, Live: true, Status: "idle", StaleCopy: true}, nil, "stale_copy", "out-of-date copy"},
+		{knownSession{Open: true, Live: true, Status: "idle", StaleCopy: true}, &core.Job{State: core.StatePending, Kind: core.KindUsageLimit, DueAt: now.Add(2 * time.Hour)}, "stale_copy", "won't type into it"},
+		{knownSession{Open: true, Live: true, Status: "idle"}, &core.Job{State: core.StatePending, Kind: core.KindUsageLimit, StaleCopyPID: 42, WaitingOpen: true}, "stale_copy", "limit reset · only an out-of-date copy is open"},
 		// Not checked: whether it is open is unknown, so not "closed".
 		{knownSession{Open: false, ResumesClosed: true}, &core.Job{State: core.StatePending, Kind: core.KindUsageLimit, DueAt: now.Add(2 * time.Hour)}, "limit", "usage limit · resumes 11:00"},
 		{knownSession{Open: true, LastSeen: now.Add(-time.Minute)}, nil, "active", "open"},

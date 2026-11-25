@@ -145,7 +145,10 @@ session (plus any with a pending resume; --all includes closed sessions) with:
            closed, closed · usage limit (continued in the background with
            the agent's own resume command, or "reopen it to continue" when it
            has none), another copy (the same conversation is open in a second
-           process; Continuum resumes the one its hooks last heard from)
+           process; Continuum resumes the one its hooks last heard from),
+           out-of-date copy (that process has closed and only an older copy
+           is open: Continuum won't type into it, and continues the
+           conversation once you close it)
   WHERE    where it runs: tmux, Rex, iTerm2, Claude Desktop, background...
            "(via Continuum)": through Continuum's wrapper
   COVERED  whether Continuum will resume it (see ` + "`continuum scope`" + `)

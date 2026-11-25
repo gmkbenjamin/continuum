@@ -35,6 +35,10 @@ type knownSession struct {
 	// ResumesClosed: Continuum can continue it once closed, with the agent's
 	// own resume command (set by sessionRows).
 	ResumesClosed bool
+	// StaleCopy: an out-of-date copy of the conversation is the only process
+	// holding it: the process the hooks last heard from has exited.
+	// Continuum won't type into it.
+	StaleCopy bool
 	// Host: the multiplexer or terminal app the session's process runs in
 	// (Rex, tmux, iTerm2, ...), from its environment.
 	Host string
@@ -106,6 +110,7 @@ func knownSessions() []knownSession {
 	// sessions the agent listed itself.
 	for i := range out {
 		if st := sessions[store.SessionKey(out[i].Harness, out[i].ID)]; st != nil {
+			out[i].StaleCopy = staleCopy(r, out[i], st)
 			if out[i].Location == nil && (st.Location == nil || st.Location.Kind != "wrapper" || deliver.WrapperAlive(p, st.Location.Target)) {
 				out[i].Location = st.Location
 			}
@@ -182,6 +187,25 @@ func knownSessions() []knownSession {
 		}
 	}
 	return out
+}
+
+// staleCopy: k (listed by the agent) is not the process its hooks last heard
+// from, and that process has exited, so k is an out-of-date copy. Mirrors the
+// daemon's check: only for Claude Code, whose hooks report the exact process.
+func staleCopy(r *rules.Rules, k knownSession, st *store.Session) bool {
+	if k.Harness != "claude" || !k.Open || k.PID <= 0 || st.PID <= 0 || k.PID == st.PID {
+		return false
+	}
+	for _, c := range k.Copies {
+		if c.PID == st.PID {
+			return false
+		}
+	}
+	if st.Ended {
+		return true
+	}
+	_, name, ok := proc.Info(st.PID)
+	return !ok || r == nil || !r.Harness(k.Harness).IsHarnessProcess(name)
 }
 
 func less(a, b knownSession) bool {

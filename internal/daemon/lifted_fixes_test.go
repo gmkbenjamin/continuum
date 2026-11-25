@@ -2,12 +2,14 @@ package daemon
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/continuum-dev/continuum/internal/core"
 	"github.com/continuum-dev/continuum/internal/deliver"
+	"github.com/continuum-dev/continuum/internal/live"
 )
 
 // hookTurn: session s of harness, in a terminal, starts a turn at start
@@ -316,5 +318,69 @@ func TestPruneSkipsResumeOfExitedWrapper(t *testing.T) {
 	}
 	if j := h.d.Jobs["codex:c1"]; j == nil || j.State != core.StatePending {
 		t.Fatalf("a session with an id must stay pending: %+v", j)
+	}
+}
+
+// The conversation was continued in a second process, which has since
+// exited; only the first, out-of-date copy is still open. Continuum doesn't
+// type into it, and continues the conversation once that copy closes.
+func TestNoResumeIntoOutOfDateCopy(t *testing.T) {
+	h := setup(t)
+	h.d.Handle(limitEvent(h, "s1", 30*time.Minute)) // recorded process: deadPID
+	copyPID := os.Getpid()
+	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Source: "registry",
+		Session: &live.Session{SessionID: "s1", PID: copyPID}}
+	h.advance(32 * time.Minute)
+	j := h.d.Jobs["claude:s1"]
+	if len(h.delivered) != 0 || j.State != core.StatePending || j.StaleCopyPID != copyPID || !j.WaitingOpen {
+		t.Fatalf("typed into the out-of-date copy or not held: delivered=%d %+v", len(h.delivered), j)
+	}
+	// The copy is closed: the conversation is continued.
+	h.live = &live.State{Checked: true, Open: false, Authoritative: true, Source: "registry"}
+	h.advance(3 * time.Minute)
+	if len(h.delivered) != 1 || j.State != core.StateDelivered || j.StaleCopyPID != 0 {
+		t.Fatalf("not continued once the copy closed: delivered=%d %+v", len(h.delivered), j)
+	}
+}
+
+// The listed process is the one the hooks last heard from: resumed as usual.
+func TestResumeIntoRecordedProcess(t *testing.T) {
+	h := setup(t)
+	h.d.Handle(limitEvent(h, "s1", 30*time.Minute))
+	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Source: "registry",
+		Session: &live.Session{SessionID: "s1", PID: deadPID}}
+	h.advance(32 * time.Minute)
+	if len(h.delivered) != 1 {
+		t.Fatalf("not resumed: %+v", h.d.Jobs["claude:s1"])
+	}
+}
+
+// Closing an out-of-date copy (another process holding the same
+// conversation) doesn't mark the session closed or drop its route.
+func TestCopyQuittingLeavesSessionOpen(t *testing.T) {
+	h := setup(t)
+	h.d.AgentAliveFn = func(_ string, pid int) bool { return pid == 200 }
+	ev := limitEvent(h, "s1", 30*time.Minute)
+	ev.PID, ev.Location = 200, &core.Location{Kind: "wrapper", Target: "current"}
+	h.d.Handle(ev)
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindSessionEnd, SessionID: "s1", Source: "hook:SessionEnd", At: h.now,
+		PID: 100, Location: &core.Location{Kind: "wrapper", Target: "old"}})
+	s, j := h.d.Sessions["claude:s1"], h.d.Jobs["claude:s1"]
+	if s.Ended || s.PID != 200 || s.Location.Target != "current" {
+		t.Fatalf("the copy's exit changed the session: %+v", s)
+	}
+	if j.Location == nil || j.Location.Target != "current" || j.PID != 200 {
+		t.Fatalf("the copy's exit dropped the resume's route: %+v", j)
+	}
+	// The current process quitting is the session closing.
+	h.d.AgentAliveFn = func(string, int) bool { return false }
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindSessionEnd, SessionID: "s1", Source: "hook:SessionEnd", At: h.now, PID: 200})
+	if !s.Ended || j.Location != nil {
+		t.Fatalf("the session's own exit not recorded: %+v %+v", s, j)
+	}
+	// Anything its process reports afterwards means it runs again.
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindActivity, SessionID: "s1", Source: "hook:UserPromptSubmit", At: h.now, PID: 300, TurnStart: true})
+	if s.Ended {
+		t.Fatalf("still ended after its process reported activity")
 	}
 }

@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-var Version = "0.15.4"
+var Version = "0.15.5"
 
 // Location says where an agent is running so input can be delivered to it
 // without focusing any window.
@@ -133,6 +133,10 @@ type Job struct {
 	// WaitingOpen: the session is open somewhere Continuum can't type; it is
 	// re-checked every couple of minutes (the user was told once).
 	WaitingOpen bool `json:"waiting_open,omitempty"`
+	// StaleCopyPID: the only process holding the session is an out-of-date
+	// copy (not the process the hooks last heard from, which has exited).
+	// Continuum doesn't type into it; it waits for it to close.
+	StaleCopyPID int `json:"stale_copy_pid,omitempty"`
 	// Hit is the limit text matched on screen, when the job came from there.
 	Hit string `json:"hit,omitempty"`
 	// LiftedAt: when the account's limit was seen lifted before its reset

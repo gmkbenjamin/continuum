@@ -138,6 +138,14 @@ Continuum only ever continues the original session:
   Continuum continues it under its own id with `claude --bg --resume <id>`,
   `codex queue --thread <id> --resume` or `grok --resume <id> --single <message>`. It's the same conversation, and nothing else
   has it open, so nothing is copied.
+- **Only an out-of-date copy is open.** The same conversation can be open in two
+  processes (resumed again in another pane). Continuum resumes the one its hooks last
+  heard from. If that one has closed and only the older copy is still open, Continuum
+  doesn't type into it: the copy's memory of the conversation stops where the other
+  process took over, so it would fork the conversation. `continuum status` shows it as
+  an out-of-date copy. Close it and Continuum continues the conversation by itself, or
+  type in it yourself to carry on from that copy. (Claude Code, whose hooks name the
+  exact process.)
 - **It's open somewhere Continuum can't type**, such as an agent started in a plain
   terminal before the shell hook was installed, or a session open in a desktop app.
   Continuum doesn't start a copy. It notifies you, and keeps retrying in case the session

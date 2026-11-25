@@ -4,6 +4,22 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.15.5] - 2026-11-26
+
+### Fixed
+
+- Continuum no longer types a resume into an out-of-date copy of a Claude Code
+  conversation: when the process that continued the conversation has closed
+  and only an older copy is still open, it notifies you once and waits.
+  Closing the copy lets it continue the conversation from the full transcript;
+  typing in the copy carries on from there. `continuum status` shows such a
+  copy as out of date.
+- Closing one copy of a conversation open in two processes no longer marks
+  the session closed, or drops the pane a pending resume would be typed into:
+  the session's record stays with the process the hooks last heard from.
+  Anything a session's process reports after it was marked closed marks it
+  open again.
+
 ## [0.15.4] - 2026-11-26
 
 ### Fixed

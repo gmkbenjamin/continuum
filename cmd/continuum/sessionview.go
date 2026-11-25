@@ -201,6 +201,19 @@ func hostFromEnv(r *rules.Rules, env map[string]string) string {
 // sessionState says what a session is doing, most important first: what
 // Continuum is about to do, then what the agent reports, then recency.
 func sessionState(s knownSession, j *core.Job, covered bool, now time.Time) (string, string) {
+	if s.StaleCopy || j != nil && j.State == core.StatePending && j.StaleCopyPID > 0 {
+		// Only an out-of-date copy is open: Continuum won't type into it.
+		const closeIt = "close it and Continuum continues the conversation"
+		switch {
+		case j != nil && j.State == core.StatePending && j.StaleCopyPID > 0:
+			return "stale_copy", "limit reset · only an out-of-date copy is open, not typing into it · " + closeIt
+		case j != nil && j.State == core.StatePending:
+			return "stale_copy", "usage limit · only an out-of-date copy is open, won't type into it · " + closeIt + " after " + whenShort(j.DueAt, now)
+		case j != nil && j.State == core.StateNeedsUser:
+			return "needs_you", "needs you: " + clip(firstLineOf(j.Result), 60)
+		}
+		return "stale_copy", "out-of-date copy of this conversation (the process that continued it has closed)"
+	}
 	if j != nil {
 		switch j.State {
 		case core.StatePending:
