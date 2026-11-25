@@ -112,7 +112,10 @@ func knownSessions() []knownSession {
 	for i := range out {
 		if st := sessions[store.SessionKey(out[i].Harness, out[i].ID)]; st != nil {
 			out[i].StaleCopy = staleCopy(r, out[i], st)
-			if out[i].Location == nil && (st.Location == nil || st.Location.Kind != "wrapper" || deliver.WrapperAlive(p, st.Location.Target)) {
+			// The pane the hooks recorded belongs to the process they heard
+			// from: not to another copy listed in its place.
+			samePID := st.PID <= 0 || out[i].PID <= 0 || st.PID == out[i].PID
+			if out[i].Location == nil && samePID && (st.Location == nil || st.Location.Kind != "wrapper" || deliver.WrapperAlive(p, st.Location.Target)) {
 				out[i].Location = st.Location
 			}
 			if out[i].Entrypoint == "" {
@@ -124,7 +127,11 @@ func knownSessions() []knownSession {
 		}
 	}
 	for _, s := range sessions {
-		if s.SessionID == "" || seen[s.Harness+s.SessionID] || time.Since(s.LastSeen) > 3*24*time.Hour || s.Ended {
+		// A session with a resume pending is listed however it ended and
+		// however long ago it was seen: status says how that resume goes.
+		j := jobs[store.SessionKey(s.Harness, s.SessionID)]
+		pending := j != nil && (j.State == core.StatePending || j.State == core.StateNeedsUser)
+		if s.SessionID == "" || seen[s.Harness+s.SessionID] || !pending && (time.Since(s.LastSeen) > 3*24*time.Hour || s.Ended) {
 			continue
 		}
 		seen[s.Harness+s.SessionID] = true
@@ -135,11 +142,7 @@ func knownSessions() []knownSession {
 		}
 		// Agents without a session list (Codex, ...): ask the process table
 		// whether a recent session is still open.
-		// A session with a resume pending is checked however long ago it was
-		// seen: status says whether that resume types into it or continues
-		// it closed.
-		j := jobs[store.SessionKey(s.Harness, s.SessionID)]
-		pending := j != nil && (j.State == core.StatePending || j.State == core.StateNeedsUser)
+		// One with a resume pending is checked however long ago it was seen.
 		if h := r.Harness(s.Harness); h != nil && (pending || time.Since(s.LastSeen) < 12*time.Hour) && (h.LiveSessions != nil || len(h.DesktopApps) > 0) {
 			pid := ks.PID
 			if ks.Location != nil && ks.Location.Kind == "wrapper" && !deliver.WrapperAlive(p, ks.Location.Target) {
@@ -191,7 +194,8 @@ func knownSessions() []knownSession {
 }
 
 // staleCopy: k (listed by the agent) is not the process its hooks last heard
-// from, and that process has exited, so k is an out-of-date copy. Mirrors the
+// from, which isn't listed holding the session, and k hasn't done anything
+// since: k is an out-of-date copy. Mirrors the
 // daemon's check: only for Claude Code, whose hooks report the exact process.
 func staleCopy(r *rules.Rules, k knownSession, st *store.Session) bool {
 	if k.Harness != "claude" || !k.Open || k.PID <= 0 || st.PID <= 0 || k.PID == st.PID {
@@ -202,18 +206,13 @@ func staleCopy(r *rules.Rules, k knownSession, st *store.Session) bool {
 			return false
 		}
 	}
+	// The recorded process isn't listed holding it: it quit or moved on to
+	// another conversation. k is out of date unless it did something since.
 	if r == nil {
 		return false
 	}
 	h := r.Harness(k.Harness)
-	if h.LiveSessions != nil && live.ActiveSince(&live.Session{Status: k.Status, StatusSince: k.StatusSince}, h.LiveSessions.BusyStates, st.LastSeen) {
-		return false // it has done something since: it is the copy in use
-	}
-	if st.Ended {
-		return true
-	}
-	_, name, ok := proc.Info(st.PID)
-	return !ok || !h.IsHarnessProcess(name)
+	return h.LiveSessions == nil || !live.ActiveSince(&live.Session{Status: k.Status, StatusSince: k.StatusSince}, h.LiveSessions.BusyStates, st.LastSeen)
 }
 
 func less(a, b knownSession) bool {

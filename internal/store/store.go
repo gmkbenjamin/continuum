@@ -23,7 +23,10 @@ type Session struct {
 	PID            int            `json:"pid,omitempty"`
 	Entrypoint     string         `json:"entrypoint,omitempty"`
 	Ended          bool           `json:"ended,omitempty"`
-	LastSeen       time.Time      `json:"last_seen"`
+	// EndedAt: when it ended. An event from before that (delivered late)
+	// doesn't reopen it.
+	EndedAt  time.Time `json:"ended_at,omitzero"`
+	LastSeen time.Time `json:"last_seen"`
 	// TurnAt: when the session's latest turn started (a prompt-submit hook).
 	// Model: the model it last used, when its hooks say.
 	TurnAt time.Time `json:"turn_at,omitzero"`

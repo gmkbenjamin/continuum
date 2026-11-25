@@ -81,7 +81,7 @@ func sessionRows(window time.Duration) []sessionRow {
 		for _, c := range s.Copies {
 			cr := row
 			cr.Name, cr.Open, cr.LastSeen, cr.Wrapper, cr.PID, cr.Copy = c.Name, c.Open, c.LastSeen, "", c.PID, true
-			cr.State, cr.Detail = "stale_copy", "another copy of this conversation · Continuum resumes the one it last heard from"
+			cr.State, cr.Detail = "stale_copy", "another copy of this conversation · Continuum doesn't resume this one"
 			cr.Where = sessionWhere(c, r)
 			if c.Location != nil && c.Location.Kind == "wrapper" {
 				cr.Wrapper = c.Location.Target
@@ -203,16 +203,22 @@ func hostFromEnv(r *rules.Rules, env map[string]string) string {
 func sessionState(s knownSession, j *core.Job, covered bool, now time.Time) (string, string) {
 	if s.StaleCopy || j != nil && j.State == core.StatePending && j.StaleCopyPID > 0 {
 		// Only an out-of-date copy is open: Continuum won't type into it.
-		const closeIt = "close it and Continuum continues the conversation"
+		closeIt := "close it and Continuum continues the conversation"
+		if !s.ResumesClosed {
+			closeIt = "close it and continue the conversation yourself"
+		}
 		switch {
 		case j != nil && j.State == core.StatePending && j.StaleCopyPID > 0:
 			return "stale_copy", "limit reset · only an out-of-date copy is open, not typing into it · " + closeIt
 		case j != nil && j.State == core.StatePending:
-			return "stale_copy", "usage limit · only an out-of-date copy is open, won't type into it · " + closeIt + " after " + whenShort(j.DueAt, now)
+			if s.ResumesClosed {
+				closeIt += " after " + whenShort(j.DueAt, now)
+			}
+			return "stale_copy", "usage limit · only an out-of-date copy is open, won't type into it · " + closeIt
 		case j != nil && j.State == core.StateNeedsUser:
 			return "needs_you", "needs you: " + clip(firstLineOf(j.Result), 60)
 		}
-		return "stale_copy", "out-of-date copy of this conversation (the process that continued it has closed)"
+		return "stale_copy", "out-of-date copy of this conversation (the process that continued it has closed or moved on)"
 	}
 	if j != nil {
 		switch j.State {

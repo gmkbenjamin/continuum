@@ -56,9 +56,9 @@ type Daemon struct {
 	Log       *logx.Logger
 	// LiveFn reports whether a job's session is open right now (nil: unknown).
 	LiveFn func(*core.Job) *live.State
-	// AgentAliveFn: whether pid is a running process of harness (nil: ask
-	// the process table).
-	AgentAliveFn func(harness string, pid int) bool
+	// HoldsFn: whether the agent lists pid as holding session id (nil: ask
+	// the agent through LiveFn).
+	HoldsFn func(harness, id string, pid int) bool
 	// Awake keeps the computer from idle-sleeping while work is pending.
 	Awake *awake.Keeper
 	// Compat, when set, enables the update watch (see compat.go).
@@ -530,7 +530,10 @@ func (d *Daemon) Handle(ev core.Event) {
 	if ev.At.IsZero() {
 		ev.At = d.Now()
 	}
-	sess := d.touchSession(ev)
+	// Decided once, before the record changes: a second process holding the
+	// same conversation quit, not the one the session's record names.
+	copyQuit := d.copyEnded(ev)
+	sess := d.touchSession(ev, copyQuit)
 
 	switch ev.Kind {
 	case core.KindActivity:
@@ -549,7 +552,7 @@ func (d *Daemon) Handle(ev core.Event) {
 	case core.KindLimitReset:
 		d.limitLifted(ev)
 	case core.KindSessionEnd:
-		if d.copyEnded(ev, sess) {
+		if copyQuit {
 			return // a copy quit, not the process the resume goes to
 		}
 		// The agent quit: its pane (or wrapper) now holds something else, so
@@ -681,7 +684,7 @@ func (d *Daemon) partOfReply(ev core.Event, sess *store.Session) bool {
 	return ok && ev.At.Sub(r.at).Abs() <= replyWindow && replyHas(r.text, ev.Hit)
 }
 
-func (d *Daemon) touchSession(ev core.Event) *store.Session {
+func (d *Daemon) touchSession(ev core.Event, copyQuit bool) *store.Session {
 	if ev.SessionID == "" {
 		return nil
 	}
@@ -691,11 +694,16 @@ func (d *Daemon) touchSession(ev core.Event) *store.Session {
 		s = &store.Session{Harness: ev.Harness, SessionID: ev.SessionID}
 		d.Sessions[key] = s
 	}
-	if d.copyEnded(ev, s) {
+	if copyQuit {
 		// Another process holding the same conversation quit (an out-of-
 		// date copy): the session still runs where the hooks last heard
 		// from it, so its record stays as it is.
 		d.debugf("%s:%s: a copy in pid %d quit; the session is still open in pid %d", ev.Harness, short(ev.SessionID), ev.PID, s.PID)
+		return s
+	}
+	if s.Ended && ev.Kind != core.KindSessionStart && !ev.At.After(s.EndedAt) {
+		// From before it ended, delivered late (hooks run concurrently): it
+		// doesn't reopen the session or move it back to its old pane.
 		return s
 	}
 	if ev.Cwd != "" {
@@ -721,7 +729,7 @@ func (d *Daemon) touchSession(ev core.Event) *store.Session {
 	}
 	switch {
 	case ev.Kind == core.KindSessionEnd:
-		s.Ended = true
+		s.Ended, s.EndedAt = true, ev.At
 	case ev.Kind == core.KindSessionStart, ev.PID > 0:
 		// A start, or anything its process reports: it runs.
 		s.Ended = false
@@ -1309,7 +1317,10 @@ func (d *Daemon) runJob(j *core.Job) {
 		d.waitForStaleCopy(j, pid)
 		return
 	}
-	j.StaleCopyPID = 0
+	if j.StaleCopyPID > 0 {
+		// That wait is over (the copy closed, or is in use now).
+		j.StaleCopyPID, j.WaitingOpen, j.WaitingSince = 0, false, time.Time{}
+	}
 	ambiguousProcess := j.Harness == "codex" && st != nil && st.Source == "processes" && !st.ProcessMatch
 	if st != nil {
 		s := st.Session
@@ -1397,7 +1408,7 @@ func (d *Daemon) runJob(j *core.Job) {
 		// use up attempts; it is bounded by time instead.
 		j.Result = err.Error()
 		if !j.WaitingOpen {
-			j.WaitingOpen = true
+			j.WaitingOpen, j.WaitingSince = true, now
 			d.history("waiting_open", j, map[string]any{"error": err.Error()})
 			msg := h.DisplayName + " is open in a window Continuum can't type into, so it won't start a copy. Continue it there yourself, or leave it: Continuum continues it automatically once it's closed."
 			if st != nil && st.DesktopApp != "" {
@@ -1405,10 +1416,11 @@ func (d *Daemon) runJob(j *core.Job) {
 			}
 			d.notify(j, "Limit reset", msg)
 		}
-		if now.Sub(j.LimitAt) > 24*time.Hour {
+		if now.Sub(waitingSince(j)) > 24*time.Hour {
 			j.State = core.StateNeedsUser
 			j.Result = "still open somewhere Continuum can't type after 24 hours: " + err.Error()
 			d.history("needs_user", j, nil)
+			d.notify(j, "Resume needs you", "Still open somewhere Continuum can't type after 24 hours. Continue it yourself.")
 			return
 		}
 		j.DueAt = now.Add(2 * time.Minute)
@@ -1440,7 +1452,7 @@ func (d *Daemon) runJob(j *core.Job) {
 	}
 	j.Attempts++
 	j.State = core.StateDelivered
-	j.WaitingOpen, j.StaleCopyPID = false, 0
+	j.WaitingOpen, j.StaleCopyPID, j.WaitingSince = false, 0, time.Time{}
 	j.DeliveredAt = now
 	j.DeliveredVia = res.Via
 	j.Result = res.Detail
@@ -1455,6 +1467,9 @@ func (d *Daemon) runJob(j *core.Job) {
 // memory of the conversation stops where that second process took over, so
 // typing into it would fork the conversation. Only for agents whose hooks
 // report their exact process (Claude Code's CLAUDE_PID).
+//
+// The listed process is not the one the hooks last heard from (which has
+// quit, or now holds another conversation), and hasn't done anything since.
 func (d *Daemon) staleCopy(j *core.Job, sess *store.Session, st *live.State) int {
 	if j.Harness != "claude" || sess == nil || sess.PID <= 0 || st == nil || !st.Open || !st.Authoritative || st.Session == nil {
 		return 0
@@ -1463,9 +1478,9 @@ func (d *Daemon) staleCopy(j *core.Job, sess *store.Session, st *live.State) int
 	if open <= 0 || open == sess.PID {
 		return 0
 	}
-	if !sess.Ended && d.agentAlive(j.Harness, sess.PID) {
-		return 0 // the current process still runs (the agent just didn't list it)
-	}
+	// The recorded process isn't listed holding the session (the agent's
+	// list would have picked it): it has quit or moved on to another
+	// conversation, whether or not it still runs.
 	if h := d.Rules.Harness(j.Harness); h.LiveSessions != nil && live.ActiveSince(st.Session, h.LiveSessions.BusyStates, sess.LastSeen) {
 		// It has done something since the recorded process last reported:
 		// it is the copy in use (hooks don't report a turn's start).
@@ -1477,17 +1492,54 @@ func (d *Daemon) staleCopy(j *core.Job, sess *store.Session, st *live.State) int
 // copyEnded: ev reports that a process quit which isn't the one the session's
 // record names, while that one still runs: a second copy of the conversation
 // closed, not the session.
-func (d *Daemon) copyEnded(ev core.Event, s *store.Session) bool {
-	return ev.Kind == core.KindSessionEnd && s != nil && !s.Ended && ev.PID > 0 && s.PID > 0 &&
-		ev.PID != s.PID && d.agentAlive(ev.Harness, s.PID)
+// The agent's own list says so: a process name can be reused or look like
+// any Node program. Only for Claude Code, whose hooks name the process.
+func (d *Daemon) copyEnded(ev core.Event) bool {
+	if ev.Kind != core.KindSessionEnd || ev.Harness != "claude" || ev.SessionID == "" || ev.PID <= 0 {
+		return false
+	}
+	s := d.Sessions[store.SessionKey(ev.Harness, ev.SessionID)]
+	if s == nil || s.Ended || s.PID <= 0 || ev.PID == s.PID {
+		return false
+	}
+	return d.holds(ev.Harness, ev.SessionID, s.PID)
 }
 
-func (d *Daemon) agentAlive(harness string, pid int) bool {
-	if d.AgentAliveFn != nil {
-		return d.AgentAliveFn(harness, pid)
+// holds: the agent lists pid as holding session id right now.
+func (d *Daemon) holds(harness, id string, pid int) bool {
+	if d.HoldsFn != nil {
+		return d.HoldsFn(harness, id, pid)
 	}
-	_, name, ok := proc.Info(pid)
-	return ok && d.Rules.Harness(harness).IsHarnessProcess(name)
+	if d.LiveFn == nil {
+		return false
+	}
+	st := d.LiveFn(&core.Job{Harness: harness, SessionID: id, PID: pid})
+	return st != nil && st.Checked && st.Authoritative && st.Session != nil && st.Session.PID == pid
+}
+
+// waitingSince: when the current wait began (older jobs: their limit).
+func waitingSince(j *core.Job) time.Time {
+	if !j.WaitingSince.IsZero() {
+		return j.WaitingSince
+	}
+	if j.ResetAt.After(j.LimitAt) {
+		return j.ResetAt
+	}
+	return j.LimitAt
+}
+
+// resumesClosed: the agent has its own command to continue a closed session
+// and headless continuing is allowed.
+func (d *Daemon) resumesClosed(harness string) bool {
+	if !d.Config.HeadlessAllowed() {
+		return false
+	}
+	for _, nc := range d.Rules.Harness(harness).NativeCommands {
+		if nc.UsedWhen() == "stopped" {
+			return true
+		}
+	}
+	return false
 }
 
 // waitForStaleCopy holds a resume while only an out-of-date copy is open: it
@@ -1496,17 +1548,25 @@ func (d *Daemon) agentAlive(harness string, pid int) bool {
 func (d *Daemon) waitForStaleCopy(j *core.Job, pid int) {
 	now := d.Now()
 	j.UpdatedAt = now
+	if j.StaleCopyPID == 0 {
+		// A new wait (or a different reason than the last one): say so.
+		j.WaitingOpen, j.WaitingSince = true, now
+		j.StaleCopyPID = pid
+		j.Result = fmt.Sprintf("only an out-of-date copy of this conversation is open (pid %d)", pid)
+		d.history("waiting_open", j, map[string]any{"error": j.Result})
+		then := "Close it and Continuum continues the conversation by itself"
+		if !d.resumesClosed(j.Harness) {
+			then = "Close it and continue the conversation yourself (Continuum can't continue it closed here)"
+		}
+		d.notify(j, "Limit reset", fmt.Sprintf("Only an out-of-date copy of this conversation is open (pid %d), so Continuum won't type into it. %s, or type in the copy to carry on from there.", pid, then))
+	}
 	j.StaleCopyPID = pid
 	j.Result = fmt.Sprintf("only an out-of-date copy of this conversation is open (pid %d)", pid)
-	if !j.WaitingOpen {
-		j.WaitingOpen = true
-		d.history("waiting_open", j, map[string]any{"error": j.Result})
-		d.notify(j, "Limit reset", fmt.Sprintf("Only an out-of-date copy of this conversation is open (pid %d), so Continuum won't type into it. Close it and Continuum continues the conversation by itself, or type in it to carry on from that copy.", pid))
-	}
-	if now.Sub(j.LimitAt) > 24*time.Hour {
+	if now.Sub(waitingSince(j)) > 24*time.Hour {
 		j.State = core.StateNeedsUser
 		j.Result = "still only an out-of-date copy open after 24 hours: " + j.Result
 		d.history("needs_user", j, nil)
+		d.notify(j, "Resume needs you", "Only an out-of-date copy of this conversation has been open for 24 hours. Continue it yourself.")
 		return
 	}
 	j.DueAt = now.Add(2 * time.Minute)
@@ -1681,6 +1741,7 @@ func (d *Daemon) prune() {
 			d.Now().Sub(j.UpdatedAt) > 5*time.Minute &&
 			j.Location.Kind == "wrapper" && !deliver.WrapperAlive(d.Paths, j.Location.Target) {
 			d.skip(j, "its terminal closed, and without a session id nothing else can continue it")
+			d.notify(j, "Won't resume", "Its terminal closed, and nothing else can continue it.")
 		}
 	}
 	for k, j := range d.Jobs {

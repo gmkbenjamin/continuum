@@ -359,7 +359,7 @@ func TestResumeIntoRecordedProcess(t *testing.T) {
 // conversation) doesn't mark the session closed or drop its route.
 func TestCopyQuittingLeavesSessionOpen(t *testing.T) {
 	h := setup(t)
-	h.d.AgentAliveFn = func(_ string, pid int) bool { return pid == 200 }
+	h.d.HoldsFn = func(_, _ string, pid int) bool { return pid == 200 }
 	ev := limitEvent(h, "s1", 30*time.Minute)
 	ev.PID, ev.Location = 200, &core.Location{Kind: "wrapper", Target: "current"}
 	h.d.Handle(ev)
@@ -373,15 +373,79 @@ func TestCopyQuittingLeavesSessionOpen(t *testing.T) {
 		t.Fatalf("the copy's exit dropped the resume's route: %+v", j)
 	}
 	// The current process quitting is the session closing.
-	h.d.AgentAliveFn = func(string, int) bool { return false }
+	h.d.HoldsFn = func(string, string, int) bool { return false }
 	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindSessionEnd, SessionID: "s1", Source: "hook:SessionEnd", At: h.now, PID: 200})
 	if !s.Ended || j.Location != nil {
 		t.Fatalf("the session's own exit not recorded: %+v %+v", s, j)
 	}
-	// Anything its process reports afterwards means it runs again.
-	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindActivity, SessionID: "s1", Source: "hook:UserPromptSubmit", At: h.now, PID: 300, TurnStart: true})
-	if s.Ended {
-		t.Fatalf("still ended after its process reported activity")
+	// A late event from before it ended doesn't reopen it.
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindReply, SessionID: "s1", Source: "hook:Stop", At: h.now.Add(-time.Second), PID: 200,
+		Location: &core.Location{Kind: "wrapper", Target: "current"}})
+	if !s.Ended || s.Location.Target == "current" && j.Location != nil {
+		t.Fatalf("a late event reopened it: %+v", s)
+	}
+	// Anything a process reports afterwards means it runs again.
+	h.now = h.now.Add(time.Minute)
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindReply, SessionID: "s1", Source: "hook:Stop", At: h.now, PID: 300})
+	if s.Ended || s.PID != 300 {
+		t.Fatalf("still ended after its process reported: %+v", s)
+	}
+}
+
+// A weekly limit: the wait for an out-of-date copy to close lasts 24 hours
+// from when it began, not from when the limit was hit days earlier.
+func TestStaleCopyWaitCountsFromItsStart(t *testing.T) {
+	h := setup(t)
+	h.d.Handle(limitEvent(h, "s1", 72*time.Hour))
+	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Source: "registry",
+		Session: &live.Session{SessionID: "s1", PID: os.Getpid()}}
+	h.advance(73 * time.Hour)
+	j := h.d.Jobs["claude:s1"]
+	if j.State != core.StatePending || j.StaleCopyPID == 0 {
+		t.Fatalf("gave up at once: %+v", j)
+	}
+	h.advance(23 * time.Hour)
+	if j.State != core.StatePending {
+		t.Fatalf("gave up before 24 hours of waiting: %+v", j)
+	}
+	h.advance(2 * time.Hour)
+	if j.State != core.StateNeedsUser {
+		t.Fatalf("still waiting after 24 hours: %+v", j)
+	}
+}
+
+// When the copy closes the wait ends: a failed attempt after that is a retry,
+// not "waiting for the copy".
+func TestStaleCopyWaitEndsWhenCopyCloses(t *testing.T) {
+	h := setup(t)
+	h.d.Handle(limitEvent(h, "s1", 30*time.Minute))
+	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Source: "registry",
+		Session: &live.Session{SessionID: "s1", PID: os.Getpid()}}
+	h.advance(32 * time.Minute)
+	j := h.d.Jobs["claude:s1"]
+	if !j.WaitingOpen || j.StaleCopyPID == 0 {
+		t.Fatalf("not waiting: %+v", j)
+	}
+	h.live = &live.State{Checked: true, Open: false, Authoritative: true, Source: "registry"}
+	h.fail = fmt.Errorf("%w (test)", deliver.ErrNoRoute)
+	h.advance(3 * time.Minute)
+	if j.WaitingOpen || j.StaleCopyPID != 0 || !j.WaitingSince.IsZero() || j.Attempts != 1 {
+		t.Fatalf("still marked waiting for the copy: %+v", j)
+	}
+}
+
+// The recorded process moved on to another conversation (still running):
+// the old copy left holding this one is still out of date.
+func TestStaleCopyWhenRecordedProcessMovedOn(t *testing.T) {
+	h := setup(t)
+	ev := limitEvent(h, "s1", 30*time.Minute)
+	ev.PID = os.Getpid() // recorded, and alive
+	h.d.Handle(ev)
+	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Source: "registry",
+		Session: &live.Session{SessionID: "s1", PID: 4242}}
+	h.advance(40 * time.Minute) // a live process gets a grace period first
+	if j := h.d.Jobs["claude:s1"]; len(h.delivered) != 0 || j.StaleCopyPID != 4242 {
+		t.Fatalf("typed into the out-of-date copy: %+v", j)
 	}
 }
 

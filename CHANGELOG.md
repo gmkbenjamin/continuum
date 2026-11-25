@@ -4,6 +4,28 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.15.7] - 2026-11-26
+
+### Fixed
+
+- Waiting for an out-of-date copy (or for a session open somewhere Continuum
+  can't type) gives up 24 hours after the wait began, not 24 hours after the
+  limit: a weekly limit no longer gives up at once. Giving up now notifies you.
+- Each reason to wait is notified when it starts, and a wait that ended no
+  longer shows as one or stops the computer staying awake for retries.
+- An out-of-date copy is also recognized when the process that continued the
+  conversation still runs but has moved on to another conversation.
+- Whether a quitting process was only a copy is decided from Claude Code's own
+  list of open sessions, not the process name (which can be reused, or show as
+  `node`).
+- A hook event delivered after its session ended no longer reopens it or moves
+  it back to its old pane.
+- `continuum status` lists every session with a resume pending, including ones
+  closed normally or seen more than 3 days ago; doesn't show a closed
+  process's pane for a copy; and only promises to continue a closed
+  conversation when it can.
+- A resume dropped because its terminal closed now notifies you.
+
 ## [0.15.6] - 2026-11-26
 
 ### Fixed
