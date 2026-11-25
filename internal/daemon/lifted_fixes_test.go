@@ -462,3 +462,26 @@ func TestResumeIntoCopyActiveSinceRecord(t *testing.T) {
 		t.Fatalf("an active copy was treated as out of date: %+v", j)
 	}
 }
+
+// Typing in the old copy (Claude's prompt-submit hook) makes it the current
+// process at once: its resume goes there, and the other process is the copy.
+func TestPromptMovesSessionToThatCopy(t *testing.T) {
+	h := setup(t)
+	h.d.Handle(limitEvent(h, "s1", 30*time.Minute)) // recorded: deadPID
+	h.now = h.now.Add(time.Minute)
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindActivity, SessionID: "s1", Source: "hook:UserPromptSubmit", At: h.now,
+		PID: 4242, TurnStart: true, Location: &core.Location{Kind: "wrapper", Target: "old"}})
+	if s := h.d.Sessions["claude:s1"]; s.PID != 4242 || s.Location.Target != "old" {
+		t.Fatalf("the prompt didn't move the session: %+v", s)
+	}
+	hit := limitEvent(h, "s1", 30*time.Minute) // its turn hits the limit
+	hit.PID, hit.Location = 4242, &core.Location{Kind: "wrapper", Target: "old"}
+	h.d.Handle(hit)
+	// Idle since long before: only the record says it is the one in use.
+	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Source: "registry",
+		Session: &live.Session{SessionID: "s1", PID: 4242, Status: "idle", StatusSince: h.now.Add(-time.Hour)}}
+	h.advance(40 * time.Minute)
+	if j := h.d.Jobs["claude:s1"]; len(h.delivered) != 1 || j.StaleCopyPID != 0 {
+		t.Fatalf("not resumed in the copy now in use: %+v", j)
+	}
+}

@@ -280,8 +280,12 @@ func TestActiveSince(t *testing.T) {
 		s    Session
 		want bool
 	}{
-		{Session{Status: "busy", StatusSince: t0.Add(-time.Hour)}, true},
-		{Session{Status: "shell", StatusSince: t0.Add(-time.Hour)}, true},
+		// Busy since before t: a turn stuck from back then.
+		{Session{Status: "busy", StatusSince: t0.Add(-time.Hour)}, false},
+		{Session{Status: "shell", StatusSince: t0.Add(-time.Hour)}, false},
+		{Session{Status: "busy", StatusSince: t0.Add(time.Minute)}, true},
+		{Session{Status: "busy"}, true},
+		{Session{Status: "shell"}, true},
 		{Session{Status: "idle", StatusSince: t0.Add(time.Second)}, true},
 		{Session{Status: "idle", StatusSince: t0.Add(-time.Second)}, false},
 		{Session{Status: "idle"}, false},

@@ -263,7 +263,7 @@ over the network.
 | The program | `~/.continuum/bin/continuum` | Run by everything below. |
 | Command link | `~/.local/bin/continuum` (only if that folder is on your `PATH`) | So `continuum` works in any terminal. |
 | Data folder | `~/.continuum/` | Settings (`config.json`, `scope.json`), scheduled resumes, `history.jsonl`, `daemon.log`, and a record of what was installed. |
-| Claude Code hooks | `~/.claude/settings.json`: `SessionStart`, `StopFailure`, `Stop`, `SessionEnd` | Claude Code reports stalls and where each session runs. This also covers Claude Desktop. |
+| Claude Code hooks | `~/.claude/settings.json`: `SessionStart`, `UserPromptSubmit`, `StopFailure`, `Stop`, `SessionEnd` | Claude Code reports stalls, where each session runs, and which process a conversation is being used in. This also covers Claude Desktop. |
 | Codex hooks | `~/.codex/hooks.json`: `SessionStart`, `Stop` | Codex reports where each session runs. |
 | Grok Build hooks | `~/.grok/hooks/continuum.json`, a file of Continuum's own | Grok Build reports stalls and where each session runs. Grok runs hooks in folders you have trusted. |
 | Muse Code hooks | `~/.config/muse/settings.json`: `SessionStart`, `StopFailure`, `Stop`, `SessionEnd` | Muse Code reports stalls and its sessions. |

@@ -553,16 +553,20 @@ func expand(s string, q Query) string {
 }
 
 // ActiveSince: the process did something at or after t, by the agent's own
-// report: it is working right now, or its status changed since. A copy of a
+// report: its status changed since (or, when the agent gives no time, it is
+// working right now). A copy of a
 // conversation that did is the one in use, not an out-of-date one.
 func ActiveSince(s *Session, busyStates []string, t time.Time) bool {
 	if s == nil {
 		return false
 	}
-	if contains(busyStates, s.Status) || strings.EqualFold(s.Status, "shell") {
-		return true // working (or running a command for its turn)
+	if s.StatusSince.IsZero() {
+		// No time given: working now (or running a command for its turn)
+		// is all there is to go on.
+		return contains(busyStates, s.Status) || strings.EqualFold(s.Status, "shell")
 	}
-	return !s.StatusSince.IsZero() && !s.StatusSince.Before(t)
+	// Working since before t is a turn stuck from back then, not use since.
+	return !s.StatusSince.Before(t)
 }
 
 func contains(list []string, v string) bool {

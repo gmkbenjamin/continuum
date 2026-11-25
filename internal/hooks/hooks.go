@@ -526,10 +526,12 @@ const HookStatusMessage = "Continuum: tracks this session to resume it after usa
 // Targets lists the settings files Continuum's hooks go in. Grok Build, Muse
 // Code and the Cursor CLI also get a prompt-submit hook: it says when a turn
 // started, so a turn their Stop hook reports answered shows the limit lifted
-// only if it started after the limit hit (see lifted.go).
+// only if it started after the limit hit (see lifted.go). Claude Code gets
+// one too: it says at once which process the conversation is being used in,
+// when it is open in two (the other is then an out-of-date copy).
 func Targets(c core.Config) []Target {
 	return []Target{
-		{Harness: "claude", Path: filepath.Join(c.ClaudeDir(), "settings.json"), Events: []string{"SessionStart", "StopFailure", "Stop", "SessionEnd"}, Timeout: 10, StatusMessage: HookStatusMessage},
+		{Harness: "claude", Path: filepath.Join(c.ClaudeDir(), "settings.json"), Events: []string{"SessionStart", "UserPromptSubmit", "StopFailure", "Stop", "SessionEnd"}, Timeout: 10, StatusMessage: HookStatusMessage},
 		{Harness: "codex", Path: filepath.Join(c.CodexDir(), "hooks.json"), Events: []string{"SessionStart", "Stop"}, Timeout: 10, StatusMessage: HookStatusMessage},
 		// Grok Build reads every JSON file in ~/.grok/hooks; this one is
 		// Continuum's own, removed whole on uninstall.

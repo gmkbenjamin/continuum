@@ -169,9 +169,14 @@ func TestStaleCopyNeedsInactivity(t *testing.T) {
 		t.Fatal("active since the record: want current")
 	}
 	working := idle
-	working.Status = "busy"
+	working.Status, working.StatusSince = "busy", time.Time{}
 	if staleCopy(r, working, rec) {
-		t.Fatal("working: want current")
+		t.Fatal("working, no time given: want current")
+	}
+	stuck := idle
+	stuck.Status = "busy" // since before the record
+	if !staleCopy(r, stuck, rec) {
+		t.Fatal("busy since before the record: want out of date")
 	}
 	same := idle
 	same.PID = 999999

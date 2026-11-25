@@ -4,6 +4,21 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.15.8] - 2026-11-26
+
+### Changed
+
+- Claude Code also gets Continuum's prompt-submit hook (`UserPromptSubmit`; it
+  prints nothing, so adds nothing to the conversation). Typing in one copy of a
+  conversation open in two processes makes that copy the one Continuum
+  resumes straight away, instead of when its turn ends. The daemon adds the
+  hook to existing installs by itself.
+
+### Fixed
+
+- A copy whose agent reports it working since before the other process took
+  over is a stuck turn, not the copy in use: it is no longer typed into.
+
 ## [0.15.7] - 2026-11-26
 
 ### Fixed
