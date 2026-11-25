@@ -4,6 +4,15 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.15.6] - 2026-11-26
+
+### Fixed
+
+- A Claude Code process is only treated as an out-of-date copy when it hasn't
+  done anything since the process the hooks last heard from: one that is
+  working, or whose status changed since, is the copy in use and is resumed.
+  This also covers records that 0.15.4 left pointing at a copy that had quit.
+
 ## [0.15.5] - 2026-11-26
 
 ### Fixed

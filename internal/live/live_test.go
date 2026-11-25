@@ -272,3 +272,23 @@ func TestMergeSessionsPIDlessEntryFillsOne(t *testing.T) {
 		t.Fatalf("filled every copy: %+v", got)
 	}
 }
+
+func TestActiveSince(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	busy := []string{"busy"}
+	cases := []struct {
+		s    Session
+		want bool
+	}{
+		{Session{Status: "busy", StatusSince: t0.Add(-time.Hour)}, true},
+		{Session{Status: "shell", StatusSince: t0.Add(-time.Hour)}, true},
+		{Session{Status: "idle", StatusSince: t0.Add(time.Second)}, true},
+		{Session{Status: "idle", StatusSince: t0.Add(-time.Second)}, false},
+		{Session{Status: "idle"}, false},
+	}
+	for i, c := range cases {
+		if got := ActiveSince(&c.s, busy, t0); got != c.want {
+			t.Errorf("%d: got %v", i, got)
+		}
+	}
+}

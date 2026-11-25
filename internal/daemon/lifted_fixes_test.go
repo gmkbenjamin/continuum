@@ -384,3 +384,17 @@ func TestCopyQuittingLeavesSessionOpen(t *testing.T) {
 		t.Fatalf("still ended after its process reported activity")
 	}
 }
+
+// The listed process isn't the recorded one, but it has been active since
+// the recorded process last reported (an old Continuum let a copy's exit
+// overwrite the record): it is the copy in use, and is resumed.
+func TestResumeIntoCopyActiveSinceRecord(t *testing.T) {
+	h := setup(t)
+	h.d.Handle(limitEvent(h, "s1", 30*time.Minute)) // recorded: deadPID, now
+	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Source: "registry",
+		Session: &live.Session{SessionID: "s1", PID: os.Getpid(), Status: "idle", StatusSince: h.now.Add(time.Minute)}}
+	h.advance(32 * time.Minute)
+	if j := h.d.Jobs["claude:s1"]; len(h.delivered) != 1 || j.StaleCopyPID != 0 {
+		t.Fatalf("an active copy was treated as out of date: %+v", j)
+	}
+}

@@ -154,3 +154,28 @@ func TestSessionRowsWindowAndWrapperMessage(t *testing.T) {
 		t.Fatal("dead wrapper job should not be reported as open")
 	}
 }
+
+func TestStaleCopyNeedsInactivity(t *testing.T) {
+	r, _ := rules.Load("")
+	last := time.Now().Add(-time.Hour)
+	rec := &store.Session{PID: 999999, Ended: true, LastSeen: last}
+	idle := knownSession{Harness: "claude", Open: true, PID: 4242, Status: "idle", StatusSince: last.Add(-time.Hour)}
+	if !staleCopy(r, idle, rec) {
+		t.Fatal("idle since before the record: want out of date")
+	}
+	since := idle
+	since.StatusSince = last.Add(time.Minute)
+	if staleCopy(r, since, rec) {
+		t.Fatal("active since the record: want current")
+	}
+	working := idle
+	working.Status = "busy"
+	if staleCopy(r, working, rec) {
+		t.Fatal("working: want current")
+	}
+	same := idle
+	same.PID = 999999
+	if staleCopy(r, same, rec) {
+		t.Fatal("the recorded process itself: want current")
+	}
+}

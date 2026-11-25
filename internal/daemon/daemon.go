@@ -1466,6 +1466,11 @@ func (d *Daemon) staleCopy(j *core.Job, sess *store.Session, st *live.State) int
 	if !sess.Ended && d.agentAlive(j.Harness, sess.PID) {
 		return 0 // the current process still runs (the agent just didn't list it)
 	}
+	if h := d.Rules.Harness(j.Harness); h.LiveSessions != nil && live.ActiveSince(st.Session, h.LiveSessions.BusyStates, sess.LastSeen) {
+		// It has done something since the recorded process last reported:
+		// it is the copy in use (hooks don't report a turn's start).
+		return 0
+	}
 	return open
 }
 

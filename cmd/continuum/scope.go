@@ -26,6 +26,7 @@ type knownSession struct {
 	// From the agent's own session list (Claude Code), when it has one.
 	Status, Kind, WaitingFor, Tmux, Entrypoint string
 	PID                                        int
+	StatusSince                                time.Time // when Status last changed, when the agent says
 	// From hooks: where the session runs.
 	Location *core.Location
 	Live     bool // the agent reported this session itself, just now
@@ -87,7 +88,7 @@ func knownSessions() []knownSession {
 			}
 			ks := knownSession{Harness: name, ID: s.SessionID, Short: s.ShortID, Name: s.Name, Cwd: s.Cwd, Where: where,
 				Open: open, LastSeen: lastSeen, Live: true, Checked: true,
-				Status: s.Status, Kind: s.Kind, WaitingFor: s.WaitingFor, Tmux: s.Tmux, Entrypoint: s.Entrypoint, PID: s.PID}
+				Status: s.Status, StatusSince: s.StatusSince, Kind: s.Kind, WaitingFor: s.WaitingFor, Tmux: s.Tmux, Entrypoint: s.Entrypoint, PID: s.PID}
 			if seen[name+s.SessionID] {
 				// The same conversation in a second process: the one the
 				// hooks last heard from holds it, the other is a copy.
@@ -201,11 +202,18 @@ func staleCopy(r *rules.Rules, k knownSession, st *store.Session) bool {
 			return false
 		}
 	}
+	if r == nil {
+		return false
+	}
+	h := r.Harness(k.Harness)
+	if h.LiveSessions != nil && live.ActiveSince(&live.Session{Status: k.Status, StatusSince: k.StatusSince}, h.LiveSessions.BusyStates, st.LastSeen) {
+		return false // it has done something since: it is the copy in use
+	}
 	if st.Ended {
 		return true
 	}
 	_, name, ok := proc.Info(st.PID)
-	return !ok || r == nil || !r.Harness(k.Harness).IsHarnessProcess(name)
+	return !ok || !h.IsHarnessProcess(name)
 }
 
 func less(a, b knownSession) bool {
