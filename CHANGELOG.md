@@ -4,6 +4,24 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.15.4] - 2026-11-26
+
+### Fixed
+
+- A conversation open in two processes (resumed again in another pane) is
+  checked through the process Continuum's hooks last heard from, not whichever
+  the agent lists first, and one process's status no longer overwrites the
+  other's.
+- `continuum status` lists such a conversation under the process Continuum
+  resumes and shows the other as another copy (`"copy": true`, with its `pid`,
+  in `--json`), instead of pinning the session to the stale pane and listing
+  the real one as an unnamed wrapper. `continuum this` works in either copy.
+- `continuum status` checks whether a session with a resume pending is still
+  open, and marks a closed one as continuing in the background (or needing to
+  be reopened, for agents without a resume command).
+- A resume known only by a wrapper that has exited is dropped a few minutes
+  later instead of staying listed until it is due.
+
 ## [0.15.3] - 2026-11-23
 
 ### Added

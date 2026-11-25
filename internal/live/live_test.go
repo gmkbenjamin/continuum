@@ -211,3 +211,64 @@ func TestMuseSessionsJSON(t *testing.T) {
 		t.Fatalf("bad output taken as an answer: %+v", st)
 	}
 }
+
+// The same conversation resumed again in a second pane: two processes list
+// the same session id. The one the hooks last heard from (q.PID) is the one
+// that holds it; the older copy must not be checked or typed into instead.
+func TestLookupPrefersRecordedProcessOfDuplicateSession(t *testing.T) {
+	h := claudeRules(t)
+	const dup = `[
+ {"pid":51063,"cwd":"/w/neo","kind":"interactive","sessionId":"6dfd0f06","name":"old","status":"idle"},
+ {"pid":53121,"cwd":"/w/neo","kind":"interactive","sessionId":"6dfd0f06","name":"new","status":"busy"}
+]`
+	f := finder(t, map[int]bool{51063: true, 53121: true}, dup, nil)
+	q := Query{Bin: "claude", SessionID: "6dfd0f06", Homes: map[string]string{"claude_home": t.TempDir()}}
+	q.PID = 53121
+	if st := f.Lookup(h, q); !st.Open || st.Session.PID != 53121 || !st.Busy {
+		t.Fatalf("picked the old copy: %+v %+v", st, st.Session)
+	}
+	q.PID = 51063
+	if st := f.Lookup(h, q); st.Session.PID != 51063 || st.Busy {
+		t.Fatalf("recorded process not preferred: %+v", st.Session)
+	}
+	q.PID = 0
+	if st := f.Lookup(h, q); st.Session.PID != 51063 {
+		t.Fatalf("without a recorded process, the first listed: %+v", st.Session)
+	}
+}
+
+// Registry entries of two processes holding one session each merge into
+// their own process's entry, not both into the first.
+func TestMergeSessionsKeepsDuplicateProcessesApart(t *testing.T) {
+	a := []Session{{SessionID: "s", PID: 1}, {SessionID: "s", PID: 2}}
+	b := []Session{{SessionID: "s", PID: 2, Status: "busy", StatusSince: time.Unix(10, 0)}}
+	got := mergeSessions(a, b)
+	if len(got) != 2 || got[0].Status != "" || got[1].Status != "busy" {
+		t.Fatalf("merged across processes: %+v", got)
+	}
+}
+
+// Once the recorded process is found, a later entry for the same process
+// (the process scan's sparser one) doesn't replace it.
+func TestLookupKeepsFirstEntryOfRecordedProcess(t *testing.T) {
+	h := claudeRules(t)
+	const dup = `[
+ {"pid":7,"cwd":"/w","kind":"interactive","sessionId":"s1","name":"listed","status":"busy"},
+ {"pid":7,"cwd":"/w","kind":"interactive","sessionId":"s1"}
+]`
+	f := finder(t, map[int]bool{7: true}, dup, nil)
+	q := Query{Bin: "claude", SessionID: "s1", PID: 7, Homes: map[string]string{"claude_home": t.TempDir()}}
+	if st := f.Lookup(h, q); st.Session.Name != "listed" || !st.Busy {
+		t.Fatalf("replaced by a later entry: %+v", st.Session)
+	}
+}
+
+// A registry entry that names no process fills in one entry, not every
+// process holding the session.
+func TestMergeSessionsPIDlessEntryFillsOne(t *testing.T) {
+	a := []Session{{SessionID: "s", PID: 1}, {SessionID: "s", PID: 2}}
+	got := mergeSessions(a, []Session{{SessionID: "s", Status: "busy", StatusSince: time.Unix(10, 0)}})
+	if got[0].Status != "busy" || got[1].Status != "" {
+		t.Fatalf("filled every copy: %+v", got)
+	}
+}

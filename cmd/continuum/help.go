@@ -142,7 +142,10 @@ session (plus any with a pending resume; --all includes closed sessions) with:
            prompt is open), usage limit · resumes 10:55 (in 2h),
            API error · retrying, resumed 10:55 by Continuum, needs you
            (billing, sign-in), not resuming (excluded or not chosen),
-           closed
+           closed, closed · usage limit (continued in the background with
+           the agent's own resume command, or "reopen it to continue" when it
+           has none), another copy (the same conversation is open in a second
+           process; Continuum resumes the one its hooks last heard from)
   WHERE    where it runs: tmux, Rex, iTerm2, Claude Desktop, background...
            "(via Continuum)": through Continuum's wrapper
   COVERED  whether Continuum will resume it (see ` + "`continuum scope`" + `)

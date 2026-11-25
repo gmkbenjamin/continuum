@@ -30,7 +30,7 @@ type sessionRow struct {
 	ID       string    `json:"session_id"`
 	Name     string    `json:"name,omitempty"`
 	Folder   string    `json:"folder,omitempty"`
-	State    string    `json:"state"`  // short code: working, idle, waiting, limit, outage, resumed, needs_you, not_resuming, active, closed, not_running
+	State    string    `json:"state"`  // short code: working, idle, waiting, limit, outage, resumed, needs_you, not_resuming, active, closed, not_running, stale_copy
 	Detail   string    `json:"detail"` // human text for the STATE column
 	Where    string    `json:"where"`
 	Open     bool      `json:"open"`
@@ -38,6 +38,10 @@ type sessionRow struct {
 	Wrapper  string    `json:"wrapper,omitempty"` // Continuum's wrapper it runs in
 	Message  string    `json:"message_from"`
 	LastSeen time.Time `json:"last_seen,omitempty"`
+	PID      int       `json:"pid,omitempty"`
+	// Copy: another process holding the same conversation (same session_id),
+	// which Continuum doesn't resume.
+	Copy bool `json:"copy,omitempty"`
 }
 
 // sessionRows lists open sessions, sessions seen within window, and any with
@@ -58,11 +62,12 @@ func sessionRows(window time.Duration) []sessionRow {
 		if !s.Open && !pendingish && (window <= 0 || now.Sub(s.LastSeen) > window) {
 			continue
 		}
+		s.ResumesClosed = resumesClosed(r, cfg, s.Harness)
 		probe := &core.Job{Harness: s.Harness, SessionID: s.ID, Cwd: s.Cwd, Location: s.Location}
 		covered, _ := sc.Covers(probe)
 		row := sessionRow{
 			Agent: s.Harness, ID: s.ID, Name: s.Name, Folder: s.Cwd, Open: s.Open, Covered: covered,
-			Message: msgs.Resolve(probe, false, cfg, r).Source, LastSeen: s.LastSeen,
+			Message: msgs.Resolve(probe, false, cfg, r).Source, LastSeen: s.LastSeen, PID: s.PID,
 		}
 		if r != nil && r.Harness(s.Harness) != nil {
 			row.Agent = r.Harness(s.Harness).DisplayName
@@ -73,6 +78,16 @@ func sessionRows(window time.Duration) []sessionRow {
 			row.Wrapper = s.Location.Target
 		}
 		rows = append(rows, row)
+		for _, c := range s.Copies {
+			cr := row
+			cr.Name, cr.Open, cr.LastSeen, cr.Wrapper, cr.PID, cr.Copy = c.Name, c.Open, c.LastSeen, "", c.PID, true
+			cr.State, cr.Detail = "stale_copy", "another copy of this conversation · Continuum resumes the one it last heard from"
+			cr.Where = sessionWhere(c, r)
+			if c.Location != nil && c.Location.Kind == "wrapper" {
+				cr.Wrapper = c.Location.Target
+			}
+			rows = append(rows, cr)
+		}
 	}
 	return append(rows, wrapperRows(p, cfg, r, sc, msgs, jobs, known, now)...)
 }
@@ -82,8 +97,10 @@ func sessionRows(window time.Duration) []sessionRow {
 func wrapperRows(p core.Paths, cfg core.Config, r *rules.Rules, sc scope.Scope, msgs *messages.Messages, jobs map[string]*core.Job, known []knownSession, now time.Time) []sessionRow {
 	seen := map[string]bool{}
 	for _, s := range known {
-		if s.Location != nil && s.Location.Kind == "wrapper" {
-			seen[s.Location.Target] = true
+		for _, k := range append([]knownSession{s}, s.Copies...) {
+			if k.Location != nil && k.Location.Kind == "wrapper" {
+				seen[k.Location.Target] = true
+			}
 		}
 	}
 	entries, _ := os.ReadDir(p.Wrappers)
@@ -121,6 +138,24 @@ func wrapperRows(p core.Paths, cfg core.Config, r *rules.Rules, sc scope.Scope, 
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+// resumesClosed: the agent has its own command to continue a closed session,
+// and headless continuing is allowed.
+func resumesClosed(r *rules.Rules, cfg core.Config, harness string) bool {
+	if r == nil || !cfg.HeadlessAllowed() {
+		return false
+	}
+	h := r.Harness(harness)
+	if h == nil {
+		return false
+	}
+	for _, nc := range h.NativeCommands {
+		if nc.UsedWhen() == "stopped" {
+			return true
+		}
+	}
+	return false
 }
 
 func readSmall(path string) string {
@@ -174,6 +209,13 @@ func sessionState(s knownSession, j *core.Job, covered bool, now time.Time) (str
 			}
 			if j.WaitingOpen {
 				return "limit", "limit reset · waiting until Continuum can type into it"
+			}
+			if !s.Open && s.Checked && !(s.Live && s.Kind == "background") {
+				// Checked and closed: no pane to type into.
+				if s.ResumesClosed {
+					return "limit", "closed · usage limit · continues it in the background " + whenShort(j.DueAt, now)
+				}
+				return "limit", "closed · usage limit · reopen it to continue"
 			}
 			return "limit", "usage limit · resumes " + whenShort(j.DueAt, now)
 		case core.StateNeedsUser:

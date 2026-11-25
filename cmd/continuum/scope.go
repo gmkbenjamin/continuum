@@ -29,9 +29,19 @@ type knownSession struct {
 	// From hooks: where the session runs.
 	Location *core.Location
 	Live     bool // the agent reported this session itself, just now
+	// Checked: whether it is open was actually checked just now (the agent's
+	// list, its registry or the process table), so !Open means closed.
+	Checked bool
+	// ResumesClosed: Continuum can continue it once closed, with the agent's
+	// own resume command (set by sessionRows).
+	ResumesClosed bool
 	// Host: the multiplexer or terminal app the session's process runs in
 	// (Rex, tmux, iTerm2, ...), from its environment.
 	Host string
+	// Copies: other processes that hold the same conversation (it was
+	// resumed again in another pane). Continuum resumes only the one its
+	// hooks last heard from; these are out of date.
+	Copies []knownSession
 }
 
 // knownSessions lists open sessions (from the agents) and recently seen ones
@@ -42,6 +52,10 @@ func knownSessions() []knownSession {
 	r, _ := rules.Cached(p.Rules)
 	var out []knownSession
 	seen := map[string]bool{}
+	sessions := map[string]*store.Session{}
+	_ = store.LoadJSON(p.Sessions, &sessions)
+	jobs, _ := store.LoadJobs(p.Jobs)
+	index := map[string]int{}
 	for _, name := range r.HarnessNames() {
 		h := r.Harness(name)
 		if h.LiveSessions == nil || !cfg.HarnessEnabled(name) {
@@ -50,10 +64,9 @@ func knownSessions() []knownSession {
 		bin, _ := deliver.Binary(cfg, h)
 		list, _ := live.Default().List(h, live.Query{Bin: bin, Homes: cfg.Homes()})
 		for _, s := range list {
-			if s.SessionID == "" || seen[name+s.SessionID] {
+			if s.SessionID == "" {
 				continue
 			}
-			seen[name+s.SessionID] = true
 			where := s.Kind
 			switch {
 			case s.PID <= 0 && s.Kind == "background":
@@ -68,13 +81,27 @@ func knownSessions() []knownSession {
 			if open {
 				lastSeen = time.Now()
 			}
-			out = append(out, knownSession{Harness: name, ID: s.SessionID, Short: s.ShortID, Name: s.Name, Cwd: s.Cwd, Where: where,
-				Open: open, LastSeen: lastSeen, Live: true,
-				Status: s.Status, Kind: s.Kind, WaitingFor: s.WaitingFor, Tmux: s.Tmux, Entrypoint: s.Entrypoint, PID: s.PID})
+			ks := knownSession{Harness: name, ID: s.SessionID, Short: s.ShortID, Name: s.Name, Cwd: s.Cwd, Where: where,
+				Open: open, LastSeen: lastSeen, Live: true, Checked: true,
+				Status: s.Status, Kind: s.Kind, WaitingFor: s.WaitingFor, Tmux: s.Tmux, Entrypoint: s.Entrypoint, PID: s.PID}
+			if seen[name+s.SessionID] {
+				// The same conversation in a second process: the one the
+				// hooks last heard from holds it, the other is a copy.
+				first := &out[index[name+s.SessionID]]
+				if st := sessions[store.SessionKey(name, s.SessionID)]; st != nil && st.PID > 0 && st.PID == s.PID && first.PID != s.PID {
+					ks.Copies = append(first.Copies, *first)
+					first.Copies = nil
+					*first = ks
+				} else {
+					first.Copies = append(first.Copies, ks)
+				}
+				continue
+			}
+			seen[name+s.SessionID] = true
+			index[name+s.SessionID] = len(out)
+			out = append(out, ks)
 		}
 	}
-	sessions := map[string]*store.Session{}
-	_ = store.LoadJSON(p.Sessions, &sessions)
 	// Fill in what hooks recorded (where it runs, where it started) for the
 	// sessions the agent listed itself.
 	for i := range out {
@@ -102,7 +129,12 @@ func knownSessions() []knownSession {
 		}
 		// Agents without a session list (Codex, ...): ask the process table
 		// whether a recent session is still open.
-		if h := r.Harness(s.Harness); h != nil && time.Since(s.LastSeen) < 12*time.Hour && (h.LiveSessions != nil || len(h.DesktopApps) > 0) {
+		// A session with a resume pending is checked however long ago it was
+		// seen: status says whether that resume types into it or continues
+		// it closed.
+		j := jobs[store.SessionKey(s.Harness, s.SessionID)]
+		pending := j != nil && (j.State == core.StatePending || j.State == core.StateNeedsUser)
+		if h := r.Harness(s.Harness); h != nil && (pending || time.Since(s.LastSeen) < 12*time.Hour) && (h.LiveSessions != nil || len(h.DesktopApps) > 0) {
 			pid := ks.PID
 			if ks.Location != nil && ks.Location.Kind == "wrapper" && !deliver.WrapperAlive(p, ks.Location.Target) {
 				pid = 0
@@ -114,7 +146,7 @@ func knownSessions() []knownSession {
 			bin, _ := deliver.Binary(cfg, h)
 			st := live.Default().Lookup(h, live.Query{SessionID: s.SessionID, Cwd: s.Cwd, PID: pid, Bin: bin, Entrypoint: s.Entrypoint,
 				Homes: cfg.Homes()})
-			ks.Open = st.Open
+			ks.Open, ks.Checked = st.Open, st.Checked
 			if s.Harness == "codex" && st.Source == "processes" && !st.ProcessMatch {
 				ks.Open = pid > 0 && st.Session != nil && st.Session.PID == pid
 			}
@@ -127,15 +159,21 @@ func knownSessions() []knownSession {
 	}
 	// Sessions started before Continuum's hooks (or without them): their
 	// process's environment still says which pane they run in.
+	locate := func(k *knownSession) {
+		if k.PID <= 0 || !k.Open {
+			return
+		}
+		env := proc.Environ(k.PID)
+		if loc := deliver.LocationFromEnv(p, r, env); loc != nil && (loc.Kind == "wrapper" || k.Location == nil) {
+			k.Location = loc
+		}
+		k.Host = hostFromEnv(r, env)
+	}
 	for i := range out {
-		if out[i].PID <= 0 || !out[i].Open {
-			continue
+		locate(&out[i])
+		for c := range out[i].Copies {
+			locate(&out[i].Copies[c])
 		}
-		env := proc.Environ(out[i].PID)
-		if loc := deliver.LocationFromEnv(p, r, env); loc != nil && (loc.Kind == "wrapper" || out[i].Location == nil) {
-			out[i].Location = loc
-		}
-		out[i].Host = hostFromEnv(r, env)
 	}
 	// Open sessions first, then by recency.
 	for i := 1; i < len(out); i++ {

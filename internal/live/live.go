@@ -151,6 +151,7 @@ func (f *Finder) Lookup(h *rules.Harness, q Query) State {
 	ls := h.LiveSessions
 	var all []Session
 	var matchedPID int
+	listed := 0 // entries before this come from the agent's own list or registry
 	if ls != nil {
 		if len(ls.Command) > 0 && q.Bin != "" && (len(ls.RequiresHelp) == 0 || f.HelpOK == nil || f.HelpOK(q.Bin, ls.RequiresHelp)) {
 			if list, ok := f.fromCommand(ls, q); ok {
@@ -176,6 +177,7 @@ func (f *Finder) Lookup(h *rules.Harness, q Query) State {
 				all = mergeSessions(all, list)
 			}
 		}
+		listed = len(all)
 		if ls.ScanProcesses && q.SessionID != "" {
 			if s, match, checked := f.fromProcesses(h, q); checked {
 				if !st.Checked {
@@ -194,10 +196,18 @@ func (f *Finder) Lookup(h *rules.Harness, q Query) State {
 	for i := range all {
 		s := &all[i]
 		if q.SessionID != "" && s.SessionID == q.SessionID {
+			// The same conversation can be open in two processes (resumed
+			// again in another pane). The one the hooks last heard from is
+			// the one that holds it now; the other is an out-of-date copy.
+			// Only the agent's own list can name that process: the process
+			// scan's entry is a guess (it may fall back to any agent in the
+			// folder), so it never displaces a listed one.
+			if st.Session != nil && (q.PID <= 0 || s.PID != q.PID || st.Session.PID == q.PID || i >= listed) {
+				continue
+			}
 			st.Open = true
 			st.Session = s
 			st.ProcessMatch = matchedPID != 0 && st.Source == "processes"
-			break
 		}
 	}
 	if st.Session == nil && q.PID > 0 {
@@ -502,7 +512,9 @@ func mergeSessions(a, b []Session) []Session {
 	for _, s := range b {
 		found := false
 		for i := range a {
-			if a[i].SessionID == s.SessionID {
+			// Two processes can hold the same session: merge only an entry
+			// for the same process (or one that doesn't say which).
+			if a[i].SessionID == s.SessionID && (a[i].PID == 0 || s.PID == 0 || a[i].PID == s.PID) {
 				found = true
 				if a[i].Tmux == "" {
 					a[i].Tmux = s.Tmux
@@ -519,6 +531,9 @@ func mergeSessions(a, b []Session) []Session {
 					a[i].Status, a[i].StatusSince = s.Status, s.StatusSince
 				} else if a[i].Status == "" {
 					a[i].Status = s.Status
+				}
+				if s.PID == 0 {
+					break // says no process: fill in one entry, not every copy
 				}
 			}
 		}

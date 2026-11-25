@@ -295,3 +295,26 @@ func TestGoneSessionFailsAtOnce(t *testing.T) {
 		t.Fatalf("want failed after one attempt: %+v", j)
 	}
 }
+
+// A resume known only by a wrapper that has since exited can never be
+// delivered: housekeeping drops it instead of listing it until it is due.
+// One with a session id is kept: the agent's own command can continue it.
+func TestPruneSkipsResumeOfExitedWrapper(t *testing.T) {
+	h := setup(t)
+	h.d.Handle(core.Event{Harness: "antigravity", Kind: core.KindUsageLimit, Source: "wrapper", At: h.now, ResetAt: h.now.Add(48 * time.Hour),
+		Location: &core.Location{Kind: "wrapper", Target: "dead0001"}, Message: "Individual quota reached", Hit: "Individual quota reached"})
+	h.d.Handle(core.Event{Harness: "codex", SessionID: "c1", Kind: core.KindUsageLimit, Source: "rollout", At: h.now, ResetAt: h.now.Add(48 * time.Hour),
+		Location: &core.Location{Kind: "wrapper", Target: "dead0002"}, Message: "You've hit your usage limit."})
+	h.d.prune()
+	if j := h.d.Jobs["antigravity@wrapper:dead0001"]; j == nil || j.State != core.StatePending {
+		t.Fatalf("skipped before an event with its session id could adopt it: %+v", j)
+	}
+	h.now = h.now.Add(6 * time.Minute)
+	h.d.prune()
+	if j := h.d.Jobs["antigravity@wrapper:dead0001"]; j == nil || j.State != core.StateSkipped {
+		t.Fatalf("want skipped: %+v", j)
+	}
+	if j := h.d.Jobs["codex:c1"]; j == nil || j.State != core.StatePending {
+		t.Fatalf("a session with an id must stay pending: %+v", j)
+	}
+}

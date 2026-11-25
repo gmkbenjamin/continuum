@@ -1588,6 +1588,18 @@ func (d *Daemon) scanPanes() {
 
 func (d *Daemon) prune() {
 	cutoff := d.Now().Add(-72 * time.Hour)
+	for _, j := range d.Jobs {
+		// A resume known only by its wrapper (no session id for the agent's
+		// own resume command) can never be delivered once that wrapper has
+		// exited: wrapper ids are never reused. Don't list it, keep the
+		// computer awake for it, or retry it. Not straight away: an event
+		// with its session id may still arrive and adopt it (findTwin).
+		if j.State == core.StatePending && j.SessionID == "" && j.Location != nil &&
+			d.Now().Sub(j.UpdatedAt) > 5*time.Minute &&
+			j.Location.Kind == "wrapper" && !deliver.WrapperAlive(d.Paths, j.Location.Target) {
+			d.skip(j, "its terminal closed, and without a session id nothing else can continue it")
+		}
+	}
 	for k, j := range d.Jobs {
 		if j.LiftFailed && j.ResetKnown && j.ResetAt.After(d.Now()) {
 			continue // still keeps answers from lifting its limit (lifted.go)

@@ -37,6 +37,12 @@ func TestSessionStates(t *testing.T) {
 		{knownSession{Live: true, Status: "busy", Open: true}, &core.Job{State: core.StateDelivered, DeliveredAt: now.Add(-10 * time.Minute)}, "working", "working"},
 		{knownSession{Open: true}, &core.Job{State: core.StateIgnored, Result: "excluded: every session in /x", UpdatedAt: now}, "not_resuming", "excluded"},
 		{knownSession{Open: false, LastSeen: now.Add(-3 * time.Hour)}, nil, "closed", "closed"},
+		// Closed while waiting on its limit: say so, and how it continues.
+		{knownSession{Open: false, Checked: true, ResumesClosed: true}, &core.Job{State: core.StatePending, Kind: core.KindUsageLimit, DueAt: now.Add(2 * time.Hour)}, "limit", "closed · usage limit · continues it in the background 11:00"},
+		// No resume command for a closed session (or headless off): say so.
+		{knownSession{Open: false, Checked: true}, &core.Job{State: core.StatePending, Kind: core.KindUsageLimit, DueAt: now.Add(2 * time.Hour)}, "limit", "closed · usage limit · reopen it"},
+		// Not checked: whether it is open is unknown, so not "closed".
+		{knownSession{Open: false, ResumesClosed: true}, &core.Job{State: core.StatePending, Kind: core.KindUsageLimit, DueAt: now.Add(2 * time.Hour)}, "limit", "usage limit · resumes 11:00"},
 		{knownSession{Open: true, LastSeen: now.Add(-time.Minute)}, nil, "active", "open"},
 	}
 	for i, c := range cases {

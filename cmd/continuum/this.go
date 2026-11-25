@@ -144,13 +144,17 @@ func thisSession() (here, error) {
 	}
 	// The agent's own list of open sessions (Claude Code, Grok Build).
 	if pid > 0 {
-		for _, k := range knownSessions() {
-			if k.Harness == harness && k.PID == pid && k.ID != "" {
-				h.ID = k.ID
-				if k.Cwd != "" {
-					h.Cwd = k.Cwd
+		for _, top := range knownSessions() {
+			// A second process holding the same conversation is still
+			// that session.
+			for _, k := range append([]knownSession{top}, top.Copies...) {
+				if k.Harness == harness && k.PID == pid && k.ID != "" {
+					h.ID = k.ID
+					if k.Cwd != "" {
+						h.Cwd = k.Cwd
+					}
+					return h, nil
 				}
-				return h, nil
 			}
 		}
 	}
