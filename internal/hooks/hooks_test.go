@@ -470,42 +470,32 @@ func TestQuietPromptHook(t *testing.T) {
 	}
 }
 
-// Per-turn hooks are handed to a worker; the rest run in place.
-func TestPerTurnEvents(t *testing.T) {
-	for ev, want := range map[string]bool{"UserPromptSubmit": true, "Stop": true, "beforeSubmitPrompt": true, "afterAgentResponse": true,
-		"SessionStart": false, "SessionEnd": false, "StopFailure": false} {
-		if perTurn(ev) != want {
-			t.Errorf("%s: want %v", ev, want)
+// The agent waits for every hook, before each prompt and at each turn's end:
+// a hook starts no program (ps took over 10 seconds on a busy computer). A ps
+// on PATH that leaves a mark shows whether one ran.
+func TestHookStartsNoProgram(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no ps")
+	}
+	dir := t.TempDir()
+	mark := filepath.Join(dir, "ran")
+	ps := filepath.Join(dir, "ps")
+	if err := os.WriteFile(ps, []byte("#!/bin/sh\ntouch "+mark+"\nexec /bin/ps \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CONTINUUM_HOME", filepath.Join(dir, "home"))
+	for _, ev := range []string{"SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "SessionEnd"} {
+		in := `{"hook_event_name":"` + ev + `","session_id":"s","cwd":"/tmp","last_assistant_message":"done","error":"invalid_request"}`
+		Handle("claude", strings.NewReader(in), []string{"CLAUDE_PID=" + strconv.Itoa(os.Getppid())})
+		if _, err := os.Stat(mark); err == nil {
+			t.Fatalf("%s: the hook ran ps", ev)
 		}
 	}
-}
-
-// The worker reads the hand-off from its environment, and the event it
-// builds sees the hook's environment without the hand-off variables. An
-// incomplete hand-off is no hand-off.
-func TestWorkerHandOff(t *testing.T) {
-	at := time.Date(2026, 11, 26, 4, 0, 0, 123, time.UTC)
-	env := []string{"CLAUDE_PID=42", envHookInput + "=/x/in.json", envHookPPID + "=" + strconv.Itoa(os.Getpid()),
-		envHookPPID2 + "=1", envHookAt + "=" + at.Format(time.RFC3339Nano), "TMUX_PANE=%3"}
-	w := worker(env)
-	if w.input != "/x/in.json" || w.ppid != os.Getpid() || !w.at.Equal(at) {
-		t.Fatalf("bad hand-off: %+v", w)
-	}
-	if strings.Contains(strings.Join(w.environ, " "), "CONTINUUM_HOOK_") || len(w.environ) != 2 {
-		t.Fatalf("hand-off variables left in the event's environment: %v", w.environ)
-	}
-	if w := worker([]string{envHookInput + "=/x/in.json"}); w.input != "" {
-		t.Fatalf("an incomplete hand-off was taken: %+v", w)
-	}
-}
-
-// The shell the agent ran the hook in has exited by the time the worker
-// looks: it starts from that shell's parent, the agent.
-func TestStartPIDSkipsExitedShell(t *testing.T) {
-	if got := startPID(os.Getpid(), 1234); got != os.Getpid() {
-		t.Fatalf("a live parent: want it, got %d", got)
-	}
-	if got := startPID(999999, 1234); got != 1234 {
-		t.Fatalf("an exited parent: want its parent, got %d", got)
+	for _, h := range []string{"grok", "muse", "cursor", "codex"} {
+		Handle(h, strings.NewReader(`{"hook_event_name":"Stop","session_id":"s","cwd":"/tmp"}`), nil)
+		if _, err := os.Stat(mark); err == nil {
+			t.Fatalf("%s: the hook ran ps", h)
+		}
 	}
 }

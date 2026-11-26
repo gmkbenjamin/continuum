@@ -17,7 +17,6 @@ import (
 	"github.com/continuum-dev/continuum/internal/awake"
 	"github.com/continuum-dev/continuum/internal/core"
 	"github.com/continuum-dev/continuum/internal/deliver"
-	"github.com/continuum-dev/continuum/internal/hooks"
 	"github.com/continuum-dev/continuum/internal/live"
 	"github.com/continuum-dev/continuum/internal/logx"
 	"github.com/continuum-dev/continuum/internal/messages"
@@ -2056,18 +2055,6 @@ func (d *Daemon) prune() {
 	// The resume history: keep the current file and one older one.
 	if st, err := os.Stat(d.Paths.History); err == nil && st.Size() > 5<<20 {
 		_ = os.Rename(d.Paths.History, d.Paths.History+".1")
-	}
-	// Payloads handed to hook workers that never ran (killed, or the
-	// computer went to sleep): a worker reads its own within a second.
-	if entries, err := os.ReadDir(d.Paths.Home); err == nil {
-		for _, e := range entries {
-			if !strings.HasPrefix(e.Name(), hooks.HookInputPrefix) {
-				continue
-			}
-			if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > time.Hour {
-				_ = os.Remove(filepath.Join(d.Paths.Home, e.Name()))
-			}
-		}
 	}
 	// Folders of wrappers that were killed (kill -9) and couldn't clean up.
 	if entries, err := os.ReadDir(d.Paths.Wrappers); err == nil {

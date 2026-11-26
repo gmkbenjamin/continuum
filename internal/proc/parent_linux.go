@@ -28,3 +28,13 @@ func Parent(pid int) int {
 	n, _ := strconv.Atoi(f[1])
 	return n
 }
+
+// Name returns pid's command name, as ps's comm column gives it, from /proc.
+// "" if unknown.
+func Name(pid int) string {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/comm")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}

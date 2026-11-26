@@ -202,7 +202,7 @@ func hasOwnHook(harness string) bool {
 }
 
 // ProcTree lists processes for the checks below. Tests replace it.
-var ProcTree = proc.Tree
+var ProcTree = func() map[int]proc.Node { return proc.Ancestry(os.Getppid()) }
 
 // cliAgent returns the agent a process name belongs to. Desktop apps (named
 // with a capital, like "Claude" or "Cursor") don't count.
@@ -341,14 +341,14 @@ func listsProcesses(h *rules.Harness) bool {
 func findAncestor(h *rules.Harness) int {
 	pid := os.Getppid()
 	for i := 0; i < 6 && pid > 1; i++ {
-		ppid, name, ok := proc.Info(pid)
-		if !ok {
+		name := proc.Name(pid)
+		if name == "" {
 			return 0
 		}
 		if h.IsHarnessProcess(name) {
 			return pid
 		}
-		pid = ppid
+		pid = proc.Parent(pid)
 	}
 	return 0
 }
@@ -356,10 +356,10 @@ func findAncestor(h *rules.Harness) int {
 // Handle is the body of `continuum hook <harness>`. It never returns an error
 // to the agent and prints nothing (some hooks feed stdout to the model).
 //
-// The hooks that run on every turn (a prompt submitted, a turn ended) hand
-// their work to a detached copy of Continuum and return at once: the agent
-// waits for them, and reading the process tree can take seconds on a busy or
-// monitored computer, which would hold up every prompt.
+// The agent waits for it, before every prompt and at the end of every turn,
+// so it starts no program: what it needs about processes (the hook's
+// ancestors, an agent's arguments and environment) is read from the kernel.
+// Running ps took over 10 seconds on a busy or monitored computer.
 func Handle(harness string, stdin io.Reader, environ []string) {
 	defer func() { _ = recover() }()
 	p := core.GetPaths()
@@ -367,28 +367,10 @@ func Handle(harness string, stdin io.Reader, environ []string) {
 		return
 	}
 	ppid, at := os.Getppid(), time.Now()
-	var data []byte
-	w := worker(environ)
-	if w.input != "" {
-		// The detached half: the agent's process, and when the hook ran,
-		// come from the hook that handed this over.
-		data, _ = os.ReadFile(w.input)
-		_ = os.Remove(w.input)
-		ppid, at, environ = w.ppid, w.at, w.environ
-		// Nothing this process starts (the daemon, say) may look like a
-		// hand-off.
-		for _, k := range []string{envHookInput, envHookPPID, envHookPPID2, envHookAt} {
-			_ = os.Unsetenv(k)
-		}
-	} else {
-		data, _ = io.ReadAll(io.LimitReader(stdin, 4<<20))
-	}
+	data, _ := io.ReadAll(io.LimitReader(stdin, 4<<20))
 	var in Input
 	if json.Unmarshal(data, &in) != nil {
 		debugHook(p, harness, "payload is not JSON; ignored")
-		return
-	}
-	if w.input == "" && perTurn(in.HookEventName) && handOff(p, harness, data, environ, ppid, at) {
 		return
 	}
 	r, _ := rules.Cached(p.Rules)
@@ -467,95 +449,6 @@ func Handle(harness string, stdin io.Reader, environ []string) {
 		}
 	}
 	_ = core.SpoolEvent(p, ev)
-}
-
-// Hand-off of per-turn hooks to a detached worker.
-const (
-	envHookInput = "CONTINUUM_HOOK_INPUT" // the payload, in a file the worker removes
-	envHookPPID  = "CONTINUUM_HOOK_PPID"  // the hook's parent: the agent, or a shell it ran the hook in
-	envHookPPID2 = "CONTINUUM_HOOK_PPID2" // that one's parent: the agent, when the shell has exited
-	envHookAt    = "CONTINUUM_HOOK_AT"    // when the hook ran
-)
-
-// perTurn: an event every turn sends, which the agent waits for.
-func perTurn(event string) bool {
-	switch strings.ToLower(event) {
-	case "userpromptsubmit", "beforesubmitprompt", "stop", "afteragentresponse":
-		return true
-	}
-	return false
-}
-
-type workerJob struct {
-	input   string
-	ppid    int
-	at      time.Time
-	environ []string // without the hand-off variables
-}
-
-// startPID: where to start looking up the agent: the hook's parent, or, once
-// that has exited (the shell the agent ran the hook in), its parent.
-func startPID(parent, grandparent int) int {
-	if grandparent > 1 && !proc.Alive(parent) {
-		return grandparent
-	}
-	return parent
-}
-
-func worker(environ []string) workerJob {
-	var w workerJob
-	grandparent := 0
-	for _, kv := range environ {
-		k, v, _ := strings.Cut(kv, "=")
-		switch k {
-		case envHookInput:
-			w.input = v
-		case envHookPPID:
-			w.ppid, _ = strconv.Atoi(v)
-		case envHookPPID2:
-			grandparent, _ = strconv.Atoi(v)
-		case envHookAt:
-			w.at, _ = time.Parse(time.RFC3339Nano, v)
-		default:
-			w.environ = append(w.environ, kv)
-		}
-	}
-	if w.ppid <= 0 || w.at.IsZero() {
-		w.input = "" // not a complete hand-off: do the work here
-		return w
-	}
-	w.ppid = startPID(w.ppid, grandparent)
-	return w
-}
-
-// HookInputPrefix names the payload files handed to workers, in Continuum's
-// home (the daemon removes any a worker never got to).
-const HookInputPrefix = "hook-input-"
-
-// handOff starts a detached worker for the hook's work. false: it couldn't,
-// so the hook does the work itself.
-func handOff(p core.Paths, harness string, data []byte, environ []string, ppid int, at time.Time) bool {
-	self, err := os.Executable()
-	if err != nil {
-		return false
-	}
-	f, err := os.CreateTemp(p.Home, HookInputPrefix+"*.json")
-	if err != nil {
-		return false
-	}
-	_, werr := f.Write(data)
-	if cerr := f.Close(); werr != nil || cerr != nil {
-		_ = os.Remove(f.Name())
-		return false
-	}
-	env := append(append([]string{}, environ...),
-		envHookInput+"="+f.Name(), envHookPPID+"="+strconv.Itoa(ppid),
-		envHookPPID2+"="+strconv.Itoa(proc.Parent(ppid)), envHookAt+"="+at.Format(time.RFC3339Nano))
-	if _, err := proc.StartDetached([]string{self, "hook", harness}, p.Home, env, ""); err != nil {
-		_ = os.Remove(f.Name())
-		return false
-	}
-	return true
 }
 
 // ProcEnviron reads a process's environment. Tests replace it.

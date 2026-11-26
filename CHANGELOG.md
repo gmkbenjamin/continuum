@@ -4,6 +4,20 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.15.10] - 2026-11-26
+
+### Fixed
+
+- Hooks start no program at all: the hook's ancestors, and an agent's name,
+  arguments and environment, are read from the kernel (macOS sysctl, Linux
+  /proc) instead of `ps`. Every hook returns in milliseconds even on a busy
+  or monitored computer, and does its work before the agent continues again.
+  This replaces 0.15.9's hand-off to a detached process: that one checked the
+  process tree only after the hook had returned, by when the agent could have
+  quit (its event dropped or misjudged), and its events could arrive after
+  the agent's next ones (a resume wrongly reported as failed, a Cursor limit
+  taken for the old one).
+
 ## [0.15.9] - 2026-11-26
 
 ### Fixed

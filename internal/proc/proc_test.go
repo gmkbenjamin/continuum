@@ -71,3 +71,24 @@ func TestParentOfSelf(t *testing.T) {
 		t.Fatalf("Parent(self) = %d, want %d", got, os.Getppid())
 	}
 }
+
+// Ancestry answers as Tree does for this process's own ancestors.
+func TestAncestryMatchesTree(t *testing.T) {
+	tree := Tree()
+	if len(tree) == 0 {
+		t.Skip("no process table here")
+	}
+	anc := Ancestry(os.Getpid())
+	if len(anc) == 0 {
+		t.Fatal("no ancestry")
+	}
+	for pid, n := range anc {
+		want, ok := tree[pid]
+		if !ok {
+			continue // started or exited in between
+		}
+		if n.PPID != want.PPID || n.Name != want.Name {
+			t.Errorf("pid %d: ancestry %+v, tree %+v", pid, n, want)
+		}
+	}
+}

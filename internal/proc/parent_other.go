@@ -10,3 +10,9 @@ func Parent(pid int) int {
 	}
 	return ppid
 }
+
+// Name returns pid's executable name. "" if unknown.
+func Name(pid int) string {
+	_, name, _ := Info(pid)
+	return name
+}
