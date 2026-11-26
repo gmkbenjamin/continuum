@@ -2056,6 +2056,14 @@ func (d *Daemon) prune() {
 	if st, err := os.Stat(d.Paths.History); err == nil && st.Size() > 5<<20 {
 		_ = os.Rename(d.Paths.History, d.Paths.History+".1")
 	}
+	// Payload files Continuum 0.15.9 handed to hook workers that never ran.
+	if old, _ := filepath.Glob(filepath.Join(d.Paths.Home, "hook-input-*.json")); len(old) > 0 {
+		for _, f := range old {
+			if info, err := os.Stat(f); err == nil && time.Since(info.ModTime()) > time.Hour {
+				_ = os.Remove(f)
+			}
+		}
+	}
 	// Folders of wrappers that were killed (kill -9) and couldn't clean up.
 	if entries, err := os.ReadDir(d.Paths.Wrappers); err == nil {
 		for _, e := range entries {

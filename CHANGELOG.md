@@ -4,6 +4,18 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.15.11] - 2026-11-26
+
+### Fixed
+
+- On Windows (and other systems without sysctl or /proc), a hook reads the
+  process table once instead of once per ancestor.
+- Leftover payload files from 0.15.9's hook hand-off are removed.
+- The hook tests cover every agent's SessionStart, and that the ancestry
+  follows the whole chain of parents.
+- Docs: hooks run no `ps`; the only program one may start is the daemon,
+  detached, when it isn't running.
+
 ## [0.15.10] - 2026-11-26
 
 ### Fixed

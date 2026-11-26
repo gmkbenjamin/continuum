@@ -82,6 +82,18 @@ func TestAncestryMatchesTree(t *testing.T) {
 	if len(anc) == 0 {
 		t.Fatal("no ancestry")
 	}
+	// It follows the whole chain up, as the table does, as far as the
+	// table's processes still exist.
+	for pid := os.Getpid(); pid > 1; {
+		want, ok := tree[pid]
+		if !ok {
+			break // exited since the table was read
+		}
+		if _, ok := anc[pid]; !ok {
+			t.Fatalf("ancestry stops before pid %d (%s)", pid, want.Name)
+		}
+		pid = want.PPID
+	}
 	for pid, n := range anc {
 		want, ok := tree[pid]
 		if !ok {

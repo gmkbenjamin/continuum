@@ -492,10 +492,18 @@ func TestHookStartsNoProgram(t *testing.T) {
 			t.Fatalf("%s: the hook ran ps", ev)
 		}
 	}
+	// Without CLAUDE_PID (and for the other agents) SessionStart looks the
+	// agent process up itself.
+	Handle("claude", strings.NewReader(`{"hook_event_name":"SessionStart","session_id":"s","cwd":"/tmp"}`), nil)
+	if _, err := os.Stat(mark); err == nil {
+		t.Fatal("claude SessionStart without CLAUDE_PID: the hook ran ps")
+	}
 	for _, h := range []string{"grok", "muse", "cursor", "codex"} {
-		Handle(h, strings.NewReader(`{"hook_event_name":"Stop","session_id":"s","cwd":"/tmp"}`), nil)
-		if _, err := os.Stat(mark); err == nil {
-			t.Fatalf("%s: the hook ran ps", h)
+		for _, ev := range []string{"SessionStart", "Stop"} {
+			Handle(h, strings.NewReader(`{"hook_event_name":"`+ev+`","session_id":"s","cwd":"/tmp"}`), nil)
+			if _, err := os.Stat(mark); err == nil {
+				t.Fatalf("%s %s: the hook ran ps", h, ev)
+			}
 		}
 	}
 }
