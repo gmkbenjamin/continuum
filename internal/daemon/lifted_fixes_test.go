@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/continuum-dev/continuum/internal/core"
 	"github.com/continuum-dev/continuum/internal/deliver"
 	"github.com/continuum-dev/continuum/internal/live"
+	"github.com/continuum-dev/continuum/internal/scope"
 )
 
 // hookTurn: session s of harness, in a terminal, starts a turn at start
@@ -328,7 +330,7 @@ func TestNoResumeIntoOutOfDateCopy(t *testing.T) {
 	h := setup(t)
 	h.d.Handle(limitEvent(h, "s1", 30*time.Minute)) // recorded process: deadPID
 	copyPID := os.Getpid()
-	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Source: "registry",
+	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Listed: true, Source: "registry",
 		Session: &live.Session{SessionID: "s1", PID: copyPID}}
 	h.advance(32 * time.Minute)
 	j := h.d.Jobs["claude:s1"]
@@ -347,7 +349,7 @@ func TestNoResumeIntoOutOfDateCopy(t *testing.T) {
 func TestResumeIntoRecordedProcess(t *testing.T) {
 	h := setup(t)
 	h.d.Handle(limitEvent(h, "s1", 30*time.Minute))
-	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Source: "registry",
+	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Listed: true, Source: "registry",
 		Session: &live.Session{SessionID: "s1", PID: deadPID}}
 	h.advance(32 * time.Minute)
 	if len(h.delivered) != 1 {
@@ -397,7 +399,7 @@ func TestCopyQuittingLeavesSessionOpen(t *testing.T) {
 func TestStaleCopyWaitCountsFromItsStart(t *testing.T) {
 	h := setup(t)
 	h.d.Handle(limitEvent(h, "s1", 72*time.Hour))
-	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Source: "registry",
+	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Listed: true, Source: "registry",
 		Session: &live.Session{SessionID: "s1", PID: os.Getpid()}}
 	h.advance(73 * time.Hour)
 	j := h.d.Jobs["claude:s1"]
@@ -419,7 +421,7 @@ func TestStaleCopyWaitCountsFromItsStart(t *testing.T) {
 func TestStaleCopyWaitEndsWhenCopyCloses(t *testing.T) {
 	h := setup(t)
 	h.d.Handle(limitEvent(h, "s1", 30*time.Minute))
-	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Source: "registry",
+	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Listed: true, Source: "registry",
 		Session: &live.Session{SessionID: "s1", PID: os.Getpid()}}
 	h.advance(32 * time.Minute)
 	j := h.d.Jobs["claude:s1"]
@@ -441,7 +443,7 @@ func TestStaleCopyWhenRecordedProcessMovedOn(t *testing.T) {
 	ev := limitEvent(h, "s1", 30*time.Minute)
 	ev.PID = os.Getpid() // recorded, and alive
 	h.d.Handle(ev)
-	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Source: "registry",
+	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Listed: true, Source: "registry",
 		Session: &live.Session{SessionID: "s1", PID: 4242}}
 	h.advance(40 * time.Minute) // a live process gets a grace period first
 	if j := h.d.Jobs["claude:s1"]; len(h.delivered) != 0 || j.StaleCopyPID != 4242 {
@@ -455,7 +457,7 @@ func TestStaleCopyWhenRecordedProcessMovedOn(t *testing.T) {
 func TestResumeIntoCopyActiveSinceRecord(t *testing.T) {
 	h := setup(t)
 	h.d.Handle(limitEvent(h, "s1", 30*time.Minute)) // recorded: deadPID, now
-	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Source: "registry",
+	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Listed: true, Source: "registry",
 		Session: &live.Session{SessionID: "s1", PID: os.Getpid(), Status: "idle", StatusSince: h.now.Add(time.Minute)}}
 	h.advance(32 * time.Minute)
 	if j := h.d.Jobs["claude:s1"]; len(h.delivered) != 1 || j.StaleCopyPID != 0 {
@@ -478,10 +480,563 @@ func TestPromptMovesSessionToThatCopy(t *testing.T) {
 	hit.PID, hit.Location = 4242, &core.Location{Kind: "wrapper", Target: "old"}
 	h.d.Handle(hit)
 	// Idle since long before: only the record says it is the one in use.
-	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Source: "registry",
+	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Listed: true, Source: "registry",
 		Session: &live.Session{SessionID: "s1", PID: 4242, Status: "idle", StatusSince: h.now.Add(-time.Hour)}}
 	h.advance(40 * time.Minute)
 	if j := h.d.Jobs["claude:s1"]; len(h.delivered) != 1 || j.StaleCopyPID != 0 {
 		t.Fatalf("not resumed in the copy now in use: %+v", j)
 	}
 }
+
+// The resumed turn fails at once with an error that schedules nothing (the
+// API refused the request): the resume is reported as not taken. Later, or
+// for another session, it is not.
+func TestResumedTurnFailing(t *testing.T) {
+	h := setup(t)
+	h.d.Handle(limitEvent(h, "s1", 30*time.Minute))
+	h.advance(32 * time.Minute)
+	j := h.d.Jobs["claude:s1"]
+	if j.State != core.StateDelivered {
+		t.Fatalf("not resumed: %+v", j)
+	}
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindTurnFailed, SessionID: "other", Source: "hook:StopFailure", At: h.now.Add(time.Second), Message: "refused"})
+	if j.TurnFailed != "" {
+		t.Fatalf("another session's failure counted: %+v", j)
+	}
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindTurnFailed, SessionID: "s1", Source: "hook:StopFailure", At: h.now.Add(5 * time.Second),
+		Message: "API Error: the request was refused\nDetails: ..."})
+	if j.TurnFailed != "API Error: the request was refused" || j.State != core.StateDelivered {
+		t.Fatalf("resume failure not recorded: %+v", j)
+	}
+	h2 := setup(t)
+	h2.d.Handle(limitEvent(h2, "s1", 30*time.Minute))
+	h2.advance(32 * time.Minute)
+	h2.d.Handle(core.Event{Harness: "claude", Kind: core.KindTurnFailed, SessionID: "s1", Source: "hook:StopFailure", At: h2.now.Add(time.Hour), Message: "refused"})
+	if j := h2.d.Jobs["claude:s1"]; j.TurnFailed != "" {
+		t.Fatalf("a failure an hour later counted as the resume failing: %+v", j)
+	}
+}
+
+// A limit read off the screen of the out-of-date copy's pane (no session id):
+// at due time the pane's conversation is looked up, and the resume gets the
+// same check as the conversation's own, instead of being typed into the copy.
+func TestScreenResumeOfOutOfDateCopyHeld(t *testing.T) {
+	h := setup(t)
+	pane := &core.Location{Kind: "wrapper", Target: "oldpane"}
+	liveWrapper(t, h, "oldpane")
+	h.d.PaneSessionFn = func(loc *core.Location) paneProcess {
+		if loc.String() == pane.String() {
+			return paneProcess{id: "s1", pid: 4242}
+		}
+		return paneProcess{}
+	}
+	// The conversation's record: last continued in pid 200, which quit.
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindSessionEnd, SessionID: "s1", Source: "hook:SessionEnd", At: h.now, PID: 200})
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindUsageLimit, Source: "wrapper", At: h.now.Add(time.Second), ResetAt: h.now.Add(30 * time.Minute),
+		Location: pane, Message: "You've hit your 5-hour limit", Hit: "You've hit your"})
+	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Listed: true, Source: "registry",
+		Session: &live.Session{SessionID: "s1", PID: 4242, Status: "idle", StatusSince: h.now.Add(-time.Hour)}}
+	h.advance(40 * time.Minute) // a live wrapper gets a grace period first
+	if len(h.delivered) != 0 {
+		t.Fatalf("typed into the out-of-date copy: %+v", h.d.Jobs)
+	}
+	if j := h.d.Jobs["claude:s1"]; j == nil || j.StaleCopyPID != 4242 {
+		for k, v := range h.d.Jobs {
+			t.Logf("%s: %+v", k, *v)
+		}
+		t.Fatalf("not held as that conversation's resume")
+	}
+}
+
+// The pane's conversation has its own resume (from its hooks): the screen's
+// copy of it is dropped rather than typed in a second time.
+func TestScreenResumeCoveredBySessionResume(t *testing.T) {
+	h := setup(t)
+	pane := &core.Location{Kind: "wrapper", Target: "p1"}
+	liveWrapper(t, h, "p1")
+	h.d.PaneSessionFn = func(*core.Location) paneProcess { return paneProcess{id: "s1", pid: 4242} }
+	h.d.Handle(limitEvent(h, "s1", 60*time.Minute))
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindUsageLimit, Source: "wrapper", At: h.now.Add(10 * time.Minute), ResetAt: h.now.Add(30 * time.Minute),
+		Location: pane, Message: "You've hit your 5-hour limit", Hit: "You've hit your"})
+	h.advance(40 * time.Minute) // a live wrapper gets a grace period first
+	if j := h.d.Jobs["claude@wrapper:p1"]; j == nil || j.State != core.StateSkipped || !strings.Contains(j.Result, "has its own resume") || len(h.delivered) != 0 {
+		t.Fatalf("want the screen's resume dropped for the conversation's own: delivered=%d %+v", len(h.delivered), j)
+	}
+}
+
+// liveWrapper makes wrapper id look running (its pid file names this process).
+func liveWrapper(t *testing.T, h *harnessT, id string) {
+	t.Helper()
+	dir := filepath.Join(h.d.Paths.Wrappers, id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pid"), []byte(fmt.Sprint(os.Getpid())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Another agent's hooks are trusted to name the exact process only once that
+// was seen to hold here, for its current build; then its out-of-date copies
+// are recognised like Claude Code's.
+func TestExactPIDsLearnedPerBuild(t *testing.T) {
+	h := setup(t)
+	h.d.Compat = &Compat{Agents: map[string]*AgentCompat{"grok": {Fingerprint: "grok-1"}}, Desktop: map[string]*DesktopCompat{}}
+	if h.d.Compat.ExactPIDs("grok") || !h.d.Compat.ExactPIDs("claude") {
+		t.Fatal("grok trusted before seen, or claude not trusted")
+	}
+	hook := func(pid int) core.Event {
+		return core.Event{Harness: "grok", Kind: core.KindActivity, SessionID: "g1", Source: "hook:Stop", At: h.now, PID: pid}
+	}
+	// The agent lists another process for it: not learned.
+	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Listed: true, Source: "registry", Session: &live.Session{SessionID: "g1", PID: 78}}
+	h.d.Handle(hook(77))
+	if h.d.Compat.ExactPIDs("grok") {
+		t.Fatal("learned from a mismatch")
+	}
+	// The same process: one agreement, not yet trusted.
+	h.now = h.now.Add(2 * time.Minute)
+	h.live.Session.PID = 77
+	h.d.Handle(hook(77))
+	if h.d.Compat.ExactPIDs("grok") {
+		t.Fatal("trusted after a single agreement")
+	}
+	// A second, different process agrees: trusted.
+	h.now = h.now.Add(time.Minute)
+	h.live.Session.PID = 91
+	h.d.Handle(hook(91))
+	if !h.d.Compat.ExactPIDs("grok") {
+		t.Fatal("not learned from two agreeing processes")
+	}
+	// An update: learned again from scratch.
+	h.d.Compat.Agents["grok"].Fingerprint = "grok-2"
+	if h.d.Compat.ExactPIDs("grok") {
+		t.Fatal("still trusted after an update")
+	}
+}
+
+// #1: a session the agent's list doesn't name (a process-scan guess, or the
+// "process is alive" stand-in) teaches nothing and judges no copy.
+func TestUnlistedSessionIsNoEvidence(t *testing.T) {
+	h := setup(t)
+	h.d.Compat = &Compat{Agents: map[string]*AgentCompat{"grok": {Fingerprint: "g"}}, Desktop: map[string]*DesktopCompat{}}
+	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Source: "registry", Session: &live.Session{SessionID: "g1", PID: 77}}
+	h.d.Handle(core.Event{Harness: "grok", Kind: core.KindActivity, SessionID: "g1", Source: "hook:Stop", At: h.now, PID: 77})
+	if h.d.Compat.ExactPIDs("grok") {
+		t.Fatal("learned from an entry the agent's list doesn't name")
+	}
+	// Claude: an unlisted stand-in for another process is no out-of-date copy.
+	h.d.Handle(limitEvent(h, "s1", 30*time.Minute))
+	h.live = &live.State{Checked: true, Open: true, Authoritative: true, Source: "registry", Session: &live.Session{SessionID: "s1", PID: 4242}}
+	if pid := h.d.staleCopy(h.d.Jobs["claude:s1"], h.d.Sessions["claude:s1"], h.live); pid != 0 {
+		t.Fatalf("judged an unlisted entry a copy: %d", pid)
+	}
+}
+
+// #2: the pane's agent started after the limit: a different conversation,
+// not adopted (and not typed into).
+func TestNoAdoptionOfLaterConversation(t *testing.T) {
+	h := setup(t)
+	pane := &core.Location{Kind: "wrapper", Target: "p2"}
+	liveWrapper(t, h, "p2")
+	h.d.PaneSessionFn = func(*core.Location) paneProcess {
+		return paneProcess{id: "c2", pid: 5151, started: h.now.Add(10 * time.Minute)}
+	}
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindUsageLimit, Source: "wrapper", At: h.now, ResetAt: h.now.Add(30 * time.Minute),
+		Location: pane, Message: "You've hit your 5-hour limit", Hit: "You've hit your"})
+	h.advance(40 * time.Minute)
+	if j := h.d.Jobs["claude@wrapper:p2"]; len(h.delivered) != 0 || j == nil || j.State != core.StateSkipped {
+		t.Fatalf("adopted a conversation started after the limit: delivered=%d %+v", len(h.delivered), j)
+	}
+}
+
+// #3: the conversation is open where it continued too: this pane holds a
+// copy, and its screen's limit isn't typed into it.
+func TestNoAdoptionWhenConversationOpenElsewhere(t *testing.T) {
+	h := setup(t)
+	pane := &core.Location{Kind: "wrapper", Target: "p3"}
+	liveWrapper(t, h, "p3")
+	h.d.HoldsFn = func(_, _ string, pid int) bool { return pid == 200 }
+	h.d.PaneSessionFn = func(*core.Location) paneProcess { return paneProcess{id: "s1", pid: 4242} }
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindActivity, SessionID: "s1", Source: "hook:Stop", At: h.now, PID: 200})
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindUsageLimit, Source: "wrapper", At: h.now.Add(time.Second), ResetAt: h.now.Add(30 * time.Minute),
+		Location: pane, Message: "You've hit your 5-hour limit", Hit: "You've hit your"})
+	h.advance(40 * time.Minute)
+	if j := h.d.Jobs["claude@wrapper:p3"]; len(h.delivered) != 0 || j == nil || j.State != core.StateSkipped {
+		t.Fatalf("typed into the copy: delivered=%d %+v", len(h.delivered), j)
+	}
+}
+
+// #4: a resume of that conversation the user cancelled for this stall stays
+// cancelled; an excluded conversation isn't resumed through its pane.
+func TestAdoptionRespectsCancelAndScope(t *testing.T) {
+	h := setup(t)
+	pane := &core.Location{Kind: "wrapper", Target: "p4"}
+	liveWrapper(t, h, "p4")
+	h.d.PaneSessionFn = func(*core.Location) paneProcess { return paneProcess{id: "s1", pid: 4242} }
+	h.d.Jobs["claude:s1"] = &core.Job{Key: "claude:s1", Harness: "claude", SessionID: "s1", State: core.StateCancelled, Result: "cancelled by you", UpdatedAt: h.now, LimitAt: h.now}
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindUsageLimit, Source: "wrapper", At: h.now.Add(time.Second), ResetAt: h.now.Add(30 * time.Minute),
+		Location: pane, Message: "You've hit your 5-hour limit", Hit: "You've hit your"})
+	h.advance(40 * time.Minute)
+	if len(h.delivered) != 0 || h.d.Jobs["claude:s1"].State != core.StateCancelled {
+		t.Fatalf("a cancelled resume came back through the pane: delivered=%d %+v", len(h.delivered), h.d.Jobs["claude:s1"])
+	}
+}
+
+// #5/#6: a failure after the resumed turn ended is the user's own; a resume
+// tried again starts clean; carrying on clears the failure.
+func TestResumeFailureWindowAndClearing(t *testing.T) {
+	h := setup(t)
+	h.d.Handle(limitEvent(h, "s1", 30*time.Minute))
+	h.advance(32 * time.Minute)
+	j := h.d.Jobs["claude:s1"]
+	at := j.DeliveredAt
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindActivity, SessionID: "s1", Source: "hook:Stop", At: at.Add(2 * time.Minute)})
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindTurnFailed, SessionID: "s1", Source: "hook:StopFailure", At: at.Add(9 * time.Minute), Message: "Prompt is too long"})
+	if j.TurnFailed != "" {
+		t.Fatalf("the user's later failed turn counted as the resume failing: %+v", j)
+	}
+	// Another resume: its own window.
+	h2 := setup(t)
+	h2.d.Handle(limitEvent(h2, "s1", 30*time.Minute))
+	h2.advance(32 * time.Minute)
+	j2 := h2.d.Jobs["claude:s1"]
+	h2.d.Handle(core.Event{Harness: "claude", Kind: core.KindTurnFailed, SessionID: "s1", Source: "hook:StopFailure", At: j2.DeliveredAt.Add(5 * time.Second), Message: "first error."})
+	if j2.TurnFailed != "first error" {
+		t.Fatalf("not recorded (or trailing period kept): %q", j2.TurnFailed)
+	}
+	h2.d.control("resume-now s1")
+	if j2.TurnFailed != "" || j2.ResumeSettled {
+		t.Fatalf("resume-now kept the old failure: %+v", j2)
+	}
+	h2.advance(time.Minute)
+	h2.d.Handle(core.Event{Harness: "claude", Kind: core.KindTurnFailed, SessionID: "s1", Source: "hook:StopFailure", At: j2.DeliveredAt.Add(5 * time.Second), Message: "second error"})
+	if j2.TurnFailed != "second error" {
+		t.Fatalf("the second resume's failure not recorded: %+v", j2)
+	}
+	// The user carries on: a turn ends normally.
+	h2.d.Handle(core.Event{Harness: "claude", Kind: core.KindActivity, SessionID: "s1", Source: "hook:Stop", At: j2.DeliveredAt.Add(10 * time.Minute)})
+	if j2.TurnFailed != "" {
+		t.Fatalf("still reported failed after a turn ended normally: %+v", j2)
+	}
+}
+
+// matchPane: the one interactive session whose process runs in the pane; a
+// print-mode run started from it (same pane) doesn't count; two candidates
+// can't be told apart.
+func TestMatchPane(t *testing.T) {
+	h := setup(t).d.Rules.Harness("claude")
+	pane := &core.Location{Kind: "tmux", Target: "%3"}
+	at := func(pid int) *core.Location {
+		if pid == 1 || pid == 2 || pid == 3 {
+			return pane
+		}
+		return &core.Location{Kind: "tmux", Target: "%9"}
+	}
+	start := time.Unix(1000, 0)
+	one := []live.Session{{SessionID: "a", PID: 1, StartedAt: start}, {SessionID: "z", PID: 9}}
+	if p := matchPane(h, one, pane, at); p.id != "a" || p.pid != 1 || !p.started.Equal(start) {
+		t.Fatalf("one in the pane: %+v", p)
+	}
+	withPrint := append(one, live.Session{SessionID: "p", PID: 2, Entrypoint: "sdk-cli"})
+	if p := matchPane(h, withPrint, pane, at); p.id != "a" {
+		t.Fatalf("a print-mode run counted: %+v", p)
+	}
+	two := append(one, live.Session{SessionID: "b", PID: 3})
+	if p := matchPane(h, two, pane, at); p.id != "" {
+		t.Fatalf("two candidates: want none, got %+v", p)
+	}
+}
+
+// Round 2, #1: an adopted pane resume that hits the limit again right away
+// is resumed again, as one more attempt of the same resume.
+func TestReLimitAfterAdoptedResume(t *testing.T) {
+	h := setup(t)
+	pane := &core.Location{Kind: "wrapper", Target: "r1"}
+	liveWrapper(t, h, "r1")
+	h.d.PaneSessionFn = func(*core.Location) paneProcess { return paneProcess{id: "s1", pid: 4242} }
+	screen := func(reset time.Duration) {
+		h.d.Handle(core.Event{Harness: "claude", Kind: core.KindUsageLimit, Source: "wrapper", At: h.now, ResetAt: h.now.Add(reset),
+			Location: pane, Message: "You've hit your 5-hour limit", Hit: "You've hit your"})
+	}
+	screen(30 * time.Minute)
+	h.advance(40 * time.Minute)
+	if len(h.delivered) != 1 {
+		t.Fatalf("first resume: delivered=%d %+v", len(h.delivered), h.d.Jobs)
+	}
+	h.now = h.now.Add(20 * time.Second)
+	screen(60 * time.Minute) // back on a limit, a new reset
+	h.advance(70 * time.Minute)
+	j := h.d.Jobs["claude:s1"]
+	if len(h.delivered) != 2 || j.Attempts != 2 {
+		t.Fatalf("re-limit not resumed as a further attempt: delivered=%d %+v", len(h.delivered), j)
+	}
+}
+
+// Round 2, #2: a days-old "needs you" resume of the conversation doesn't
+// block a new stall in its pane.
+func TestOldNeedsUserDoesNotBlockAdoption(t *testing.T) {
+	h := setup(t)
+	pane := &core.Location{Kind: "wrapper", Target: "r2"}
+	liveWrapper(t, h, "r2")
+	h.d.PaneSessionFn = func(*core.Location) paneProcess { return paneProcess{id: "s1", pid: 4242} }
+	h.d.Jobs["claude:s1"] = &core.Job{Key: "claude:s1", Harness: "claude", SessionID: "s1", State: core.StateNeedsUser,
+		UpdatedAt: h.now.Add(-48 * time.Hour), LimitAt: h.now.Add(-50 * time.Hour)}
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindUsageLimit, Source: "wrapper", At: h.now, ResetAt: h.now.Add(30 * time.Minute),
+		Location: pane, Message: "You've hit your 5-hour limit", Hit: "You've hit your"})
+	h.advance(40 * time.Minute)
+	if len(h.delivered) != 1 {
+		t.Fatalf("blocked by an old needs-you resume: %+v", h.d.Jobs)
+	}
+}
+
+// Round 2, #3: the resumed turn fails while the delivery is still returning
+// (a hidden terminal takes seconds): still the resume failing.
+func TestResumeFailsDuringDelivery(t *testing.T) {
+	h := setup(t)
+	var failAt time.Time
+	h.d.DeliverFn = func(o deliver.Options, j *core.Job) (deliver.Result, error) {
+		failAt = h.now.Add(1500 * time.Millisecond)
+		h.now = h.now.Add(3 * time.Second) // typing, then waiting before it returns
+		return deliver.Result{Via: "test"}, nil
+	}
+	h.d.Handle(limitEvent(h, "s1", 30*time.Minute))
+	h.advance(32 * time.Minute)
+	j := h.d.Jobs["claude:s1"]
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindTurnFailed, SessionID: "s1", Source: "hook:StopFailure", At: failAt, Message: "Prompt is too long"})
+	if j.TurnFailed != "Prompt is too long" {
+		t.Fatalf("a failure during delivery was missed: %+v", j)
+	}
+}
+
+// screenLimit: a limit read off pane's screen (no session id).
+func screenLimit(h *harnessT, pane *core.Location, reset time.Duration) {
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindUsageLimit, Source: "wrapper", At: h.now, ResetAt: h.now.Add(reset),
+		Location: pane, Message: "You've hit your 5-hour limit", Hit: "You've hit your"})
+}
+
+// adoptionSetup: a live wrapper pane holding conversation s1 (pid 4242).
+func adoptionSetup(t *testing.T, id string) (*harnessT, *core.Location) {
+	h := setup(t)
+	pane := &core.Location{Kind: "wrapper", Target: id}
+	liveWrapper(t, h, id)
+	h.d.PaneSessionFn = func(*core.Location) paneProcess { return paneProcess{id: "s1", pid: 4242} }
+	return h, pane
+}
+
+// An excluded conversation isn't resumed through its pane either.
+func TestAdoptionRespectsScope(t *testing.T) {
+	h, pane := adoptionSetup(t, "sc1")
+	sc := scope.Scope{Mode: scope.ModeAll}
+	sc.Excluded, _ = scope.Add(nil, scope.Entry{Session: "s1"})
+	if err := sc.Save(h.d.Paths); err != nil {
+		t.Fatal(err)
+	}
+	h.d.reload()
+	screenLimit(h, pane, 30*time.Minute)
+	h.advance(40 * time.Minute)
+	if j := h.d.Jobs["claude:s1"]; len(h.delivered) != 0 || j == nil || j.State != core.StateIgnored {
+		t.Fatalf("an excluded conversation was resumed through its pane: delivered=%d %+v", len(h.delivered), j)
+	}
+}
+
+// Its resume was ignored (not chosen) for this stall: stays so.
+func TestAdoptionRespectsIgnored(t *testing.T) {
+	h, pane := adoptionSetup(t, "ig1")
+	// Only chosen sessions are resumed: this pane was chosen, the
+	// conversation's own resume was not.
+	sc := scope.Scope{Mode: scope.ModeChosen}
+	sc.Chosen, _ = scope.Add(nil, scope.Entry{Wrapper: "ig1"})
+	if err := sc.Save(h.d.Paths); err != nil {
+		t.Fatal(err)
+	}
+	h.d.reload()
+	h.d.Jobs["claude:s1"] = &core.Job{Key: "claude:s1", Harness: "claude", SessionID: "s1", State: core.StateIgnored, Result: "not chosen", UpdatedAt: h.now, LimitAt: h.now}
+	screenLimit(h, pane, 30*time.Minute)
+	h.advance(40 * time.Minute)
+	if j := h.d.Jobs["claude@wrapper:ig1"]; len(h.delivered) != 0 || j == nil || j.State != core.StateSkipped {
+		t.Fatalf("an ignored resume came back through the pane: delivered=%d %+v", len(h.delivered), j)
+	}
+}
+
+// The conversation was resumed after this pane's limit: that covered it.
+func TestAdoptionCoveredByLaterDelivery(t *testing.T) {
+	h, pane := adoptionSetup(t, "dl1")
+	screenLimit(h, pane, 30*time.Minute)
+	h.d.Jobs["claude:s1"] = &core.Job{Key: "claude:s1", Harness: "claude", SessionID: "s1", State: core.StateDelivered,
+		DeliveredAt: h.now.Add(10 * time.Minute), LimitAt: h.now.Add(-time.Hour), UpdatedAt: h.now.Add(10 * time.Minute)}
+	h.advance(40 * time.Minute)
+	if j := h.d.Jobs["claude@wrapper:dl1"]; len(h.delivered) != 0 || j == nil || j.State != core.StateSkipped {
+		t.Fatalf("resumed twice: delivered=%d %+v", len(h.delivered), j)
+	}
+}
+
+// The same notice right after a resume, with the reset already used (the
+// limit hadn't lifted yet when it was typed): retried with backoff, not at
+// the used reset, and not dropped for good.
+func TestAdoptionRetriesRepeatedNotice(t *testing.T) {
+	h, pane := adoptionSetup(t, "rn1")
+	reset := h.now.Add(-time.Minute)
+	h.d.Jobs["claude:s1"] = &core.Job{Key: "claude:s1", Harness: "claude", SessionID: "s1", State: core.StateDelivered, Attempts: 1,
+		DeliveredAt: h.now.Add(-20 * time.Second), LimitAt: h.now.Add(-time.Hour), ResetAt: reset, ResetKnown: true, UpdatedAt: h.now}
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindUsageLimit, Source: "wrapper", At: h.now, ResetAt: reset,
+		Location: pane, Message: "You've hit your 5-hour limit", Hit: "You've hit your"})
+	h.advance(2 * time.Minute)
+	if len(h.delivered) != 0 {
+		t.Fatalf("typed again at once, at the used reset: %+v", h.d.Jobs)
+	}
+	h.advance(4 * time.Hour)
+	if j := h.d.Jobs["claude:s1"]; len(h.delivered) != 1 || j.Attempts != 2 {
+		t.Fatalf("not retried: delivered=%d %+v", len(h.delivered), j)
+	}
+}
+
+// Back on a limit with the reset that was just used: not trusted again, so
+// not resumed at it (rescheduled instead).
+func TestAdoptionClearsUsedReset(t *testing.T) {
+	h, pane := adoptionSetup(t, "ur1")
+	reset := h.now.Add(10 * time.Minute)
+	h.d.Jobs["claude:s1"] = &core.Job{Key: "claude:s1", Harness: "claude", SessionID: "s1", State: core.StateDelivered, Attempts: 1,
+		DeliveredAt: h.now.Add(-5 * time.Minute), LimitAt: h.now.Add(-time.Hour), ResetAt: reset, ResetKnown: true, UpdatedAt: h.now}
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindUsageLimit, Source: "wrapper", At: h.now, ResetAt: reset,
+		Location: pane, Message: "You've hit your 5-hour limit", Hit: "You've hit your"})
+	h.advance(16 * time.Minute) // past the old reset's due time
+	j := h.d.Jobs["claude:s1"]
+	if len(h.delivered) != 0 || j == nil || j.ResetKnown || j.State != core.StatePending {
+		t.Fatalf("resumed at a used reset: delivered=%d %+v", len(h.delivered), j)
+	}
+}
+
+// Round 3: a pane that keeps going back on a limit after each resume stops
+// at the attempt limit, as a session's own re-limits do.
+func TestAdoptionStopsAtMaxAttempts(t *testing.T) {
+	h, pane := adoptionSetup(t, "ma1")
+	max := h.d.Rules.Defaults.MaxAttempts
+	h.d.Jobs["claude:s1"] = &core.Job{Key: "claude:s1", Harness: "claude", SessionID: "s1", State: core.StateDelivered, Attempts: max,
+		DeliveredAt: h.now.Add(-5 * time.Minute), LimitAt: h.now.Add(-time.Hour), UpdatedAt: h.now}
+	screenLimit(h, pane, 30*time.Minute)
+	h.advance(40 * time.Minute)
+	if j := h.d.Jobs["claude:s1"]; len(h.delivered) != 0 || j.State != core.StateNeedsUser {
+		t.Fatalf("kept resuming past the attempt limit: delivered=%d %+v", len(h.delivered), j)
+	}
+}
+
+// A print-mode or SDK run in the pane isn't resumed.
+func TestAdoptionSkipsPrintMode(t *testing.T) {
+	h, pane := adoptionSetup(t, "pm1")
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindActivity, SessionID: "s1", Source: "hook:Stop", At: h.now, Entrypoint: "sdk-cli"})
+	h.now = h.now.Add(time.Second)
+	screenLimit(h, pane, 30*time.Minute)
+	h.advance(40 * time.Minute)
+	if j := h.d.Jobs["claude@wrapper:pm1"]; len(h.delivered) != 0 || j == nil || j.State != core.StateSkipped {
+		t.Fatalf("resumed a print-mode run: delivered=%d %+v", len(h.delivered), j)
+	}
+}
+
+// A prompt typed a while after the resume is the user's own: it ends the
+// resume's window. The resume's own prompt (seconds after) doesn't.
+func TestLaterPromptSettlesResume(t *testing.T) {
+	h := setup(t)
+	h.d.Handle(limitEvent(h, "s1", 30*time.Minute))
+	h.advance(32 * time.Minute)
+	j := h.d.Jobs["claude:s1"]
+	prompt := func(at time.Time) {
+		h.d.Handle(core.Event{Harness: "claude", Kind: core.KindActivity, SessionID: "s1", Source: "hook:UserPromptSubmit", At: at, TurnStart: true})
+	}
+	prompt(j.DeliveredAt.Add(2 * time.Second))
+	if j.ResumeSettled {
+		t.Fatal("the resume's own prompt settled it")
+	}
+	prompt(j.DeliveredAt.Add(5 * time.Minute))
+	if !j.ResumeSettled {
+		t.Fatal("a later prompt didn't settle it")
+	}
+}
+
+// A hook-reported limit of the resumed turn, while a slow delivery was still
+// returning, is a new limit, not an old line.
+func TestReLimitDuringSlowDelivery(t *testing.T) {
+	h := setup(t)
+	var hitAt time.Time
+	h.d.DeliverFn = func(o deliver.Options, j *core.Job) (deliver.Result, error) {
+		hitAt = h.now.Add(1500 * time.Millisecond)
+		h.now = h.now.Add(3 * time.Second)
+		return deliver.Result{Via: "test"}, nil
+	}
+	h.d.Handle(limitEvent(h, "s1", 30*time.Minute))
+	h.advance(32 * time.Minute)
+	ev := limitEvent(h, "s1", 60*time.Minute)
+	ev.At = hitAt
+	h.d.Handle(ev)
+	if j := h.d.Jobs["claude:s1"]; j.State != core.StatePending {
+		t.Fatalf("the resumed turn's new limit was dropped as old: %+v", j)
+	}
+}
+
+// matchPane leaves out background sessions too.
+func TestMatchPaneSkipsBackground(t *testing.T) {
+	hr := setup(t).d.Rules.Harness("claude")
+	if hr.LiveSessions == nil || len(hr.LiveSessions.BackgroundKinds) == 0 {
+		t.Skip("no background kinds in the rules")
+	}
+	pane := &core.Location{Kind: "tmux", Target: "%3"}
+	at := func(int) *core.Location { return pane }
+	list := []live.Session{{SessionID: "a", PID: 1}, {SessionID: "bg", PID: 2, Kind: hr.LiveSessions.BackgroundKinds[0]}}
+	if p := matchPane(hr, list, pane, at); p.id != "a" {
+		t.Fatalf("a background session counted: %+v", p)
+	}
+}
+
+// A limit on a pane's screen isn't merged into a resume of a conversation in
+// the same folder that has ended: it is another conversation's limit, and
+// the ended one keeps its own resume (not typed into that pane).
+func TestScreenLimitNotMergedIntoEndedSession(t *testing.T) {
+	h := setup(t)
+	liveWrapper(t, h, "other")
+	h.d.Handle(limitEvent(h, "x", 30*time.Minute))
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindSessionEnd, SessionID: "x", Source: "hook:SessionEnd", At: h.now.Add(time.Second), PID: deadPID})
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindUsageLimit, Source: "wrapper", At: h.now.Add(time.Minute), ResetAt: h.now.Add(30 * time.Minute),
+		Cwd: "/work/app", Location: &core.Location{Kind: "wrapper", Target: "other"}, Message: "You've hit your 5-hour limit", Hit: "You've hit your"})
+	if j := h.d.Jobs["claude:x"]; j.Location != nil {
+		t.Fatalf("the ended conversation's resume took the other pane: %+v", j)
+	}
+	if j := h.d.Jobs["claude@wrapper:other"]; j == nil || j.State != core.StatePending {
+		t.Fatalf("the other pane's limit has no resume of its own: %+v", h.d.Jobs)
+	}
+}
+
+// The other direction: a late line (hook or transcript) of an ended session
+// isn't merged into another pane's screen-only resume in that folder.
+func TestEndedSessionLineNotMergedIntoScreenResume(t *testing.T) {
+	h := setup(t)
+	liveWrapper(t, h, "other2")
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindSessionEnd, SessionID: "x", Source: "hook:SessionEnd", At: h.now, PID: deadPID})
+	h.d.Handle(core.Event{Harness: "claude", Kind: core.KindUsageLimit, Source: "wrapper", At: h.now.Add(time.Second), ResetAt: h.now.Add(30 * time.Minute),
+		Cwd: "/work/app", Location: &core.Location{Kind: "wrapper", Target: "other2"}, Message: "You've hit your 5-hour limit", Hit: "You've hit your"})
+	late := limitEvent(h, "x", 30*time.Minute)
+	late.At, late.Location, late.Source, late.PID = h.now.Add(2*time.Second), nil, "transcript", 0 // transcript lines carry no pid
+	h.d.Handle(late)
+	if j := h.d.Jobs["claude@wrapper:other2"]; j == nil || j.SessionID != "" {
+		t.Fatalf("the screen-only resume was taken over by the ended session: %+v", h.d.Jobs)
+	}
+}
+
+// A screen-only resume whose wrapper exited, for a stall its conversation's
+// own resume covers: dropped without a "won't resume" notice.
+func TestPruneQuietWhenConversationResumeCovers(t *testing.T) {
+	h := setup(t)
+	var notes []string
+	h.d.Config.Notify = boolPtr(true)
+	h.d.NotifyFn = func(title, body string) { notes = append(notes, body) }
+	h.d.Handle(limitEvent(h, "s1", 2*time.Hour))
+	h.d.Jobs["claude@wrapper:gone"] = &core.Job{Key: "claude@wrapper:gone", Harness: "claude", Cwd: "/work/app", State: core.StatePending,
+		Location: &core.Location{Kind: "wrapper", Target: "gone"}, LimitAt: h.now, UpdatedAt: h.now, DueAt: h.now.Add(2 * time.Hour)}
+	h.now = h.now.Add(6 * time.Minute)
+	notes = nil // the "paused until reset" notice of the limit itself
+	h.d.prune()
+	if j := h.d.Jobs["claude@wrapper:gone"]; j.State != core.StateSkipped || len(notes) != 0 {
+		t.Fatalf("want a quiet skip: %+v notes=%v", j, notes)
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }

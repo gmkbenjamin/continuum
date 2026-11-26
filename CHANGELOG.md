@@ -4,6 +4,64 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.15.9] - 2026-11-26
+
+### Fixed
+
+- Continuum's per-turn hooks (Claude Code's prompt-submit and Stop, and the
+  same events of Grok Build, Muse Code and the Cursor CLI) no longer hold up
+  the agent. On a busy or monitored computer reading the process tree could
+  take over 10 seconds, so 0.15.8's prompt-submit hook timed out before every
+  prompt. They now hand their work to a detached process and return at once;
+  the event keeps the time the hook ran.
+
+- Claude Code's "You've hit your 5-hour limit" (and other limits named with a
+  hyphen or dot, like "Opus 4.5") is now recognised when read off the screen:
+  the pattern only allowed letters, digits and spaces before "limit". Hooks
+  and transcripts were unaffected (they use the error code).
+- A limit read off the screen of an out-of-date copy's pane (no session id) is
+  no longer typed into it: when it comes due, Continuum looks up which
+  conversation the process in that pane holds and resumes it as that
+  conversation, with the same checks (scope, print-mode runs, the copy check).
+  It drops it when that conversation has its own resume (or you cancelled it
+  for this stall), is open in another process where it continued, or started
+  after the limit. A pane that is back on a limit right after such a resume is
+  resumed again as a further attempt of the same resume (up to the attempt
+  limit; with backoff when it shows the reset that was just used).
+- A resumed turn that fails with an error that is neither a limit nor an
+  outage (the API refused the request) is reported: a notification, and
+  `continuum status` shows "resumed, but its turn failed" until a later turn
+  ends normally (for up to a day). Only the resumed turn counts (within 15 minutes, before it
+  ends otherwise, counting from when typing it began); resuming again starts
+  afresh. Such errors used to be dropped.
+- A limit seen only on a pane's screen is no longer merged into the pending
+  resume of a conversation in the same folder that has ended: that resume
+  could be typed into the other pane, and the ended conversation never
+  continued.
+- A limit of a resumed turn reported by the agent itself (hook, transcript,
+  rollout) while a slow delivery is still returning is no longer dropped as an
+  old line.
+- A screen-only resume whose terminal closed, for a stall its conversation's
+  own resume covers, is dropped without a "won't resume" notification.
+- A StopFailure that only gives a billing or sign-in error code (such as
+  `authentication_failed`) now needs you, as the rules intended.
+
+### Changed
+
+- The out-of-date copy checks also cover Grok Build and Muse Code, once
+  Continuum has seen on this computer that the process their hooks report is
+  the one their own session list names (an entry of the list itself, not a
+  guess; two different processes must agree; learned again when the agent's
+  executable changes; checked with a backoff). Their hooks now report the process on every event, from the
+  process tree they already read.
+- The prompt-submit hooks (Claude Code, Grok Build, Muse Code) show no status
+  line: they run on every prompt.
+- `continuum status --json`: another process holding a conversation has state
+  `copy` (`stale_copy` is only an out-of-date copy); the state codes are
+  documented in `continuum status -h`.
+- The end-to-end test covers an out-of-date copy, both when a hook reports its
+  limit and when the limit shows only on its screen.
+
 ## [0.15.8] - 2026-11-26
 
 ### Changed

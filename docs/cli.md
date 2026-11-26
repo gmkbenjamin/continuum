@@ -318,6 +318,11 @@ Usage:
   registering. Agents that report their own state (Claude Code) show working
   or idle; for others the state comes from their recent activity.
 
+  --json prints one object per row. Its "state" is one of: working, idle,
+  waiting, limit, outage, resumed, needs_you, not_resuming, active, closed,
+  not_running, copy (another process holding the same conversation; it has
+  "copy": true and its "pid"), stale_copy (only an out-of-date copy is open).
+
 Options:
   --all                  Also list sessions closed in the last 3 days (default:
                          only open sessions and pending resumes).

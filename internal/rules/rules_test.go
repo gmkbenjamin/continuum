@@ -21,6 +21,9 @@ func TestClassifyKnownMessages(t *testing.T) {
 	cases := []struct{ harness, text, kind string }{
 		{"claude", "You've hit your session limit · resets 10am (Australia/Sydney)", "usage_limit"},
 		{"claude", "You’ve hit your weekly limit · resets Nov 14, 6pm", "usage_limit"},
+		{"claude", "You've hit your 5-hour limit · resets 11pm (Australia/Sydney)", "usage_limit"},
+		{"claude", "You've hit your Opus 4.5 limit · resets 6pm", "usage_limit"},
+		{"claude", "You've hit your stride. The rate limit docs say", ""},
 		{"claude", "You've hit your Opus limit · resets 6pm", "usage_limit"},
 		{"claude", "Claude usage limit reached. Your limit will reset at 5pm.", "usage_limit"},
 		{"claude", "  ⎿  API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}", "transient"},
@@ -30,6 +33,12 @@ func TestClassifyKnownMessages(t *testing.T) {
 	}
 	for _, c := range cases {
 		m := r.Harness(c.harness).Classify(c.text, 40)
+		if c.kind == "" { // must not match
+			if m != nil {
+				t.Errorf("%s: Classify(%q) = %+v, want no match", c.harness, c.text, m)
+			}
+			continue
+		}
 		if m == nil || m.Kind != c.kind {
 			t.Errorf("%s: Classify(%q) = %+v, want %s", c.harness, c.text, m, c.kind)
 		}

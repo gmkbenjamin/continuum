@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-var Version = "0.15.8"
+var Version = "0.15.9"
 
 // Location says where an agent is running so input can be delivered to it
 // without focusing any window.
@@ -49,6 +49,10 @@ const (
 	// KindLimitReset: a limit reset was used in the agent (Claude Code's
 	// /limit-reset), so the account's limits are back before their reset.
 	KindLimitReset = "limit_reset"
+	// KindTurnFailed: a turn ended on an error that is neither a limit nor
+	// a temporary outage (a request the API refused, say). Message is the
+	// error. Right after a resume, it means the resume didn't take.
+	KindTurnFailed = "turn_failed"
 )
 
 // Event is something an observer saw. Hooks, transcript tailers, the PTY
@@ -127,6 +131,15 @@ type Job struct {
 	Sources        []string  `json:"sources,omitempty"`
 	DeliveredAt    time.Time `json:"delivered_at,omitempty"`
 	DeliveredVia   string    `json:"delivered_via,omitempty"`
+	// DeliveringAt: when the latest delivery attempt began.
+	DeliveringAt time.Time `json:"delivering_at,omitzero"`
+	// TurnFailed: the resumed turn failed right away with this error (not a
+	// limit or an outage, which schedule a resume of their own).
+	TurnFailed   string    `json:"turn_failed,omitempty"`
+	TurnFailedAt time.Time `json:"turn_failed_at,omitzero"`
+	// ResumeSettled: the resumed turn ended (or the user moved on), so a
+	// later failed turn is not the resume failing.
+	ResumeSettled bool `json:"resume_settled,omitempty"`
 	// ManualResumeOnly prevents another send when the prompt is known to
 	// have been queued or may already have arrived.
 	ManualResumeOnly bool `json:"manual_resume_only,omitempty"`

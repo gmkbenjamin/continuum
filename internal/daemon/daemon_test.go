@@ -55,6 +55,7 @@ func setup(t *testing.T) *harnessT {
 	d.Log = nil
 	d.NotifyFn = nil
 	d.LiveFn = func(j *core.Job) *live.State { return h.live }
+	d.PaneSessionFn = func(*core.Location) paneProcess { return paneProcess{} }
 	d.Awake = nil
 	d.DeliverFn = func(o deliver.Options, j *core.Job) (deliver.Result, error) {
 		if h.fail != nil {

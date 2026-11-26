@@ -17,6 +17,7 @@ import (
 	"github.com/continuum-dev/continuum/internal/awake"
 	"github.com/continuum-dev/continuum/internal/core"
 	"github.com/continuum-dev/continuum/internal/deliver"
+	"github.com/continuum-dev/continuum/internal/hooks"
 	"github.com/continuum-dev/continuum/internal/live"
 	"github.com/continuum-dev/continuum/internal/logx"
 	"github.com/continuum-dev/continuum/internal/messages"
@@ -59,10 +60,15 @@ type Daemon struct {
 	// HoldsFn: whether the agent lists pid as holding session id (nil: ask
 	// the agent through LiveFn).
 	HoldsFn func(harness, id string, pid int) bool
+	// PaneSessionFn: the Claude Code conversation held by the process at a
+	// location (nil: ask Claude Code and the processes' environments).
+	PaneSessionFn func(loc *core.Location) paneProcess
 	// Awake keeps the computer from idle-sleeping while work is pending.
 	Awake *awake.Keeper
 	// Compat, when set, enables the update watch (see compat.go).
 	Compat *Compat
+	// pidProbe: when observeExactPID may next ask each agent's session list.
+	pidProbe map[string]*probeState
 
 	baseline    bool
 	lookedBack  bool
@@ -534,9 +540,11 @@ func (d *Daemon) Handle(ev core.Event) {
 	// same conversation quit, not the one the session's record names.
 	copyQuit := d.copyEnded(ev)
 	sess := d.touchSession(ev, copyQuit)
+	d.observeExactPID(ev)
 
 	switch ev.Kind {
 	case core.KindActivity:
+		d.settleResume(ev)
 		if !ev.TurnStart {
 			// A prompt submitted isn't the session moving on: it may be a
 			// local command (/usage, /model) typed while it waits. The
@@ -564,6 +572,9 @@ func (d *Daemon) Handle(ev core.Event) {
 			j.UpdatedAt = d.Now()
 			d.dirty = true
 		}
+	case core.KindTurnFailed:
+		d.turnFailed(ev)
+		d.settleResume(ev)
 	case core.KindNativeGaveUp:
 		if j := d.jobFor(ev); j != nil && j.State == core.StatePending {
 			j.NativeGaveUp = true
@@ -572,6 +583,7 @@ func (d *Daemon) Handle(ev core.Event) {
 			d.dirty = true
 		}
 	case core.KindReply:
+		d.settleResume(ev)
 		d.reply(ev, sess)
 		// A turn that ended normally is activity too, for an earlier stall
 		// its reply doesn't repeat.
@@ -628,7 +640,38 @@ type replySeen struct {
 
 const replyWindow = 3 * time.Minute
 
-func screenSourced(source string) bool { return source == "wrapper" || source == "pane-scan" }
+func screenSourced(sources ...string) bool {
+	for _, s := range sources {
+		if s != "wrapper" && s != "pane-scan" {
+			return false
+		}
+	}
+	return len(sources) > 0
+}
+
+// sameStall: a pending resume of a session (from its hooks) for the stall a
+// screen-only resume j saw: same agent and folder, about the same time.
+func (d *Daemon) sameStall(j *core.Job) *core.Job {
+	for _, o := range d.Jobs {
+		if o == j || o.SessionID == "" || o.State != core.StatePending || o.Harness != j.Harness ||
+			o.Cwd == "" || j.Cwd == "" || filepath.Clean(o.Cwd) != filepath.Clean(j.Cwd) {
+			continue
+		}
+		if dt := o.LimitAt.Sub(j.LimitAt); dt > -3*time.Minute && dt < 3*time.Minute {
+			return o
+		}
+	}
+	return nil
+}
+
+// endedSession: the session's process has quit.
+func (d *Daemon) endedSession(harness, id string) bool {
+	if id == "" {
+		return false
+	}
+	s := d.Sessions[store.SessionKey(harness, id)]
+	return s != nil && s.Ended
+}
 
 func replyHas(reply, hit string) bool {
 	hit = strings.ToLower(strings.Join(strings.Fields(hit), " "))
@@ -758,6 +801,66 @@ func (d *Daemon) jobFor(ev core.Event) *core.Job {
 	return nil
 }
 
+// resumeTakeWindow: how long after a resume a failed turn is the resumed
+// one failing.
+const resumeTakeWindow = 15 * time.Minute
+
+// turnFailed: a turn ended on an error that schedules nothing. Right after a
+// resume of that session, the resume didn't take: say so instead of leaving
+// it reported as resumed.
+func (d *Daemon) turnFailed(ev core.Event) {
+	j := d.jobFor(ev)
+	if j == nil || j.State != core.StateDelivered || j.TurnFailed != "" || j.ResumeSettled ||
+		!ev.At.After(resumeStart(j)) || ev.At.Sub(resumeStart(j)) > resumeTakeWindow {
+		return
+	}
+	j.TurnFailed = strings.TrimRight(firstLine(ev.Message), ". ")
+	if j.TurnFailed == "" {
+		j.TurnFailed = "an error"
+	}
+	j.TurnFailedAt = ev.At
+	j.UpdatedAt = d.Now()
+	d.dirty = true
+	d.history("resume_failed", j, map[string]any{"error": j.TurnFailed})
+	d.warnf("%s · resumed, but its turn failed: %s", d.describe(j), j.TurnFailed)
+	d.notify(j, "Resumed, but it failed", j.TurnFailed+". Continue it yourself.")
+	j.ResumeSettled = true
+}
+
+// resumeStart: when the delivery of j's resume began. Typing can take a few
+// seconds to return (a hidden terminal, a launcher), and the resumed turn may
+// end, or fail, before it does.
+func resumeStart(j *core.Job) time.Time {
+	if !j.DeliveringAt.IsZero() && j.DeliveringAt.Before(j.DeliveredAt) {
+		return j.DeliveringAt
+	}
+	return j.DeliveredAt
+}
+
+// settleResume: after a resume, the first turn that ends (or a prompt typed
+// a while after it, which is the user's own) means the resumed turn is over:
+// a failure after that is not the resume failing. A turn that ends normally
+// after a failed resume means the user carried on: it no longer needs them.
+func (d *Daemon) settleResume(ev core.Event) {
+	j := d.jobFor(ev)
+	if j == nil || j.State != core.StateDelivered || !ev.At.After(resumeStart(j)) {
+		return
+	}
+	// A turn's end, as its hooks report it (transcript lines arrive mid-turn
+	// too, so they don't count).
+	hook := strings.HasPrefix(ev.Source, "hook:")
+	turnEnd := ev.Kind == core.KindReply || ev.Kind == core.KindTurnFailed || ev.Kind == core.KindActivity && hook && !ev.TurnStart
+	laterPrompt := ev.Kind == core.KindActivity && hook && ev.TurnStart && ev.At.Sub(resumeStart(j)) >= time.Minute
+	if !j.ResumeSettled && (turnEnd || laterPrompt) {
+		j.ResumeSettled = true
+		d.dirty = true
+	}
+	if j.TurnFailed != "" && ev.Kind != core.KindTurnFailed && turnEnd && ev.At.After(j.TurnFailedAt) {
+		j.TurnFailed, j.TurnFailedAt = "", time.Time{}
+		d.dirty = true
+	}
+}
+
 func addSource(list []string, s string) []string {
 	for _, x := range list {
 		if x == s {
@@ -841,7 +944,11 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 			// The same limit seen by another observer (hook + transcript).
 			d.merge(j, ev)
 			return
-		case (j.State == core.StateDelivered) && !ev.At.After(j.DeliveredAt):
+		case (j.State == core.StateDelivered) && !ev.At.After(j.DeliveredAt) &&
+			// The agent's own report (hook, transcript, rollout) of a turn
+			// that hit a limit while a slow delivery was still returning is
+			// new, not an old line; a screen can still show the old notice.
+			!(!screenSourced(ev.Source) && ev.At.After(resumeStart(j))):
 			d.debugf("%s: ignoring %s from %s at %s (already delivered at %s)", key, ev.Kind, ev.Source, ev.At.Format(time.RFC3339), j.DeliveredAt.Format(time.RFC3339))
 			return // an old line about a limit already handled
 		case j.State == core.StateCancelled && !ev.At.After(j.UpdatedAt):
@@ -1002,6 +1109,12 @@ func (d *Daemon) findTwin(ev core.Event, key string) *core.Job {
 		}
 		if ev.SessionID != "" && j.SessionID != "" {
 			continue // two different sessions
+		}
+		if d.endedSession(j.Harness, j.SessionID) && screenSourced(ev.Source) ||
+			d.endedSession(ev.Harness, ev.SessionID) && screenSourced(j.Sources...) {
+			// A session that has ended isn't what a pane's screen shows now:
+			// another conversation in that folder hit a limit.
+			continue
 		}
 		dt := ev.At.Sub(j.LimitAt)
 		if dt < -3*time.Minute || dt > 3*time.Minute {
@@ -1273,6 +1386,9 @@ func (d *Daemon) runJob(j *core.Job) {
 		return
 	}
 	d.debugf("%s: due (attempt %d, reset %s, limit at %s); checking", j.Key, j.Attempts+1, j.ResetAt.Local().Format("15:04"), j.LimitAt.Local().Format("15:04"))
+	if !d.adoptPaneSession(j) {
+		return
+	}
 	if d.sessionActiveSince(j) {
 		j.State = core.StateSkipped
 		j.Result = "the session continued on its own or you continued it"
@@ -1384,6 +1500,7 @@ func (d *Daemon) runJob(j *core.Job) {
 		DryRun: d.Config.DryRun, Strategies: strategies, Log: d.debugf, Live: st,
 	}
 	d.debugf("%s: delivering through %s (location %s)", j.Key, strings.Join(strategies, " → "), j.Location.String())
+	j.DeliveringAt = d.Now()
 	res, err := d.DeliverFn(opts, j)
 	now := d.Now()
 	j.UpdatedAt = now
@@ -1453,6 +1570,7 @@ func (d *Daemon) runJob(j *core.Job) {
 	j.Attempts++
 	j.State = core.StateDelivered
 	j.WaitingOpen, j.StaleCopyPID, j.WaitingSince = false, 0, time.Time{}
+	j.TurnFailed, j.TurnFailedAt, j.ResumeSettled = "", time.Time{}, false
 	j.DeliveredAt = now
 	j.DeliveredVia = res.Via
 	j.Result = res.Detail
@@ -1461,17 +1579,186 @@ func (d *Daemon) runJob(j *core.Job) {
 	d.notify(j, "Resumed", "Continued via "+res.Via)
 }
 
+// adoptPaneSession: a resume known only by its pane (its limit was read off
+// the screen) belongs to the conversation the process in that pane holds, if
+// the agent's own list says which. It becomes that conversation's resume, so
+// it gets the same checks (an out-of-date copy is never typed into), or is
+// dropped when it isn't that conversation's to resume. false: dropped.
+func (d *Daemon) adoptPaneSession(j *core.Job) bool {
+	if j.SessionID != "" || j.Location == nil {
+		return true
+	}
+	ps := d.paneSession(j.Harness, j.Location)
+	if ps.id == "" {
+		return true
+	}
+	harness, id := ps.harness, ps.id
+	if !ps.started.IsZero() && ps.started.After(j.LimitAt.Add(time.Minute)) {
+		// Started after the limit hit: someone else's conversation now, not
+		// the one that stalled (the pane check would refuse it anyway).
+		d.skip(j, "the "+d.name(harness)+" in that pane started after the limit; it isn't the conversation that stalled")
+		return false
+	}
+	key := store.SessionKey(harness, id)
+	o := d.Jobs[key]
+	if o == j {
+		o = nil
+	}
+	if o != nil {
+		recent := !o.UpdatedAt.Before(j.LimitAt.Add(-5 * time.Minute)) // about this stall
+		switch {
+		case o.State == core.StatePending,
+			o.State == core.StateNeedsUser && recent,
+			// Resumed after this pane's limit: that resume covered it.
+			o.State == core.StateDelivered && o.DeliveredAt.After(j.LimitAt):
+			d.skip(j, "the conversation in that pane ("+short(id)+") has its own resume")
+			return false
+		case (o.State == core.StateCancelled || o.State == core.StateIgnored) && recent:
+			d.skip(j, "the conversation in that pane ("+short(id)+"): "+firstLine(o.Result))
+			return false
+		}
+	}
+	sess := d.Sessions[key]
+	if sess != nil && sess.PID > 0 && sess.PID != ps.pid && !sess.Ended && d.holds(harness, id, sess.PID) {
+		// The conversation is open in another process too, the one its
+		// hooks last heard from: this pane holds a copy of it.
+		d.skip(j, fmt.Sprintf("the conversation in that pane (%s) is open in pid %d, where it continued; this pane holds a copy of it", short(id), sess.PID))
+		return false
+	}
+	if sess != nil {
+		if h := d.Rules.Harness(harness); h.IgnoredEntrypoint(sess.Entrypoint) {
+			d.skip(j, "the conversation in that pane is a print-mode or SDK run")
+			return false
+		}
+		if j.Cwd == "" {
+			j.Cwd = sess.Cwd
+		}
+		if j.TranscriptPath == "" {
+			j.TranscriptPath = sess.TranscriptPath
+		}
+		if j.Entrypoint == "" {
+			j.Entrypoint = sess.Entrypoint
+		}
+		if j.Model == "" {
+			j.Model = sess.Model
+		}
+	}
+	d.logf("%s: the pane holds %s conversation %s; resuming it as that conversation", j.Key, d.name(harness), short(id))
+	from := j.Key
+	delete(d.Jobs, j.Key)
+	j.Key, j.SessionID, j.Harness = key, id, harness
+	d.Jobs[key] = j
+	d.dirty = true
+	d.history("adopted", j, map[string]any{"from": from})
+	if ok, why := d.Scope.Covers(j); !ok {
+		j.State, j.Result, j.UpdatedAt = core.StateIgnored, why, d.Now()
+		d.history("ignored", j, map[string]any{"reason": why})
+		d.logf("%s: %s", j.Key, why)
+		return false
+	}
+	if recentlyDelivered(o, j.LimitAt) {
+		// Resumed shortly before and on a limit again: one more attempt of
+		// the same resume (as a session's own re-limit is), so the attempt
+		// limit holds, and the reset that was used up isn't trusted again:
+		// the same notice (the limit hadn't lifted yet) is retried with
+		// backoff. A screen merely not redrawn yet is dropped before then,
+		// when the wrapper reports the pane active.
+		j.Attempts = o.Attempts
+		if d.stopAtMaxAttempts(j) {
+			return false
+		}
+		if staleReset(o, j.ResetAt) {
+			j.ResetAt, j.ResetKnown = time.Time{}, false
+			d.reschedule(j)
+			if j.State != core.StatePending || j.DueAt.After(d.Now()) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// paneProcess: the conversation held by the agent process at a location.
+type paneProcess struct {
+	harness, id string
+	pid         int
+	started     time.Time // zero when unknown
+}
+
+// paneSession: the conversation held by the agent process running at loc,
+// from the agent's own list of open sessions and each process's environment
+// (its wrapper or pane). Only agents whose hooks name their process
+// (ExactPIDs); a "generic" resume (the wrapper didn't know the agent) tries
+// each. Nothing when none is known, or more than one process matches.
+func (d *Daemon) paneSession(harness string, loc *core.Location) paneProcess {
+	if d.PaneSessionFn != nil {
+		p := d.PaneSessionFn(loc)
+		if p.id != "" && p.harness == "" {
+			p.harness = harness
+			if p.harness == "generic" {
+				p.harness = "claude"
+			}
+		}
+		return p
+	}
+	names := []string{harness}
+	if harness == "generic" {
+		names = d.Rules.HarnessNames()
+	}
+	for _, name := range names {
+		h := d.Rules.Harness(name)
+		if h == nil || h.LiveSessions == nil || !d.Config.HarnessEnabled(name) || !d.Compat.ExactPIDs(name) {
+			continue
+		}
+		bin, _ := deliver.Binary(d.Config, h)
+		list, _ := live.Default().List(h, live.Query{Bin: bin, Homes: d.homes()})
+		p := matchPane(h, list, loc, func(pid int) *core.Location {
+			return deliver.LocationFromEnv(d.Paths, d.Rules, proc.Environ(pid))
+		})
+		if p.id != "" {
+			p.harness = name
+			if p.started.IsZero() {
+				p.started, _ = proc.StartTime(p.pid)
+			}
+			return p
+		}
+	}
+	return paneProcess{}
+}
+
+// matchPane picks the one interactive session in list whose process runs at
+// loc. A print-mode or SDK run started from it inherits its pane, so those
+// don't count; two candidates means it can't be told.
+func matchPane(h *rules.Harness, list []live.Session, loc *core.Location, at func(pid int) *core.Location) paneProcess {
+	var found paneProcess
+	n := 0
+	for _, s := range list {
+		if s.SessionID == "" || s.PID <= 0 || h.IgnoredEntrypoint(s.Entrypoint) ||
+			h.LiveSessions != nil && containsStr(h.LiveSessions.BackgroundKinds, s.Kind) {
+			continue
+		}
+		if l := at(s.PID); l != nil && l.String() == loc.String() {
+			found = paneProcess{id: s.SessionID, pid: s.PID, started: s.StartedAt}
+			n++
+		}
+	}
+	if n != 1 {
+		return paneProcess{}
+	}
+	return found
+}
+
 // staleCopy returns the pid of an out-of-date copy that is the only process
 // holding j's session: the agent lists the session in another process than
 // the one its hooks last heard from, and that one has exited. The copy's
 // memory of the conversation stops where that second process took over, so
 // typing into it would fork the conversation. Only for agents whose hooks
-// report their exact process (Claude Code's CLAUDE_PID).
+// report their exact process (ExactPIDs).
 //
 // The listed process is not the one the hooks last heard from (which has
 // quit, or now holds another conversation), and hasn't done anything since.
 func (d *Daemon) staleCopy(j *core.Job, sess *store.Session, st *live.State) int {
-	if j.Harness != "claude" || sess == nil || sess.PID <= 0 || st == nil || !st.Open || !st.Authoritative || st.Session == nil {
+	if !d.Compat.ExactPIDs(j.Harness) || sess == nil || sess.PID <= 0 || st == nil || !st.Open || !st.Authoritative || !st.Listed || st.Session == nil {
 		return 0
 	}
 	open := st.Session.PID
@@ -1493,9 +1780,9 @@ func (d *Daemon) staleCopy(j *core.Job, sess *store.Session, st *live.State) int
 // record names, while that one still runs: a second copy of the conversation
 // closed, not the session.
 // The agent's own list says so: a process name can be reused or look like
-// any Node program. Only for Claude Code, whose hooks name the process.
+// any Node program. Only for agents whose hooks name the process (ExactPIDs).
 func (d *Daemon) copyEnded(ev core.Event) bool {
-	if ev.Kind != core.KindSessionEnd || ev.Harness != "claude" || ev.SessionID == "" || ev.PID <= 0 {
+	if ev.Kind != core.KindSessionEnd || !d.Compat.ExactPIDs(ev.Harness) || ev.SessionID == "" || ev.PID <= 0 {
 		return false
 	}
 	s := d.Sessions[store.SessionKey(ev.Harness, ev.SessionID)]
@@ -1514,7 +1801,7 @@ func (d *Daemon) holds(harness, id string, pid int) bool {
 		return false
 	}
 	st := d.LiveFn(&core.Job{Harness: harness, SessionID: id, PID: pid})
-	return st != nil && st.Checked && st.Authoritative && st.Session != nil && st.Session.PID == pid
+	return st != nil && st.Checked && st.Authoritative && st.Listed && st.Session != nil && st.Session.PID == pid
 }
 
 // waitingSince: when the current wait began (older jobs: their limit).
@@ -1740,6 +2027,12 @@ func (d *Daemon) prune() {
 		if j.State == core.StatePending && j.SessionID == "" && j.Location != nil &&
 			d.Now().Sub(j.UpdatedAt) > 5*time.Minute &&
 			j.Location.Kind == "wrapper" && !deliver.WrapperAlive(d.Paths, j.Location.Target) {
+			if o := d.sameStall(j); o != nil {
+				// Most likely its conversation's own resume (from its hooks)
+				// covers it; once the terminal is gone that can't be checked.
+				d.skip(j, "its terminal closed; most likely the same stall as "+o.Key+" (same folder and time), which is still to be resumed")
+				continue
+			}
 			d.skip(j, "its terminal closed, and without a session id nothing else can continue it")
 			d.notify(j, "Won't resume", "Its terminal closed, and nothing else can continue it.")
 		}
@@ -1763,6 +2056,18 @@ func (d *Daemon) prune() {
 	// The resume history: keep the current file and one older one.
 	if st, err := os.Stat(d.Paths.History); err == nil && st.Size() > 5<<20 {
 		_ = os.Rename(d.Paths.History, d.Paths.History+".1")
+	}
+	// Payloads handed to hook workers that never ran (killed, or the
+	// computer went to sleep): a worker reads its own within a second.
+	if entries, err := os.ReadDir(d.Paths.Home); err == nil {
+		for _, e := range entries {
+			if !strings.HasPrefix(e.Name(), hooks.HookInputPrefix) {
+				continue
+			}
+			if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > time.Hour {
+				_ = os.Remove(filepath.Join(d.Paths.Home, e.Name()))
+			}
+		}
 	}
 	// Folders of wrappers that were killed (kill -9) and couldn't clean up.
 	if entries, err := os.ReadDir(d.Paths.Wrappers); err == nil {
@@ -1838,6 +2143,7 @@ func (d *Daemon) control(cmd string) {
 			j.State = core.StatePending
 			j.DueAt = d.Now()
 			j.UpdatedAt = d.Now()
+			j.TurnFailed, j.TurnFailedAt, j.ResumeSettled = "", time.Time{}, false
 			d.history("resume-now", j, nil)
 		default:
 			continue

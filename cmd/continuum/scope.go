@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/continuum-dev/continuum/internal/core"
+	"github.com/continuum-dev/continuum/internal/daemon"
 	"github.com/continuum-dev/continuum/internal/deliver"
 	"github.com/continuum-dev/continuum/internal/live"
 	"github.com/continuum-dev/continuum/internal/proc"
@@ -60,6 +61,7 @@ func knownSessions() []knownSession {
 	sessions := map[string]*store.Session{}
 	_ = store.LoadJSON(p.Sessions, &sessions)
 	jobs, _ := store.LoadJobs(p.Jobs)
+	compat := daemon.LoadCompat(p)
 	index := map[string]int{}
 	for _, name := range r.HarnessNames() {
 		h := r.Harness(name)
@@ -111,7 +113,7 @@ func knownSessions() []knownSession {
 	// sessions the agent listed itself.
 	for i := range out {
 		if st := sessions[store.SessionKey(out[i].Harness, out[i].ID)]; st != nil {
-			out[i].StaleCopy = staleCopy(r, out[i], st)
+			out[i].StaleCopy = staleCopy(r, compat, out[i], st)
 			// The pane the hooks recorded belongs to the process they heard
 			// from: not to another copy listed in its place.
 			samePID := st.PID <= 0 || out[i].PID <= 0 || st.PID == out[i].PID
@@ -195,14 +197,14 @@ func knownSessions() []knownSession {
 
 // staleCopy: k (listed by the agent) is not the process its hooks last heard
 // from, which isn't listed holding the session, and k hasn't done anything
-// since: k is an out-of-date copy. Mirrors the
-// daemon's check: only for Claude Code, whose hooks report the exact process.
-func staleCopy(r *rules.Rules, k knownSession, st *store.Session) bool {
-	if k.Harness != "claude" || !k.Open || k.PID <= 0 || st.PID <= 0 || k.PID == st.PID {
+// since: k is an out-of-date copy. Mirrors the daemon's check, for agents
+// whose hooks name the exact process (Compat.ExactPIDs).
+func staleCopy(r *rules.Rules, c *daemon.Compat, k knownSession, st *store.Session) bool {
+	if !c.ExactPIDs(k.Harness) || !k.Open || k.PID <= 0 || st.PID <= 0 || k.PID == st.PID {
 		return false
 	}
-	for _, c := range k.Copies {
-		if c.PID == st.PID {
+	for _, cp := range k.Copies {
+		if cp.PID == st.PID {
 			return false
 		}
 	}

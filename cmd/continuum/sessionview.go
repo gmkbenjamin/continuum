@@ -30,7 +30,7 @@ type sessionRow struct {
 	ID       string    `json:"session_id"`
 	Name     string    `json:"name,omitempty"`
 	Folder   string    `json:"folder,omitempty"`
-	State    string    `json:"state"`  // short code: working, idle, waiting, limit, outage, resumed, needs_you, not_resuming, active, closed, not_running, stale_copy
+	State    string    `json:"state"`  // short code: working, idle, waiting, limit, outage, resumed, needs_you, not_resuming, active, closed, not_running, copy, stale_copy (see `continuum status -h`)
 	Detail   string    `json:"detail"` // human text for the STATE column
 	Where    string    `json:"where"`
 	Open     bool      `json:"open"`
@@ -81,7 +81,7 @@ func sessionRows(window time.Duration) []sessionRow {
 		for _, c := range s.Copies {
 			cr := row
 			cr.Name, cr.Open, cr.LastSeen, cr.Wrapper, cr.PID, cr.Copy = c.Name, c.Open, c.LastSeen, "", c.PID, true
-			cr.State, cr.Detail = "stale_copy", "another copy of this conversation · Continuum doesn't resume this one"
+			cr.State, cr.Detail = "copy", "another copy of this conversation · Continuum doesn't resume this one"
 			cr.Where = sessionWhere(c, r)
 			if c.Location != nil && c.Location.Kind == "wrapper" {
 				cr.Wrapper = c.Location.Target
@@ -244,6 +244,9 @@ func sessionState(s knownSession, j *core.Job, covered bool, now time.Time) (str
 				return "not_resuming", "usage limit · not resuming (" + map[bool]string{true: "excluded", false: "not chosen"}[strings.HasPrefix(j.Result, "excluded")] + ")"
 			}
 		case core.StateDelivered:
+			if j.TurnFailed != "" && now.Sub(j.DeliveredAt) < 24*time.Hour && !(s.Live && strings.EqualFold(s.Status, "busy")) {
+				return "needs_you", "resumed " + j.DeliveredAt.Local().Format("15:04") + ", but its turn failed: " + clip(j.TurnFailed, 50)
+			}
 			if now.Sub(j.DeliveredAt) < 2*time.Hour && !(s.Live && strings.EqualFold(s.Status, "busy")) {
 				return "resumed", "resumed " + j.DeliveredAt.Local().Format("15:04") + " by Continuum"
 			}

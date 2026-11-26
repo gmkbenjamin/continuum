@@ -146,8 +146,22 @@ Continuum only ever continues the original session:
   it would fork the conversation. `continuum status` shows it as an out-of-date copy.
   Close it and Continuum continues the conversation by itself (with the agent's own
   resume command, unless `allow_headless` is off), or type in it yourself to carry on
-  from that copy. After 24 hours of waiting it is left to you. (Claude Code, whose hooks
-  name the exact process.)
+  from that copy. After 24 hours of waiting it is left to you. This needs hooks that
+  name the exact process: Claude Code's always do; for Grok Build and Muse Code it is
+  turned on once Continuum has seen, on this computer, that the process their hooks
+  report is the one their own session list names (learned again when the agent's
+  executable changes). A limit read off a pane's screen, with no session id, is looked
+  up when it comes due: Continuum finds which conversation the process in that pane
+  holds and treats it as that conversation's resume, with the same checks. It drops it
+  if that conversation has its own resume, is open in another process where it
+  continued, or started after the limit (a new conversation in the same pane).
+- **The resumed turn fails.** If the turn Continuum started (within 15 minutes, before
+  it ends any other way) ends on an error that is neither a limit nor an outage (the API
+  refused the request, say), Continuum notifies you and `continuum status` shows
+  "resumed, but its turn failed" until a later turn ends normally (for up to a day). This
+  needs the agent's StopFailure hook (Claude Code, Grok Build, Muse Code), in a session
+  typed into: a closed session continued in the background runs without the hooks that
+  would report it.
 - **It's open somewhere Continuum can't type**, such as an agent started in a plain
   terminal before the shell hook was installed, or a session open in a desktop app.
   Continuum doesn't start a copy. It notifies you, and keeps retrying in case the session
@@ -263,11 +277,11 @@ over the network.
 | The program | `~/.continuum/bin/continuum` | Run by everything below. |
 | Command link | `~/.local/bin/continuum` (only if that folder is on your `PATH`) | So `continuum` works in any terminal. |
 | Data folder | `~/.continuum/` | Settings (`config.json`, `scope.json`), scheduled resumes, `history.jsonl`, `daemon.log`, and a record of what was installed. |
-| Claude Code hooks | `~/.claude/settings.json`: `SessionStart`, `UserPromptSubmit`, `StopFailure`, `Stop`, `SessionEnd` | Claude Code reports stalls, where each session runs, and which process a conversation is being used in. This also covers Claude Desktop. |
+| Claude Code hooks | `~/.claude/settings.json`: `SessionStart`, `UserPromptSubmit`, `StopFailure`, `Stop`, `SessionEnd` | Claude Code reports stalls, where each session runs, and which process a conversation is being used in. The prompt-submit and Stop hooks run on every turn, so they return at once and do their work in a detached process; the prompt-submit hook shows no status line and prints nothing. This also covers Claude Desktop. |
 | Codex hooks | `~/.codex/hooks.json`: `SessionStart`, `Stop` | Codex reports where each session runs. |
-| Grok Build hooks | `~/.grok/hooks/continuum.json`, a file of Continuum's own | Grok Build reports stalls and where each session runs. Grok runs hooks in folders you have trusted. |
-| Muse Code hooks | `~/.config/muse/settings.json`: `SessionStart`, `StopFailure`, `Stop`, `SessionEnd` | Muse Code reports stalls and its sessions. |
-| Cursor CLI hooks | `~/.cursor/hooks.json`: `sessionStart`, `afterAgentResponse`, `stop`, `sessionEnd` | The Cursor CLI reports its sessions and replies. |
+| Grok Build hooks | `~/.grok/hooks/continuum.json`, a file of Continuum's own: `SessionStart`, `UserPromptSubmit`, `StopFailure`, `Stop`, `SessionEnd` | Grok Build reports stalls, where each session runs, and its process. The prompt-submit hook shows no status line. Grok runs hooks in folders you have trusted. |
+| Muse Code hooks | `~/.config/muse/settings.json`: `SessionStart`, `UserPromptSubmit`, `StopFailure`, `Stop`, `SessionEnd` | Muse Code reports stalls, its sessions and its process. The prompt-submit hook shows no status line. |
+| Cursor CLI hooks | `~/.cursor/hooks.json`: `sessionStart`, `beforeSubmitPrompt`, `afterAgentResponse`, `stop`, `sessionEnd` | The Cursor CLI reports its sessions, when each turn starts, and its replies. |
 | Agent skill | `~/.claude/skills/continuum`, `~/.codex/skills/continuum`, `~/.gemini/config/skills/continuum` (for the agents you have) | Lets agents check and control Continuum for their own session (see [below](#agents-controlling-continuum)). `install --no-skill` leaves it out. |
 | Shell hook | A marked block in `~/.zshrc`, `~/.bashrc` or fish's `conf.d/continuum.fish` | Runs interactive `claude`, `codex` and other installed agents under the wrapper, so Continuum can type into them. |
 | Login item (background mode only) | macOS: `~/Library/LaunchAgents/dev.continuum.daemon.plist`. Linux: `~/.config/systemd/user/continuum.service`. Windows: scheduled task "Continuum". | Starts the background daemon when you log in. |

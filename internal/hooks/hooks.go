@@ -112,7 +112,10 @@ func BuildEvent(r *rules.Rules, harness string, in Input, env map[string]string,
 		text := strings.TrimSpace(in.LastAssistantMessage + "\n" + in.ErrorDetails)
 		errCode := rawString(in.Error)
 		switch {
-		case h.NeverResume(text):
+		case h.NeverResume(text + "\n" + errCode):
+			// Billing and sign-in errors need a person, also when only the
+			// error code says so (the rules name codes like
+			// authentication_failed).
 			ev.Kind = core.KindNeverResume
 		default:
 			if m := h.Classify(text, 8); m != nil {
@@ -122,7 +125,12 @@ func BuildEvent(r *rules.Rules, harness string, in Input, env map[string]string,
 			}
 		}
 		if ev.Kind == "" {
-			return ev, false
+			// Another error (a request the API refused, say): not something
+			// to resume, but right after a resume it means it didn't take.
+			ev.Kind = core.KindTurnFailed
+		}
+		if text == "" && (ev.Kind == core.KindTurnFailed || ev.Kind == core.KindNeverResume) {
+			text = errCode // say what it was
 		}
 		ev.Message = text
 		if ev.Kind == core.KindUsageLimit {
@@ -321,6 +329,13 @@ func nested(r *rules.Rules, tree map[int]proc.Node, pid int) bool {
 	return false
 }
 
+// listsProcesses: the agent's own list of open sessions names the process
+// holding each (a command or registry, not a process scan).
+func listsProcesses(h *rules.Harness) bool {
+	ls := h.LiveSessions
+	return ls != nil && (len(ls.Command) > 0 || ls.RegistryDir != "" || ls.RegistryFile != "")
+}
+
 // findAncestor returns the pid of the nearest ancestor process that is the
 // agent itself (the hook runs as its child or grandchild).
 func findAncestor(h *rules.Harness) int {
@@ -340,16 +355,40 @@ func findAncestor(h *rules.Harness) int {
 
 // Handle is the body of `continuum hook <harness>`. It never returns an error
 // to the agent and prints nothing (some hooks feed stdout to the model).
+//
+// The hooks that run on every turn (a prompt submitted, a turn ended) hand
+// their work to a detached copy of Continuum and return at once: the agent
+// waits for them, and reading the process tree can take seconds on a busy or
+// monitored computer, which would hold up every prompt.
 func Handle(harness string, stdin io.Reader, environ []string) {
 	defer func() { _ = recover() }()
 	p := core.GetPaths()
 	if err := p.Ensure(); err != nil {
 		return
 	}
-	data, _ := io.ReadAll(io.LimitReader(stdin, 4<<20))
+	ppid, at := os.Getppid(), time.Now()
+	var data []byte
+	w := worker(environ)
+	if w.input != "" {
+		// The detached half: the agent's process, and when the hook ran,
+		// come from the hook that handed this over.
+		data, _ = os.ReadFile(w.input)
+		_ = os.Remove(w.input)
+		ppid, at, environ = w.ppid, w.at, w.environ
+		// Nothing this process starts (the daemon, say) may look like a
+		// hand-off.
+		for _, k := range []string{envHookInput, envHookPPID, envHookPPID2, envHookAt} {
+			_ = os.Unsetenv(k)
+		}
+	} else {
+		data, _ = io.ReadAll(io.LimitReader(stdin, 4<<20))
+	}
 	var in Input
 	if json.Unmarshal(data, &in) != nil {
 		debugHook(p, harness, "payload is not JSON; ignored")
+		return
+	}
+	if w.input == "" && perTurn(in.HookEventName) && handOff(p, harness, data, environ, ppid, at) {
 		return
 	}
 	r, _ := rules.Cached(p.Rules)
@@ -358,11 +397,11 @@ func Handle(harness string, stdin io.Reader, environ []string) {
 	}
 	env := mux.EnvMap(environ)
 	tree := ProcTree()
-	env = withAgentEnv(r, env, tree, os.Getppid())
+	env = withAgentEnv(r, env, tree, ppid)
 	if other := r.HookHarness(env); other != "" && other != harness {
 		// Another agent ran this agent's hook (Grok Build and Cursor run
 		// Claude Code's), unless the variable was only inherited by this agent.
-		if a := nearestAgent(r, tree, os.Getppid()); a == "" || a == other {
+		if a := nearestAgent(r, tree, ppid); a == "" || a == other {
 			if hasOwnHook(other) {
 				debugHook(p, harness, "run by "+other+", which runs Continuum's own "+other+" hook too; ignored")
 				return
@@ -371,13 +410,23 @@ func Handle(harness string, stdin io.Reader, environ []string) {
 			harness = other
 		}
 	}
-	ev, ok := BuildEvent(r, harness, in, env, time.Now())
+	ev, ok := BuildEvent(r, harness, in, env, at)
 	if !ok {
 		debugHook(p, harness, in.HookEventName+": nothing to report")
 		return
 	}
+	// (Claude Code's hooks normally give CLAUDE_PID; this fills in when not.)
+	if ev.PID == 0 && listsProcesses(r.Harness(harness)) {
+		// An agent whose own session list names each session's process:
+		// report the process on every event (from the process tree already
+		// read), so the daemon knows which process a conversation is being
+		// used in when two hold it.
+		if name, pid := NearestAgent(r, tree, ppid); name == harness {
+			ev.PID = pid
+		}
+	}
 	if harness == "codex" {
-		_, pid := NearestAgent(r, tree, os.Getppid())
+		_, pid := NearestAgent(r, tree, ppid)
 		if ev.PID > 0 {
 			pid = ev.PID
 		}
@@ -388,7 +437,7 @@ func Handle(harness string, stdin io.Reader, environ []string) {
 		}
 	}
 	if h := r.Harness(harness); h.HookRequiresCLI && len(tree) > 0 {
-		if a, _ := NearestAgent(r, tree, os.Getppid()); a != harness {
+		if a, _ := NearestAgent(r, tree, ppid); a != harness {
 			// Another program read this agent's hook file (the Cursor
 			// editor reads ~/.cursor/hooks.json, as does Grok Build): its
 			// events are not this CLI's sessions.
@@ -396,13 +445,13 @@ func Handle(harness string, stdin io.Reader, environ []string) {
 			return
 		}
 	}
-	if !interactive(r, harness, tree, os.Getppid()) {
+	if !interactive(r, harness, tree, ppid) {
 		// Print mode or a headless subcommand (`grok -p`, `muse exec`,
 		// `agent -p`): nobody types into it.
 		debugHook(p, harness, in.HookEventName+": not an interactive session; ignored")
 		return
 	}
-	if nested(r, tree, os.Getppid()) {
+	if nested(r, tree, ppid) {
 		// An agent another agent started (a `claude -p` from a Bash tool,
 		// a script): it inherited its parent's pane or wrapper, and nobody
 		// types into it.
@@ -418,6 +467,95 @@ func Handle(harness string, stdin io.Reader, environ []string) {
 		}
 	}
 	_ = core.SpoolEvent(p, ev)
+}
+
+// Hand-off of per-turn hooks to a detached worker.
+const (
+	envHookInput = "CONTINUUM_HOOK_INPUT" // the payload, in a file the worker removes
+	envHookPPID  = "CONTINUUM_HOOK_PPID"  // the hook's parent: the agent, or a shell it ran the hook in
+	envHookPPID2 = "CONTINUUM_HOOK_PPID2" // that one's parent: the agent, when the shell has exited
+	envHookAt    = "CONTINUUM_HOOK_AT"    // when the hook ran
+)
+
+// perTurn: an event every turn sends, which the agent waits for.
+func perTurn(event string) bool {
+	switch strings.ToLower(event) {
+	case "userpromptsubmit", "beforesubmitprompt", "stop", "afteragentresponse":
+		return true
+	}
+	return false
+}
+
+type workerJob struct {
+	input   string
+	ppid    int
+	at      time.Time
+	environ []string // without the hand-off variables
+}
+
+// startPID: where to start looking up the agent: the hook's parent, or, once
+// that has exited (the shell the agent ran the hook in), its parent.
+func startPID(parent, grandparent int) int {
+	if grandparent > 1 && !proc.Alive(parent) {
+		return grandparent
+	}
+	return parent
+}
+
+func worker(environ []string) workerJob {
+	var w workerJob
+	grandparent := 0
+	for _, kv := range environ {
+		k, v, _ := strings.Cut(kv, "=")
+		switch k {
+		case envHookInput:
+			w.input = v
+		case envHookPPID:
+			w.ppid, _ = strconv.Atoi(v)
+		case envHookPPID2:
+			grandparent, _ = strconv.Atoi(v)
+		case envHookAt:
+			w.at, _ = time.Parse(time.RFC3339Nano, v)
+		default:
+			w.environ = append(w.environ, kv)
+		}
+	}
+	if w.ppid <= 0 || w.at.IsZero() {
+		w.input = "" // not a complete hand-off: do the work here
+		return w
+	}
+	w.ppid = startPID(w.ppid, grandparent)
+	return w
+}
+
+// HookInputPrefix names the payload files handed to workers, in Continuum's
+// home (the daemon removes any a worker never got to).
+const HookInputPrefix = "hook-input-"
+
+// handOff starts a detached worker for the hook's work. false: it couldn't,
+// so the hook does the work itself.
+func handOff(p core.Paths, harness string, data []byte, environ []string, ppid int, at time.Time) bool {
+	self, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	f, err := os.CreateTemp(p.Home, HookInputPrefix+"*.json")
+	if err != nil {
+		return false
+	}
+	_, werr := f.Write(data)
+	if cerr := f.Close(); werr != nil || cerr != nil {
+		_ = os.Remove(f.Name())
+		return false
+	}
+	env := append(append([]string{}, environ...),
+		envHookInput+"="+f.Name(), envHookPPID+"="+strconv.Itoa(ppid),
+		envHookPPID2+"="+strconv.Itoa(proc.Parent(ppid)), envHookAt+"="+at.Format(time.RFC3339Nano))
+	if _, err := proc.StartDetached([]string{self, "hook", harness}, p.Home, env, ""); err != nil {
+		_ = os.Remove(f.Name())
+		return false
+	}
+	return true
 }
 
 // ProcEnviron reads a process's environment. Tests replace it.
@@ -506,6 +644,9 @@ type Target struct {
 	// the hook runs and in its hook lists (Codex shows hooks without one as
 	// unnamed). Empty for agents whose hook format has no such field.
 	StatusMessage string
+	// Quiet: events whose hook is written without the status message: they
+	// run on every prompt, where a line flashing by each time is noise.
+	Quiet []string
 	// Flat: each event lists hook entries directly ({"command": ...}), as
 	// Cursor's hooks.json does, instead of Claude Code's groups of hooks.
 	Flat bool
@@ -531,13 +672,13 @@ const HookStatusMessage = "Continuum: tracks this session to resume it after usa
 // when it is open in two (the other is then an out-of-date copy).
 func Targets(c core.Config) []Target {
 	return []Target{
-		{Harness: "claude", Path: filepath.Join(c.ClaudeDir(), "settings.json"), Events: []string{"SessionStart", "UserPromptSubmit", "StopFailure", "Stop", "SessionEnd"}, Timeout: 10, StatusMessage: HookStatusMessage},
+		{Harness: "claude", Path: filepath.Join(c.ClaudeDir(), "settings.json"), Events: []string{"SessionStart", "UserPromptSubmit", "StopFailure", "Stop", "SessionEnd"}, Timeout: 10, StatusMessage: HookStatusMessage, Quiet: []string{"UserPromptSubmit"}},
 		{Harness: "codex", Path: filepath.Join(c.CodexDir(), "hooks.json"), Events: []string{"SessionStart", "Stop"}, Timeout: 10, StatusMessage: HookStatusMessage},
 		// Grok Build reads every JSON file in ~/.grok/hooks; this one is
 		// Continuum's own, removed whole on uninstall.
-		{Harness: "grok", Path: GrokHookFile(c), Events: []string{"SessionStart", "UserPromptSubmit", "StopFailure", "Stop", "SessionEnd"}, Timeout: 10, StatusMessage: HookStatusMessage},
+		{Harness: "grok", Path: GrokHookFile(c), Events: []string{"SessionStart", "UserPromptSubmit", "StopFailure", "Stop", "SessionEnd"}, Timeout: 10, StatusMessage: HookStatusMessage, Quiet: []string{"UserPromptSubmit"}},
 		// Muse Code runs Claude Code-style hooks from its settings.json.
-		{Harness: "muse", Path: filepath.Join(c.MuseDir(), "settings.json"), Events: []string{"SessionStart", "UserPromptSubmit", "StopFailure", "Stop", "SessionEnd"}, Timeout: 10, StatusMessage: HookStatusMessage,
+		{Harness: "muse", Path: filepath.Join(c.MuseDir(), "settings.json"), Events: []string{"SessionStart", "UserPromptSubmit", "StopFailure", "Stop", "SessionEnd"}, Timeout: 10, StatusMessage: HookStatusMessage, Quiet: []string{"UserPromptSubmit"},
 			Init: []KeyValue{{"schema_version", json.Number("1")}}},
 		// Cursor CLI: ~/.cursor/hooks.json, version 1, flat entries (no
 		// status message in its format).
@@ -635,8 +776,8 @@ func Install(t Target, bin string, dryRun bool) (bool, error) {
 		entry.set("type", "command")
 		entry.set("command", want)
 		entry.set("timeout", json.Number(strconv.Itoa(t.Timeout)))
-		if t.StatusMessage != "" {
-			entry.set("statusMessage", t.StatusMessage)
+		if m := t.statusMessage(event); m != "" {
+			entry.set("statusMessage", m)
 		}
 		group := newObject()
 		group.set("hooks", []any{entry})
@@ -790,7 +931,7 @@ func Status(t Target, bin string) (string, string) {
 				n++
 				if !containsEvent(t.Events, event) {
 					stray++
-				} else if s == want && hasStatusMessage(hk, t) {
+				} else if s == want && hasStatusMessage(hk, t, event) {
 					exact++
 				}
 			}
@@ -812,13 +953,21 @@ func Status(t Target, bin string) (string, string) {
 
 // hasStatusMessage: hk carries the status message Install writes for t, so
 // installs from before Continuum named its hooks count as outdated.
-func hasStatusMessage(hk *object, t Target) bool {
-	if t.StatusMessage == "" || t.Flat {
+func hasStatusMessage(hk *object, t Target, event string) bool {
+	if t.Flat {
 		return true
 	}
 	v, _ := hk.get("statusMessage")
 	m, _ := v.(string)
-	return m == t.StatusMessage
+	return m == t.statusMessage(event)
+}
+
+// statusMessage is the message written for event's hook ("" for none).
+func (t Target) statusMessage(event string) string {
+	if containsEvent(t.Quiet, event) {
+		return ""
+	}
+	return t.StatusMessage
 }
 
 // Backups lists the backups Continuum saved of t.Path before changing it.

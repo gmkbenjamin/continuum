@@ -92,7 +92,7 @@
         "unknown": "transient"
       },
       "patterns": [
-        {"kind": "usage_limit", "regex": "(?i)you[’']?ve\\s+hit\\s+your\\s+(?:[a-z0-9 ]{0,30}\\s+)?limit"},
+        {"kind": "usage_limit", "regex": "(?i)you[’']?ve\\s+hit\\s+your\\s+(?:(?:[a-z0-9 -]|\\d\\.\\d){0,30}\\s+)?limit"},
         {"kind": "usage_limit", "regex": "(?i)(?:claude\\s+)?usage\\s+limit\\s+reached"},
         {"kind": "usage_limit", "regex": "(?i)your\\s+limit\\s+will\\s+reset"},
         {"kind": "usage_limit", "regex": "(?i)you[’']?re\\s+out\\s+of\\s+(?:extra\\s+)?usage"},

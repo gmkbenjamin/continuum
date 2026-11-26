@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -62,9 +63,16 @@ func TestStopFailureCodesWithoutText(t *testing.T) {
 			t.Errorf("%s: got %v %q", code, ok, ev.Kind)
 		}
 	}
-	for _, code := range []string{"authentication_failed", "invalid_request", "max_output_tokens"} {
-		if _, ok := BuildEvent(r, "claude", Input{HookEventName: "StopFailure", SessionID: "s", Error: []byte(`"` + code + `"`)}, nil, time.Now()); ok {
-			t.Errorf("%s should not produce an event", code)
+	// Other errors schedule nothing: they are reported as a failed turn
+	// (which only matters right after a resume), with the code as text.
+	// A billing or sign-in code needs a person, also without text.
+	if ev, ok := BuildEvent(r, "claude", Input{HookEventName: "StopFailure", SessionID: "s", Error: []byte(`"authentication_failed"`)}, nil, time.Now()); !ok || ev.Kind != core.KindNeverResume {
+		t.Errorf("authentication_failed: got %v %q", ok, ev.Kind)
+	}
+	for _, code := range []string{"invalid_request", "max_output_tokens"} {
+		ev, ok := BuildEvent(r, "claude", Input{HookEventName: "StopFailure", SessionID: "s", Error: []byte(`"` + code + `"`)}, nil, time.Now())
+		if !ok || ev.Kind != core.KindTurnFailed || ev.Message != code {
+			t.Errorf("%s: got %v %q %q", code, ok, ev.Kind, ev.Message)
 		}
 	}
 	ev, _ := BuildEvent(r, "claude", Input{HookEventName: "StopFailure", SessionID: "s", Error: []byte(`"billing_error"`), LastAssistantMessage: "You're out of usage credits · add funds to continue"}, nil, time.Now())
@@ -432,5 +440,72 @@ func TestInstallNamesHooks(t *testing.T) {
 	}
 	if st, _ := Status(old, "/x/continuum"); st != StateCurrent {
 		t.Errorf("after reinstall: %s", st)
+	}
+}
+
+// The prompt-submit hook runs on every prompt: it is written without the
+// status message the others carry, and an install that has one there (0.15.8)
+// counts as outdated, so the daemon rewrites it.
+func TestQuietPromptHook(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	tg := Target{Harness: "claude", Path: path, Events: []string{"UserPromptSubmit", "Stop"}, Timeout: 10,
+		StatusMessage: HookStatusMessage, Quiet: []string{"UserPromptSubmit"}}
+	if _, err := Install(tg, "/x/continuum", false); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Count(string(data), HookStatusMessage) != 1 {
+		t.Fatalf("want the message on Stop only:\n%s", data)
+	}
+	if st, why := Status(tg, "/x/continuum"); st != StateCurrent {
+		t.Fatalf("status %s: %s", st, why)
+	}
+	loud := tg
+	loud.Quiet = nil
+	if _, err := Install(loud, "/x/continuum", false); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := Status(tg, "/x/continuum"); st != StateOutdated {
+		t.Fatalf("an install with the message on the prompt hook: want outdated, got %s", st)
+	}
+}
+
+// Per-turn hooks are handed to a worker; the rest run in place.
+func TestPerTurnEvents(t *testing.T) {
+	for ev, want := range map[string]bool{"UserPromptSubmit": true, "Stop": true, "beforeSubmitPrompt": true, "afterAgentResponse": true,
+		"SessionStart": false, "SessionEnd": false, "StopFailure": false} {
+		if perTurn(ev) != want {
+			t.Errorf("%s: want %v", ev, want)
+		}
+	}
+}
+
+// The worker reads the hand-off from its environment, and the event it
+// builds sees the hook's environment without the hand-off variables. An
+// incomplete hand-off is no hand-off.
+func TestWorkerHandOff(t *testing.T) {
+	at := time.Date(2026, 11, 26, 4, 0, 0, 123, time.UTC)
+	env := []string{"CLAUDE_PID=42", envHookInput + "=/x/in.json", envHookPPID + "=" + strconv.Itoa(os.Getpid()),
+		envHookPPID2 + "=1", envHookAt + "=" + at.Format(time.RFC3339Nano), "TMUX_PANE=%3"}
+	w := worker(env)
+	if w.input != "/x/in.json" || w.ppid != os.Getpid() || !w.at.Equal(at) {
+		t.Fatalf("bad hand-off: %+v", w)
+	}
+	if strings.Contains(strings.Join(w.environ, " "), "CONTINUUM_HOOK_") || len(w.environ) != 2 {
+		t.Fatalf("hand-off variables left in the event's environment: %v", w.environ)
+	}
+	if w := worker([]string{envHookInput + "=/x/in.json"}); w.input != "" {
+		t.Fatalf("an incomplete hand-off was taken: %+v", w)
+	}
+}
+
+// The shell the agent ran the hook in has exited by the time the worker
+// looks: it starts from that shell's parent, the agent.
+func TestStartPIDSkipsExitedShell(t *testing.T) {
+	if got := startPID(os.Getpid(), 1234); got != os.Getpid() {
+		t.Fatalf("a live parent: want it, got %d", got)
+	}
+	if got := startPID(999999, 1234); got != 1234 {
+		t.Fatalf("an exited parent: want its parent, got %d", got)
 	}
 }

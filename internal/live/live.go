@@ -37,6 +37,8 @@ type Session struct {
 	Version    string `json:"version,omitempty"`
 	// StatusSince is when Status last changed, when the source says.
 	StatusSince time.Time `json:"status_since,omitempty"`
+	// StartedAt: when the process started, when the source says.
+	StartedAt time.Time `json:"started_at,omitzero"`
 }
 
 // State is what is known about one session.
@@ -69,6 +71,10 @@ type State struct {
 	// Authoritative: the answer comes from the agent's own list of open
 	// sessions, so "not open" really means closed.
 	Authoritative bool `json:"authoritative,omitempty"`
+	// Listed: Session is an entry of the agent's own list (command or
+	// registry) for this session, naming its process: not a process-scan
+	// guess or a "the recorded process is alive" stand-in.
+	Listed bool `json:"listed,omitempty"`
 }
 
 // Query identifies the session to look up.
@@ -127,7 +133,7 @@ func (f *Finder) List(h *rules.Harness, q Query) ([]Session, bool) {
 	}
 	var all []Session
 	ok := false
-	if len(ls.Command) > 0 && q.Bin != "" {
+	if len(ls.Command) > 0 && q.Bin != "" && (len(ls.RequiresHelp) == 0 || f.HelpOK == nil || f.HelpOK(q.Bin, ls.RequiresHelp)) {
 		if list, good := f.fromCommand(ls, q); good {
 			all, ok = list, true
 		}
@@ -208,6 +214,7 @@ func (f *Finder) Lookup(h *rules.Harness, q Query) State {
 			st.Open = true
 			st.Session = s
 			st.ProcessMatch = matchedPID != 0 && st.Source == "processes"
+			st.Listed = i < listed
 		}
 	}
 	if st.Session == nil && q.PID > 0 {
@@ -487,16 +494,19 @@ func fromMap(m map[string]any) Session {
 		WaitingFor: str("waitingFor", "waiting_for"),
 		Version:    str("version"),
 	}
-	for _, k := range []string{"statusUpdatedAt", "status_updated_at", "stateUpdatedAt"} {
-		if v, ok := m[k].(float64); ok && v > 0 {
-			if v > 1e12 {
-				s.StatusSince = time.UnixMilli(int64(v))
-			} else {
-				s.StatusSince = time.Unix(int64(v), 0)
+	epoch := func(keys ...string) time.Time {
+		for _, k := range keys {
+			if v, ok := m[k].(float64); ok && v > 0 {
+				if v > 1e12 {
+					return time.UnixMilli(int64(v))
+				}
+				return time.Unix(int64(v), 0)
 			}
-			break
 		}
+		return time.Time{}
 	}
+	s.StatusSince = epoch("statusUpdatedAt", "status_updated_at", "stateUpdatedAt")
+	s.StartedAt = epoch("startedAt", "started_at")
 	if id := str("id", "short_id", "shortId"); id != "" && id != s.SessionID {
 		s.ShortID = id
 	}
@@ -524,6 +534,12 @@ func mergeSessions(a, b []Session) []Session {
 				}
 				if a[i].PID == 0 {
 					a[i].PID = s.PID
+				}
+				if a[i].StartedAt.IsZero() {
+					a[i].StartedAt = s.StartedAt
+				}
+				if a[i].Kind == "" {
+					a[i].Kind = s.Kind
 				}
 				if s.Status != "" && !s.StatusSince.IsZero() {
 					// The registry is what the process itself writes, with a

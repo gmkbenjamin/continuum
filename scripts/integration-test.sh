@@ -183,6 +183,75 @@ if have tmux; then
     fail=$((fail + 1))
   fi
 fi
+# --- an out-of-date copy: the conversation was continued in a second process
+# (B) that has quit; only the first (A, in a wrapper) is still open. Continuum
+# must not type into A, and status must say why. Last: it creates Claude
+# Code's session registry, which then lists every open Claude session. Both
+# run in the test's tmux server, not under whatever runs this script (an
+# agent's hooks are ignored inside another agent).
+if have tmux; then
+  STALE_SINCE=$(date -u -v-2M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '-2 min' +%Y-%m-%dT%H:%M:%SZ)
+  stale_env() { printf 'env -u CLAUDE_PID -u CLAUDECODE -u CONTINUUM_WRAPPER_ID CONTINUUM_HOME=%q CONTINUUM_BIN=%q FAKE_PID=1 FAKE_REGISTRY=%q' \
+    "$CONTINUUM_HOME" "$CONTINUUM_BIN" "$WORK/claude/sessions"; }
+  tmux -L continuum-it new-window -d -t it \
+    "cd $(printf %q "$WORK") && $(stale_env) FAKE_SINCE=$STALE_SINCE FAKE_MSG=$(printf %q "You've hit your usage limit. Try again in 20 seconds.") $(printf %q "$CONTINUUM_BIN") run --harness claude -- $(printf %q "$WORK/bin/claude") it-stale $(printf %q "$WORK/markers/it-stale")"
+  sleep 2
+  tmux -L continuum-it new-window -d -t it \
+    "cd $(printf %q "$WORK") && $(stale_env) FAKE_END=1 $(printf %q "$WORK/bin/claude") it-stale $(printf %q "$WORK/markers/it-stale-b"); sleep 60"
+  # B's exit recorded before A's resume comes due (A's limit is 20s long).
+  for _ in $(seq 1 15); do
+    python3 -c 'import json,sys; s=json.load(open(sys.argv[1])).get("claude:it-stale",{}); sys.exit(0 if s.get("ended") else 1)' \
+      "$CONTINUUM_HOME/sessions.json" 2>/dev/null && break
+    sleep 1
+  done
+  for _ in $(seq 1 45); do
+    "$CONTINUUM_BIN" list --json | grep -q 'out-of-date copy' && break
+    [ -s "$WORK/markers/it-stale" ] && break
+    sleep 1
+  done
+  if [ -s "$WORK/markers/it-stale" ]; then
+    echo "✗ safety: typed into an out-of-date copy of the conversation"
+    fail=$((fail + 1))
+  elif "$CONTINUUM_BIN" list --json | grep -q 'out-of-date copy' &&
+    "$CONTINUUM_BIN" status --json | grep -q '"stale_copy"'; then
+    echo "✓ safety: held the resume of an out-of-date copy, and status shows it"
+    pass=$((pass + 1))
+  else
+    echo "✗ safety: no hold recorded for the out-of-date copy"
+    fail=$((fail + 1))
+  fi
+fi
+
+# --- the same, but A's limit shows only on its screen (no hook reports it),
+# and B only continued the conversation (a normal turn) before quitting. At
+# its reset Continuum must find which conversation A's pane holds, see that A
+# is an out-of-date copy of it, and hold. ---
+if have tmux; then
+  tmux -L continuum-it new-window -d -t it \
+    "cd $(printf %q "$WORK") && $(stale_env) FAKE_SINCE=$STALE_SINCE FAKE_MSG=$(printf %q "You've hit your usage limit. Try again in 20 seconds.") $(printf %q "$CONTINUUM_BIN") run --harness claude -- $(printf %q "$WORK/bin/claude") it-stale2 $(printf %q "$WORK/markers/it-stale2") none"
+  sleep 2
+  tmux -L continuum-it new-window -d -t it \
+    "cd $(printf %q "$WORK") && $(stale_env) FAKE_END=1 $(printf %q "$WORK/bin/claude") it-stale2 $(printf %q "$WORK/markers/it-stale2-b") Stop; sleep 60"
+  held2() {
+    "$CONTINUUM_BIN" list --json | python3 -c 'import json,sys; sys.exit(0 if any(j.get("session_id")=="it-stale2" and "out-of-date copy" in (j.get("result") or "") for j in json.load(sys.stdin)) else 1)'
+  }
+  for _ in $(seq 1 45); do
+    held2 && break
+    [ -s "$WORK/markers/it-stale2" ] && break
+    sleep 1
+  done
+  if [ -s "$WORK/markers/it-stale2" ]; then
+    echo "✗ safety: typed into an out-of-date copy whose limit showed only on screen"
+    fail=$((fail + 1))
+  elif held2; then
+    echo "✓ safety: found the conversation in a pane whose limit showed only on screen, and held its out-of-date copy"
+    pass=$((pass + 1))
+  else
+    echo "✗ safety: no hold recorded for the out-of-date copy whose limit showed only on screen"
+    fail=$((fail + 1))
+  fi
+fi
+
 [ ${#skipped[@]} -gt 0 ] && echo "· skipped (not installed): ${skipped[*]}"
 
 echo

@@ -33,6 +33,7 @@ func TestSessionStates(t *testing.T) {
 		{knownSession{Open: true}, &core.Job{State: core.StatePending, Kind: core.KindTransient, DueAt: now.Add(5 * time.Minute)}, "outage", "retrying"},
 		{knownSession{Open: true}, &core.Job{State: core.StateNeedsUser, Result: "this limit needs you (billing)"}, "needs_you", "billing"},
 		{knownSession{Live: true, Status: "idle", Open: true}, &core.Job{State: core.StateDelivered, DeliveredAt: now.Add(-10 * time.Minute)}, "resumed", "resumed 08:50"},
+		{knownSession{Live: true, Status: "idle", Open: true}, &core.Job{State: core.StateDelivered, DeliveredAt: now.Add(-10 * time.Minute), TurnFailed: "API Error: refused"}, "needs_you", "resumed 08:50, but its turn failed: API Error: refused"},
 		// Busy again after the resume: the agent's own state wins.
 		{knownSession{Live: true, Status: "busy", Open: true}, &core.Job{State: core.StateDelivered, DeliveredAt: now.Add(-10 * time.Minute)}, "working", "working"},
 		{knownSession{Open: true}, &core.Job{State: core.StateIgnored, Result: "excluded: every session in /x", UpdatedAt: now}, "not_resuming", "excluded"},
@@ -160,27 +161,27 @@ func TestStaleCopyNeedsInactivity(t *testing.T) {
 	last := time.Now().Add(-time.Hour)
 	rec := &store.Session{PID: 999999, Ended: true, LastSeen: last}
 	idle := knownSession{Harness: "claude", Open: true, PID: 4242, Status: "idle", StatusSince: last.Add(-time.Hour)}
-	if !staleCopy(r, idle, rec) {
+	if !staleCopy(r, nil, idle, rec) {
 		t.Fatal("idle since before the record: want out of date")
 	}
 	since := idle
 	since.StatusSince = last.Add(time.Minute)
-	if staleCopy(r, since, rec) {
+	if staleCopy(r, nil, since, rec) {
 		t.Fatal("active since the record: want current")
 	}
 	working := idle
 	working.Status, working.StatusSince = "busy", time.Time{}
-	if staleCopy(r, working, rec) {
+	if staleCopy(r, nil, working, rec) {
 		t.Fatal("working, no time given: want current")
 	}
 	stuck := idle
 	stuck.Status = "busy" // since before the record
-	if !staleCopy(r, stuck, rec) {
+	if !staleCopy(r, nil, stuck, rec) {
 		t.Fatal("busy since before the record: want out of date")
 	}
 	same := idle
 	same.PID = 999999
-	if staleCopy(r, same, rec) {
+	if staleCopy(r, nil, same, rec) {
 		t.Fatal("the recorded process itself: want current")
 	}
 }

@@ -62,3 +62,12 @@ func TestStartDetachedClosesParentFiles(t *testing.T) {
 		t.Fatalf("parent leaked descriptors on StartDetached failure: base fd=%d, after 20 failures fd=%d", base, got)
 	}
 }
+
+func TestParentOfSelf(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("uses ps elsewhere")
+	}
+	if got := Parent(os.Getpid()); got != os.Getppid() {
+		t.Fatalf("Parent(self) = %d, want %d", got, os.Getppid())
+	}
+}

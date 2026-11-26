@@ -44,6 +44,28 @@ type AgentCompat struct {
 	CheckedAt   time.Time `json:"checked_at"`
 	Problems    []string  `json:"problems,omitempty"`
 	Repaired    []string  `json:"repaired,omitempty"`
+	// ExactPID: the executable fingerprint for which a process its hooks
+	// reported was seen holding that session in the agent's own session list,
+	// so its hooks name the right process (see ExactPIDs).
+	ExactPID string `json:"exact_pid,omitempty"`
+	// ExactPIDFirst: the first agreeing process, as "fingerprint|pid": trust
+	// takes a second, different one.
+	ExactPIDFirst string `json:"exact_pid_first,omitempty"`
+}
+
+// ExactPIDs: whether harness's hooks are known to name the exact process
+// holding a session: Claude Code's always do (CLAUDE_PID); another agent's
+// once that was seen to hold here, for its current build. Only then can a
+// second process holding a conversation be told to be an out-of-date copy.
+func (c *Compat) ExactPIDs(harness string) bool {
+	if harness == "claude" {
+		return true
+	}
+	if c == nil {
+		return false
+	}
+	ac := c.Agents[harness]
+	return ac != nil && ac.ExactPID != "" && ac.ExactPID == ac.Fingerprint
 }
 
 type DesktopCompat struct {
@@ -183,6 +205,65 @@ func (d *Daemon) trustRegistry(h *rules.Harness) map[string]bool {
 		}
 	}
 	return out
+}
+
+// observeExactPID learns whether ev's agent's hooks name the process its own
+// session list does for the session: once they agree for two different
+// processes, for this build of the agent, the out-of-date copy checks apply
+// to it.
+func (d *Daemon) observeExactPID(ev core.Event) {
+	if d.Compat == nil || ev.PID <= 0 || ev.SessionID == "" || !strings.HasPrefix(ev.Source, "hook:") ||
+		ev.Kind == core.KindSessionEnd || d.Compat.ExactPIDs(ev.Harness) || d.LiveFn == nil {
+		return
+	}
+	ac := d.Compat.Agents[ev.Harness]
+	if ac == nil || ac.Fingerprint == "" {
+		return // not checked yet (checkCompat records the build first)
+	}
+	// Asking can be slow (Muse Code runs a command): back off while it
+	// doesn't agree, from a minute up to an hour, afresh for each build.
+	if d.pidProbe == nil {
+		d.pidProbe = map[string]*probeState{}
+	}
+	pr := d.pidProbe[ev.Harness]
+	if pr == nil || pr.fingerprint != ac.Fingerprint {
+		pr = &probeState{fingerprint: ac.Fingerprint, gap: time.Minute}
+		d.pidProbe[ev.Harness] = pr
+	}
+	first := ""
+	if f, ok := strings.CutPrefix(ac.ExactPIDFirst, ac.Fingerprint+"|"); ok {
+		first = f
+	}
+	if first == fmt.Sprint(ev.PID) {
+		return // agreed already: a different process has to agree too
+	}
+	if d.Now().Before(pr.next) {
+		return
+	}
+	st := d.LiveFn(&core.Job{Harness: ev.Harness, SessionID: ev.SessionID, PID: ev.PID, Cwd: ev.Cwd})
+	// Only an entry of the agent's own list naming this session counts, not a
+	// process-scan guess or the "process is alive" stand-in.
+	if st == nil || !st.Authoritative || !st.Listed || st.Session == nil || st.Session.PID != ev.PID {
+		pr.next = d.Now().Add(pr.gap)
+		if pr.gap *= 2; pr.gap > time.Hour {
+			pr.gap = time.Hour
+		}
+		return
+	}
+	d.compatDirty = true
+	if first == "" {
+		ac.ExactPIDFirst = fmt.Sprintf("%s|%d", ac.Fingerprint, ev.PID)
+		return
+	}
+	ac.ExactPID = ac.Fingerprint
+	d.logf("%s: its hooks name the process its own session list does; out-of-date copies of a conversation are now recognised for it", d.name(ev.Harness))
+}
+
+// probeState paces observeExactPID for one agent.
+type probeState struct {
+	fingerprint string
+	next        time.Time
+	gap         time.Duration
 }
 
 // observeDesktop learns whether the agent's own session list includes desktop
