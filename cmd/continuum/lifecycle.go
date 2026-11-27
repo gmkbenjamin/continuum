@@ -309,6 +309,7 @@ func pinAgentHomes(p core.Paths, cfg core.Config) core.Config {
 		{"codex_home", "CODEX_HOME", "Codex", ".codex", &cfg.CodexHome},
 		{"grok_home", "GROK_HOME", "Grok Build", ".grok", &cfg.GrokHome},
 		{"muse_home", "XDG_CONFIG_HOME", "Muse Code", filepath.Join(".config", "muse"), &cfg.MuseHome},
+		{"antigravity_data_dir", "ANTIGRAVITY_APP_DATA_DIR", "Antigravity CLI", filepath.Join(".gemini", "antigravity-cli"), &cfg.AntigravityData},
 	} {
 		dir := os.Getenv(a.env)
 		if a.key == "muse_home" && dir != "" {
@@ -318,6 +319,11 @@ func pinAgentHomes(p core.Paths, cfg core.Config) core.Config {
 				continue
 			}
 			dir = filepath.Join(dir, "muse")
+		}
+		if a.key == "antigravity_data_dir" && dir != "" {
+			if !core.IsAntigravityCLIDataDir(dir, os.Getenv("ANTIGRAVITY_LS_VERSION")) {
+				continue
+			}
 		}
 		if dir == "" || *a.set != "" {
 			continue

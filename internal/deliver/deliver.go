@@ -610,6 +610,7 @@ func firstLine(s string) string {
 // started from, so a resumed agent does not think it is nested in another.
 func CleanEnv(environ []string) []string {
 	drop := []string{"CLAUDECODE=", "CLAUDE_CODE_", "CLAUDE_PID=", "CLAUDE_EFFORT=", "CLAUDE_PLUGIN", "CODEX_COMPANION", "CODEX_THREAD", "CODEX_SANDBOX",
+		"ANTIGRAVITY_",
 		"TMUX=", "TMUX_PANE=", "STY=", "WINDOW=", "ZELLIJ", "HERDR_", "REX_BLOCK=", "REX_SESSION=", "WEZTERM_PANE=", "KITTY_WINDOW_ID=", "CONTINUUM_WRAPPER_ID="}
 	keep := []string{"CLAUDE_CONFIG_DIR=", "CLAUDE_CODE_USE_BEDROCK=", "CLAUDE_CODE_USE_VERTEX=", "CLAUDE_CODE_OAUTH_TOKEN="}
 	var out []string

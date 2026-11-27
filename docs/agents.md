@@ -6,7 +6,7 @@ Generated from the built-in rules by `make docs` (`continuum rules --agents`).
 |---|---|---|---|---|
 | [Aider](https://aider.chat) | `aider` | screen (wrapper, tmux) | default | in place (wrapper, multiplexer pane) |
 | [Amp](https://ampcode.com) | `amp` | screen (wrapper, tmux) | opt-in | in place (wrapper, multiplexer pane) |
-| [Antigravity CLI](https://antigravity.google) | `agy` | screen (wrapper, tmux) | default | in place (wrapper, multiplexer pane) |
+| [Antigravity CLI](https://antigravity.google) | `agy` | hooks, transcripts, screen (wrapper, tmux) | default | in place (wrapper, multiplexer pane) |
 | [Augment (auggie)](https://augmentcode.com) | `auggie` | screen (wrapper, tmux) | default | in place (wrapper, multiplexer pane) |
 | [Claude Code](https://claude.com/product/claude-code) | `claude` | hooks, transcripts, session list, screen (wrapper, tmux) | default | in place (wrapper, multiplexer pane); closed sessions by id |
 | [Cline CLI](https://cline.bot) | `cline` | screen (wrapper, tmux) | default | in place (wrapper, multiplexer pane) |
@@ -80,6 +80,14 @@ Cursor's `agent persist` manages its own terminal sessions and bypasses the shel
 wrapper.
 
 OpenCode's terminal interface is wrapped and resumed in place by default.
+
+Antigravity CLI (`agy`) uses three layered detection sources: lifecycle hooks
+Continuum adds under `"continuum"` in `~/.gemini/config/hooks.json` (`SessionStart`,
+`PreInvocation`, `Stop`), its CLI transcripts under
+`~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript.jsonl`,
+and screen detection in Continuum's wrapper or tmux pane. Only CLI sessions count
+(Antigravity 2.0 and IDE hooks sharing `~/.gemini/config/hooks.json` are ignored).
+Antigravity sessions are resumed in place.
 
 Continuum's skill in `~/.claude/skills` is read by Grok Build, Muse Code, the Cursor
 CLI and opencode as well as Claude Code.

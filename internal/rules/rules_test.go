@@ -30,6 +30,7 @@ func TestClassifyKnownMessages(t *testing.T) {
 		{"codex", "■ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), or try again at 5:53 PM.", "usage_limit"},
 		{"codex", "error: usage_limit_exceeded", "usage_limit"},
 		{"generic", "Error: rate limit exceeded, quota resets in 10 minutes", "usage_limit"},
+		{"generic", "Quota reached. Resets in 1h5m.", "usage_limit"},
 	}
 	for _, c := range cases {
 		m := r.Harness(c.harness).Classify(c.text, 40)

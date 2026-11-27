@@ -350,3 +350,157 @@ func TestPromptStartingLikeASubcommand(t *testing.T) {
 		t.Fatal("grok \"help me …\" dropped")
 	}
 }
+
+func TestAntigravityHookPayloadsAndCLIGuard(t *testing.T) {
+	r := loadRules(t)
+	now := time.Date(2026, 11, 27, 6, 11, 0, 0, time.UTC)
+
+	// SessionStart (camelCase protojson)
+	var start Input
+	rawStart := `{"hookEventName":"SessionStart","conversationId":"da14676e-8895-4a42-aec7-55e22b462917","cwd":"/w/continuum","workspacePaths":["/w/continuum"],"transcriptPath":"/u/.gemini/antigravity-cli/brain/da14676e-8895-4a42-aec7-55e22b462917/.system_generated/logs/transcript.jsonl","modelName":"claude-opus-5-5-high"}`
+	if err := json.Unmarshal([]byte(rawStart), &start); err != nil {
+		t.Fatal(err)
+	}
+	ev, ok := BuildEvent(r, "antigravity", start, map[string]string{"CONTINUUM_WRAPPER_ID": "w-agy"}, now)
+	if !ok || ev.Kind != core.KindSessionStart || ev.SessionID != "da14676e-8895-4a42-aec7-55e22b462917" || ev.Cwd != "/w/continuum" || ev.Model != "claude-opus-5-5-high" || ev.Location == nil || ev.Location.Target != "w-agy" {
+		t.Fatalf("session start: ok=%v %+v", ok, ev)
+	}
+
+	// PreInvocation -> TurnStart activity with modelName
+	var pre Input
+	rawPre := `{"hookEventName":"PreInvocation","conversationId":"c-1","cwd":"/w/continuum","modelName":"claude-opus-5-5-high"}`
+	if err := json.Unmarshal([]byte(rawPre), &pre); err != nil {
+		t.Fatal(err)
+	}
+	ev, ok = BuildEvent(r, "antigravity", pre, nil, now)
+	if !ok || ev.Kind != core.KindActivity || !ev.TurnStart || ev.Model != "claude-opus-5-5-high" {
+		t.Fatalf("preinvocation: ok=%v %+v", ok, ev)
+	}
+
+	// Stop with ERROR + third-party quota reached
+	var stopErr Input
+	rawStopErr := `{"hookEventName":"Stop","conversationId":"c-1","cwd":"/w/continuum","modelName":"claude-opus-5-5-high","terminationReason":"ERROR","error":"⚠ Third-party quota reached. Please switch to Gemini models or upgrade your subscription to increase your limits. Resets in 2h30m50s."}`
+	if err := json.Unmarshal([]byte(rawStopErr), &stopErr); err != nil {
+		t.Fatal(err)
+	}
+	ev, ok = BuildEvent(r, "antigravity", stopErr, map[string]string{"CONTINUUM_WRAPPER_ID": "w-agy"}, now)
+	wantReset := now.Add(2*time.Hour + 30*time.Minute + 50*time.Second)
+	if !ok || ev.Kind != core.KindUsageLimit || !ev.ResetAt.Equal(wantReset) || ev.Model != "claude-opus-5-5-high" {
+		t.Fatalf("stop quota error: ok=%v %+v", ok, ev)
+	}
+
+	// Stop with ERROR and empty error text -> ignored so transcript/screen fallback classifies it
+	if ev, ok := BuildEvent(r, "antigravity", Input{HookEventNameCamel: "Stop", ConversationIDCamel: "c-1", TerminationReason: "ERROR"}, nil, now); ok {
+		t.Fatalf("empty error stop should be ignored for fallback, got %+v", ev)
+	}
+
+	// Stop with billing error -> never_resume
+	ev, ok = BuildEvent(r, "antigravity", Input{HookEventNameCamel: "Stop", ConversationIDCamel: "c-1", TerminationReason: "ERROR", Error: []byte(`"Your AI credits balance is too low to continue."`)}, nil, now)
+	if !ok || ev.Kind != core.KindNeverResume {
+		t.Fatalf("billing stop: ok=%v %+v", ok, ev)
+	}
+
+	// Stop with NO_TOOL_CALL -> answered activity
+	ev, ok = BuildEvent(r, "antigravity", Input{HookEventNameCamel: "Stop", ConversationIDCamel: "c-1", TerminationReason: "NO_TOOL_CALL", ModelName: "gemini-4-neon-high"}, nil, now)
+	if !ok || ev.Kind != core.KindActivity || !ev.Answered || ev.Model != "gemini-4-neon-high" {
+		t.Fatalf("normal stop: ok=%v %+v", ok, ev)
+	}
+
+	// Stop with JSON object error containing code + message
+	var objErr Input
+	rawObjErr := `{"hookEventName":"Stop","conversationId":"c-1","terminationReason":"ERROR","error":{"code":"RESOURCE_EXHAUSTED","message":"Third-party quota reached. Resets in 2h30m50s."}}`
+	if err := json.Unmarshal([]byte(rawObjErr), &objErr); err != nil {
+		t.Fatal(err)
+	}
+	ev, ok = BuildEvent(r, "antigravity", objErr, nil, now)
+	if !ok || ev.Kind != core.KindUsageLimit || !ev.ResetAt.Equal(wantReset) {
+		t.Fatalf("object error stop: ok=%v %+v", ok, ev)
+	}
+
+	// Stop with error code + separate errorDetails -> matches StopFailureKinds
+	ev, ok = BuildEvent(r, "antigravity", Input{HookEventNameCamel: "Stop", ConversationIDCamel: "c-1", TerminationReason: "ERROR", Error: []byte(`"rate_limit"`), ErrorDetailsCamel: "upstream 429"}, nil, now)
+	if !ok || ev.Kind != core.KindUsageLimit {
+		t.Fatalf("code + details stop: ok=%v %+v", ok, ev)
+	}
+
+	// Stop with USER_CANCELED -> activity, not answered
+	ev, ok = BuildEvent(r, "antigravity", Input{HookEventNameCamel: "Stop", ConversationIDCamel: "c-1", TerminationReason: "USER_CANCELED"}, nil, now)
+	if !ok || ev.Kind != core.KindActivity || ev.Answered {
+		t.Fatalf("canceled stop: ok=%v %+v", ok, ev)
+	}
+
+	// Stop with non-normal termination reason (e.g. MAX_INVOCATIONS) -> ignored (not answered)
+	if ev, ok := BuildEvent(r, "antigravity", Input{HookEventNameCamel: "Stop", ConversationIDCamel: "c-1", TerminationReason: "MAX_INVOCATIONS"}, nil, now); ok {
+		t.Fatalf("non-normal termination reason should not count as activity: %+v", ev)
+	}
+
+	// Stop with normal completion mentioning a quota message -> KindReply
+	ev, ok = BuildEvent(r, "antigravity", Input{HookEventNameCamel: "Stop", ConversationIDCamel: "c-1", TerminationReason: "NO_TOOL_CALL", LastAssistantMessageCamel: "The error was: Third-party quota reached."}, nil, now)
+	if !ok || ev.Kind != core.KindReply {
+		t.Fatalf("reply mentioning quota: ok=%v %+v", ok, ev)
+	}
+
+	// CLI guard: CLI (including custom ANTIGRAVITY_APP_DATA_DIR) passes; Antigravity 2.0 App and IDE are rejected.
+	if !isAntigravityCLI(start, map[string]string{"ANTIGRAVITY_LS_VERSION": "cli-1.5.18"}, r, nil, 0) {
+		t.Error("CLI session rejected")
+	}
+	if !isAntigravityCLI(Input{}, map[string]string{"ANTIGRAVITY_APP_DATA_DIR": "/Users/me/agy-custom", "ANTIGRAVITY_LS_VERSION": "cli-1.5.18"}, r, nil, 0) {
+		t.Error("custom CLI app data dir rejected")
+	}
+	if isAntigravityCLI(Input{TranscriptPathCamel: "/u/.gemini/antigravity/brain/x/transcript.jsonl"}, nil, r, nil, 0) {
+		t.Error("Antigravity 2.0 desktop app session accepted as CLI")
+	}
+	if isAntigravityCLI(Input{TranscriptPathCamel: "/u/.gemini/antigravity-ide/brain/x/transcript.jsonl"}, nil, r, nil, 0) {
+		t.Error("Antigravity IDE session accepted as CLI")
+	}
+	if isAntigravityCLI(Input{}, map[string]string{"ANTIGRAVITY_APP_DATA_DIR": "/u/.gemini/antigravity"}, r, nil, 0) {
+		t.Error("non-CLI app data dir accepted")
+	}
+}
+
+func TestAntigravityNamedHooksFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	tg := Target{Harness: "antigravity", Path: path, RootKey: "continuum", Events: []string{"SessionStart", "PreInvocation", "Stop"}, Timeout: 10, Flat: true}
+	if _, err := Install(tg, "/a/continuum", false); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]map[string][]map[string]any
+	if err := json.Unmarshal([]byte(mustRead(t, path)), &got); err != nil {
+		t.Fatal(err)
+	}
+	cont := got["continuum"]
+	if len(cont["SessionStart"]) != 1 || len(cont["PreInvocation"]) != 1 || len(cont["Stop"]) != 1 {
+		t.Fatalf("hooks.json: %s", mustRead(t, path))
+	}
+	if cont["Stop"][0]["type"] != "command" || !strings.Contains(cont["Stop"][0]["command"].(string), "hook antigravity") {
+		t.Fatalf("unexpected stop handler: %+v", cont["Stop"][0])
+	}
+	if st, _ := Status(tg, "/a/continuum"); st != StateCurrent {
+		t.Fatalf("status %s", st)
+	}
+	if ok, _ := Installed(tg); !ok {
+		t.Fatal("not seen as installed")
+	}
+	if _, err := Uninstall(tg, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("hooks.json Continuum created is still there: %v", err)
+	}
+
+	// Other user-defined named hooks stay untouched and file restores cleanly.
+	orig := "{\n  \"lint-checker\": {\n    \"Stop\": [ { \"type\": \"command\", \"command\": \"./lint.sh\" } ]\n  }\n}\n"
+	os.WriteFile(path, []byte(orig), 0o600)
+	if _, err := Install(tg, "/a/continuum", false); err != nil {
+		t.Fatal(err)
+	}
+	if s := mustRead(t, path); !strings.Contains(s, "lint-checker") || !strings.Contains(s, `"continuum"`) {
+		t.Fatalf("after install:\n%s", s)
+	}
+	if _, err := Uninstall(tg, false); err != nil {
+		t.Fatal(err)
+	}
+	if s := mustRead(t, path); s != orig {
+		t.Fatalf("not restored:\n%s", s)
+	}
+}

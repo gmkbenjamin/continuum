@@ -4,6 +4,40 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-27
+
+### Added
+
+- **Antigravity CLI (`agy`) 3-layer detection.** Continuum now combines three
+  detection sources for Antigravity CLI so they back each other up and merge
+  into a single scheduled resume:
+  - **Lifecycle hooks** in `~/.gemini/config/hooks.json` under the `"continuum"`
+    named hook (`SessionStart`, `PreInvocation`, `Stop`), returning the JSON
+    `{}` response Antigravity requires and ignoring Antigravity 2.0 desktop app
+    and IDE hooks that share the same file.
+  - **Transcript tailing** of
+    `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript.jsonl`
+    as a structured backup (filtering out `GENERIC` tool outputs and recording
+    assistant replies mentioning limits as `reply` events).
+  - **Wrapper PTY and multiplexer screen detection** as fallback, merging with
+    hook/transcript events to upgrade reset times and fuller error messages.
+
+### Fixed
+
+- **Third-party and general quota-reached wording.** Generalized Antigravity's
+  `individual quota reached` pattern and the common quota pattern to match
+  `Third-party quota reached` and other `quota reached` messages (e.g.,
+  `⚠ Third-party quota reached. ... Resets in 2h30m50s.`).
+- **Model-safe early-lift for third-party quotas.** Answering with a Gemini
+  model in another Antigravity session no longer falsely lifts a third-party
+  quota limit early.
+- **Process-scan safety and session status accuracy.** Generalized the
+  ambiguous process-scan guard beyond Codex so closed sessions are never routed
+  into a different live process in the same folder, ensured live wrapped
+  sessions idle past 12 hours still appear in `continuum status`, and stripped
+  `ANTIGRAVITY_*` variables in `CleanEnv` so non-CLI env vars cannot leak into
+  the daemon or resumed children.
+
 ## [0.15.11] - 2026-11-26
 
 ### Fixed
@@ -715,6 +749,7 @@ First public release.
   sign-in errors.
 - Help for every command (`-h`), `doctor`, and docs in `docs/`.
 
+[0.16.0]: ../../releases/tag/v0.16.0
 [0.15.0]: ../../releases/tag/v0.15.0
 [0.14.2]: ../../releases/tag/v0.14.2
 [0.11.0]: ../../releases/tag/v0.11.0

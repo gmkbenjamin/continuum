@@ -743,6 +743,93 @@ func TestAntigravityCompactResetDurationAndReconcileLoadedJobs(t *testing.T) {
 	}
 }
 
+func TestAntigravityMultiLayerFallbackAndMerge(t *testing.T) {
+	h := setup(t)
+	loc := &core.Location{Kind: "wrapper", Target: "w-ag1"}
+
+	// Layer 1 (hook): SessionStart binds conversation ID to wrapper + folder,
+	// then Stop reports a quota error with no reset time (e.g., error code only).
+	h.d.Handle(core.Event{
+		Harness: "antigravity", Kind: core.KindSessionStart, SessionID: "conv-1",
+		Cwd: "/w/continuum", Model: "claude-opus-5-5-high",
+		At: h.now.Add(-time.Minute), Source: "hook:SessionStart", Location: loc,
+	})
+	h.d.Handle(core.Event{
+		Harness: "antigravity", Kind: core.KindUsageLimit, SessionID: "conv-1",
+		Cwd: "/w/continuum", Model: "claude-opus-5-5-high", Message: "RESOURCE_EXHAUSTED",
+		At: h.now, Source: "hook:Stop", Location: loc,
+	})
+	j := h.d.Jobs["antigravity:conv-1"]
+	if j == nil || j.State != core.StatePending || j.ResetKnown {
+		t.Fatalf("expected pending job without reset from hook, got %+v", j)
+	}
+
+	// Layer 3 (wrapper screen fallback) reports the full message with reset duration
+	// 2s later: merged into the same job, upgrading ResetAt and keeping one resume.
+	wantReset := h.now.Add(2*time.Hour + 30*time.Minute + 50*time.Second)
+	h.d.Handle(core.Event{
+		Harness: "antigravity", Kind: core.KindUsageLimit,
+		Message: "⚠ Third-party quota reached. Please switch to Gemini models or upgrade your subscription to increase your limits. Resets in 2h30m50s.",
+		ResetAt: wantReset, At: h.now.Add(2 * time.Second), Source: "wrapper",
+		Location: loc, Cwd: "/w/continuum", Hit: "quota reached",
+	})
+	if len(h.d.Jobs) != 1 {
+		t.Fatalf("expected 1 merged job, got %d: %+v", len(h.d.Jobs), h.d.Jobs)
+	}
+	if !j.ResetKnown || !j.ResetAt.Equal(wantReset) || j.Model != "claude-opus-5-5-high" || j.Location.String() != "wrapper:w-ag1" {
+		t.Fatalf("merged job mismatch: %+v", j)
+	}
+	if !strings.Contains(j.Message, "Third-party quota reached") {
+		t.Fatalf("expected merged message to upgrade from terse code, got %q", j.Message)
+	}
+
+	// Switching another Antigravity session to Gemini must NOT falsely lift a
+	// Third-party quota stall (whether reported via transcript or Stop hook).
+	h.d.Handle(core.Event{
+		Harness: "antigravity", Kind: core.KindActivity, SessionID: "conv-gemini",
+		At: h.now.Add(2 * time.Minute), RequestAt: h.now.Add(90 * time.Second),
+		Model: "gemini-4-neon-high", Source: "transcript",
+	})
+	if !j.LiftedAt.IsZero() || !j.ResetAt.Equal(wantReset) {
+		t.Fatalf("Gemini answer falsely lifted Third-party quota stall: %+v", j)
+	}
+
+	// Unreachable transcript-only stall (e.g. subagent transcript with no hook
+	// session, wrapper, PID or folder) must not create a zombie job.
+	h.d.Handle(core.Event{
+		Harness: "antigravity", Kind: core.KindUsageLimit, SessionID: "subagent-1",
+		Message: "⚠ Third-party quota reached. Resets in 1h0m0s.",
+		ResetAt: h.now.Add(time.Hour), At: h.now.Add(3 * time.Second), Source: "transcript",
+	})
+	if h.d.Jobs["antigravity:subagent-1"] != nil {
+		t.Fatalf("unreachable transcript-only stall created zombie job: %+v", h.d.Jobs["antigravity:subagent-1"])
+	}
+
+	// Layer 2 (transcript backup): when hook didn't fire on Stop, transcript.jsonl
+	// catches the limit and inherits the wrapper Location recorded by SessionStart.
+	h.d.Config.AntigravityData = t.TempDir()
+	h.d.Handle(core.Event{
+		Harness: "antigravity", Kind: core.KindSessionStart, SessionID: "conv-2",
+		Cwd: "/w/continuum", At: h.now, Source: "hook:SessionStart",
+		Location: &core.Location{Kind: "wrapper", Target: "w-ag2"},
+	})
+	tpath := filepath.Join(h.d.Config.AntigravityData, "brain", "conv-2", ".system_generated", "logs", "transcript.jsonl")
+	if err := os.MkdirAll(filepath.Dir(tpath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Baseline scan first so the new error line is treated as fresh.
+	h.d.scanSources()
+	line := `{"step_index":1,"source":"SYSTEM","type":"ERROR_MESSAGE","status":"ERROR","created_at":"` + h.now.Add(5*time.Second).Format(time.RFC3339) + `","content":"⚠ Third-party quota reached. Resets in 1h15m0s."}` + "\n"
+	if err := os.WriteFile(tpath, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.d.scanSources()
+	j2 := h.d.Jobs["antigravity:conv-2"]
+	if j2 == nil || j2.State != core.StatePending || !j2.ResetKnown || j2.Location == nil || j2.Location.Target != "w-ag2" {
+		t.Fatalf("transcript backup did not schedule with wrapper location: %+v", j2)
+	}
+}
+
 // graceStop writes a Claude transcript whose last turn was told the usage
 // limit is reached and finished on Claude Code's grace allowance, ending at
 // end. It returns the transcript's path.

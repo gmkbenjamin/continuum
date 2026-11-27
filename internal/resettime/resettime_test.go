@@ -34,6 +34,7 @@ func TestParse(t *testing.T) {
 		{"codex relative", "You've hit your usage limit. Upgrade to Pro or try again in 2 hours 13 minutes.", ref.Add(2*time.Hour + 13*time.Minute)},
 		{"codex relative days", "You've hit your usage limit. Try again in 3 days 4 hours.", ref.Add(76 * time.Hour)},
 		{"antigravity compact hms", "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 3h32m34s.\nError ID: c14a5727-903a-4050-b53c-86224c0d83e5-364", ref.Add(3*time.Hour + 32*time.Minute + 34*time.Second)},
+		{"antigravity third-party compact hms", "⚠ Third-party quota reached. Please switch to Gemini models or upgrade your subscription to increase your limits. Resets in 2h30m50s.\nError ID: e5d5d5fd-b799-4172-919e-6074518f1049-1", ref.Add(2*time.Hour + 30*time.Minute + 50*time.Second)},
 		{"compact hm", "Quota reached. Resets in 1h5m.", ref.Add(time.Hour + 5*time.Minute)},
 		{"codex date", "You've hit your usage limit. Try again at 12 Nov 2026 9:05 AM.", time.Date(2026, 11, 12, 9, 5, 0, 0, syd)},
 		{"short relative", "Rate limited. Try again in 45s", ref.Add(45 * time.Second)},

@@ -223,7 +223,9 @@ func wrapperMeta(p core.Paths, id string) (harness, cwd string) {
 func tracksSessionIDs(cfg core.Config, hr *rules.Harness, harness string) bool {
 	for _, t := range hooks.Targets(cfg) {
 		if t.Harness == harness {
-			return true
+			if ok, _ := hooks.Installed(t); ok {
+				return true
+			}
 		}
 	}
 	if hr == nil {

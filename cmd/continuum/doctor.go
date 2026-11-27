@@ -33,6 +33,7 @@ var selfTest = []struct {
 	{"claude", "API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}", core.KindTransient, false},
 	{"codex", "You’ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at 5:53 PM.", core.KindUsageLimit, true},
 	{"codex", "You've hit your usage limit. Upgrade to Pro or try again in 2 hours 13 minutes.", core.KindUsageLimit, true},
+	{"antigravity", "⚠ Third-party quota reached. Please switch to Gemini models or upgrade your subscription to increase your limits. Resets in 2h30m50s.", core.KindUsageLimit, true},
 	{"generic", "Rate limit exceeded. Your quota resets in 45 minutes.", core.KindUsageLimit, true},
 }
 
@@ -140,6 +141,8 @@ func cmdDoctor() int {
 			dir = filepath.Join(cfg.ClaudeDir(), "projects")
 		case "codex":
 			dir = filepath.Join(cfg.CodexDir(), "sessions")
+		case "antigravity":
+			dir = filepath.Join(cfg.AntigravityDataDir(), "brain")
 		}
 		if dir != "" {
 			if _, err := os.Stat(dir); err == nil {

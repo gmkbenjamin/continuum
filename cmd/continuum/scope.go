@@ -147,9 +147,17 @@ func knownSessions() []knownSession {
 		// One with a resume pending is checked however long ago it was seen.
 		if h := r.Harness(s.Harness); h != nil && (pending || time.Since(s.LastSeen) < 12*time.Hour) && (h.LiveSessions != nil || len(h.DesktopApps) > 0) {
 			pid := ks.PID
-			if ks.Location != nil && ks.Location.Kind == "wrapper" && !deliver.WrapperAlive(p, ks.Location.Target) {
-				pid = 0
-			} else if pid > 0 {
+			wrapperAlive := false
+			if ks.Location != nil && ks.Location.Kind == "wrapper" {
+				if deliver.WrapperAlive(p, ks.Location.Target) {
+					wrapperAlive = true
+				} else {
+					pid = 0
+					ks.PID = 0
+					ks.Location = nil
+				}
+			}
+			if !wrapperAlive && pid > 0 {
 				if _, name, ok := proc.Info(pid); !ok || !h.IsHarnessProcess(name) {
 					pid = 0
 				}
@@ -158,8 +166,8 @@ func knownSessions() []knownSession {
 			st := live.Default().Lookup(h, live.Query{SessionID: s.SessionID, Cwd: s.Cwd, PID: pid, Bin: bin, Entrypoint: s.Entrypoint,
 				Homes: cfg.Homes()})
 			ks.Open, ks.Checked = st.Open, st.Checked
-			if s.Harness == "codex" && st.Source == "processes" && !st.ProcessMatch {
-				ks.Open = pid > 0 && st.Session != nil && st.Session.PID == pid
+			if st.Source == "processes" && !st.ProcessMatch {
+				ks.Open = wrapperAlive || (pid > 0 && st.Session != nil && st.Session.PID == pid)
 			}
 			if st.ProcessMatch {
 				ks.PID = st.Session.PID

@@ -32,11 +32,13 @@ import (
 )
 
 type offsetsFile struct {
-	Claude *sources.Tailer                `json:"claude"`
-	Codex  *sources.Tailer                `json:"codex"`
-	State  map[string]*sources.CodexState `json:"codex_state"`
+	Claude      *sources.Tailer                `json:"claude"`
+	Codex       *sources.Tailer                `json:"codex"`
+	Antigravity *sources.Tailer                `json:"antigravity,omitempty"`
+	State       map[string]*sources.CodexState `json:"codex_state"`
 	// ClaudeState: transcripts whose last turn is wrapping up after a limit.
-	ClaudeState map[string]*sources.ClaudeState `json:"claude_state,omitempty"`
+	ClaudeState      map[string]*sources.ClaudeState      `json:"claude_state,omitempty"`
+	AntigravityState map[string]*sources.AntigravityState `json:"antigravity_state,omitempty"`
 }
 
 // Daemon holds the scheduler state.
@@ -126,18 +128,27 @@ func New(p core.Paths) (*Daemon, error) {
 	if d.Offsets.Codex == nil {
 		d.Offsets.Codex = sources.NewTailer()
 	}
-	d.Offsets.Claude.InitialBytes, d.Offsets.Codex.InitialBytes = 512*1024, 512*1024
+	if d.Offsets.Antigravity == nil {
+		d.Offsets.Antigravity = sources.NewTailer()
+	}
+	d.Offsets.Claude.InitialBytes, d.Offsets.Codex.InitialBytes, d.Offsets.Antigravity.InitialBytes = 512*1024, 512*1024, 512*1024
 	if d.Offsets.Claude.Offsets == nil {
 		d.Offsets.Claude.Offsets = map[string]int64{}
 	}
 	if d.Offsets.Codex.Offsets == nil {
 		d.Offsets.Codex.Offsets = map[string]int64{}
 	}
+	if d.Offsets.Antigravity.Offsets == nil {
+		d.Offsets.Antigravity.Offsets = map[string]int64{}
+	}
 	if d.Offsets.State == nil {
 		d.Offsets.State = map[string]*sources.CodexState{}
 	}
 	if d.Offsets.ClaudeState == nil {
 		d.Offsets.ClaudeState = map[string]*sources.ClaudeState{}
+	}
+	if d.Offsets.AntigravityState == nil {
+		d.Offsets.AntigravityState = map[string]*sources.AntigravityState{}
 	}
 	return d, nil
 }
@@ -415,6 +426,39 @@ func (d *Daemon) scanSources() {
 			}
 		}
 	}
+	if d.Config.HarnessEnabled("antigravity") {
+		root := filepath.Join(d.Config.AntigravityDataDir(), "brain")
+		for path, lines := range d.Offsets.Antigravity.Scan(root, since, 4) {
+			if filepath.Base(path) != "transcript.jsonl" {
+				continue
+			}
+			st := d.Offsets.AntigravityState[path]
+			if st == nil {
+				st = &sources.AntigravityState{}
+			}
+			evs := sources.ParseAntigravityState(d.Rules, path, lines, st, d.Local)
+			if st.Keep() {
+				d.Offsets.AntigravityState[path] = st
+			} else {
+				delete(d.Offsets.AntigravityState, path)
+			}
+			d.debugf("antigravity transcript %s: %d new lines, %d events%s", filepath.Base(path), len(lines), len(evs), map[bool]string{true: " (first scan: history not acted on)"}[baseline])
+			if baseline {
+				if ev := lastStall(evs, now.Add(-lookBack)); ev != nil {
+					stalled = append(stalled, *ev)
+				}
+				continue
+			}
+			for _, ev := range evs {
+				d.Handle(ev)
+			}
+		}
+		for p := range d.Offsets.AntigravityState {
+			if _, ok := d.Offsets.Antigravity.Offsets[p]; !ok {
+				delete(d.Offsets.AntigravityState, p)
+			}
+		}
+	}
 	for _, ev := range stalled {
 		d.adoptIfOpen(ev)
 	}
@@ -477,6 +521,17 @@ func (d *Daemon) adoptOlderStalls(since time.Time) {
 			}
 		}
 	}
+	if d.Config.HarnessEnabled("antigravity") {
+		root := filepath.Join(d.Config.AntigravityDataDir(), "brain")
+		for path, lines := range sources.NewTailer().Scan(root, from, 4) {
+			if filepath.Base(path) != "transcript.jsonl" || !older(path) {
+				continue
+			}
+			if ev := lastStall(sources.ParseAntigravity(d.Rules, path, lines, d.Local), from); ev != nil {
+				d.adoptIfOpen(*ev)
+			}
+		}
+	}
 }
 
 // stillOnLimit: the session of an old stall is open right now and hasn't moved
@@ -500,9 +555,24 @@ func (d *Daemon) adoptIfOpen(ev core.Event) {
 	if d.LiveFn == nil {
 		return
 	}
+	if sess := d.Sessions[store.SessionKey(ev.Harness, ev.SessionID)]; sess != nil && !sess.Ended {
+		if ev.Cwd == "" {
+			ev.Cwd = sess.Cwd
+		}
+		if ev.PID == 0 {
+			ev.PID = sess.PID
+		}
+		if ev.Location == nil && sess.Location != nil {
+			ev.Location = sess.Location
+		}
+	}
 	probe := &core.Job{Harness: ev.Harness, SessionID: ev.SessionID, Cwd: ev.Cwd, PID: ev.PID, Entrypoint: ev.Entrypoint}
 	st := d.LiveFn(probe)
-	if st == nil || !st.Open || st.MovedOn {
+	open := st != nil && st.Open && !st.MovedOn
+	if !open && ev.Location != nil && ev.Location.Kind == "wrapper" && deliver.WrapperAlive(d.Paths, ev.Location.Target) {
+		open = true
+	}
+	if !open {
 		return
 	}
 	d.logf("%s:%s is open and stalled since %s: adopting it", ev.Harness, ev.SessionID, ev.At.Local().Format("15:04"))
@@ -909,8 +979,16 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 	// Where the session runs, as its hooks recorded it: a transcript or
 	// rollout line doesn't say, and without it a wrapper's job could be
 	// matched to another session in the same folder.
-	if ev.Location == nil && sess != nil && sess.Location != nil && !sess.Ended {
-		ev.Location = sess.Location
+	if sess != nil && !sess.Ended {
+		if ev.Location == nil && sess.Location != nil {
+			ev.Location = sess.Location
+		}
+		if ev.Cwd == "" && sess.Cwd != "" {
+			ev.Cwd = sess.Cwd
+		}
+		if ev.PID == 0 && sess.PID > 0 {
+			ev.PID = sess.PID
+		}
 	}
 	j := d.Jobs[key]
 	if twin := d.findTwin(ev, key); twin != nil {
@@ -934,6 +1012,14 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 			d.Jobs[key] = twin
 		}
 		d.merge(twin, ev)
+		return
+	}
+	if j == nil && ev.Kind != core.KindNeverResume && ev.Location == nil && ev.PID == 0 && ev.Cwd == "" &&
+		d.Rules != nil && len(d.Rules.Harness(ev.Harness).NativeCommands) == 0 {
+		// An agent without headless resume commands cannot be resumed from a
+		// transcript-only event that has no known wrapper, pane, PID or folder
+		// (e.g. a subagent transcript or a session started without hooks).
+		d.debugf("%s: ignoring %s from %s with no reachable session route", key, ev.Kind, ev.Source)
 		return
 	}
 	if j != nil {
@@ -1160,14 +1246,19 @@ func (d *Daemon) merge(j *core.Job, ev core.Event) {
 	}
 	// A report of the stall read after its limit was lifted early names the
 	// reset it was lifted from: it doesn't put the resume back.
+	resetUpgraded := false
 	if !ev.ResetAt.IsZero() && (!j.ResetKnown || ev.ResetAt.After(j.ResetAt)) && (j.LiftedAt.IsZero() || ev.At.After(j.LiftedAt)) {
 		j.ResetAt, j.ResetKnown = ev.ResetAt, true
+		resetUpgraded = true
 	}
-	if j.Message == "" {
+	if ev.Message != "" && (j.Message == "" || resetUpgraded) {
 		j.Message = ev.Message
 	}
 	if j.LimitID == "" {
 		j.LimitID = ev.LimitID
+	}
+	if j.Model == "" {
+		j.Model = ev.Model
 	}
 	j.UpdatedAt = d.Now()
 	d.dirty = true
@@ -1368,6 +1459,8 @@ func (d *Daemon) sessionActiveSince(j *core.Job) bool {
 	case "codex":
 		st := &sources.CodexState{SessionID: j.SessionID}
 		evs = sources.ParseCodex(d.Rules, j.TranscriptPath, lines, st, d.Local)
+	case "antigravity":
+		evs = sources.ParseAntigravity(d.Rules, j.TranscriptPath, lines, d.Local)
 	}
 	for _, ev := range evs {
 		if ev.Kind == core.KindActivity && ev.At.After(j.LimitAt.Add(time.Second)) {
@@ -1436,7 +1529,7 @@ func (d *Daemon) runJob(j *core.Job) {
 		// That wait is over (the copy closed, or is in use now).
 		j.StaleCopyPID, j.WaitingOpen, j.WaitingSince = 0, false, time.Time{}
 	}
-	ambiguousProcess := j.Harness == "codex" && st != nil && st.Source == "processes" && !st.ProcessMatch
+	ambiguousProcess := st != nil && st.Source == "processes" && !st.ProcessMatch
 	if st != nil {
 		s := st.Session
 		switch {

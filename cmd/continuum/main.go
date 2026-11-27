@@ -64,9 +64,15 @@ func main() {
 	switch cmd {
 	case "hook":
 		// Must stay fast and silent, and always succeed.
+		// Antigravity hooks require a JSON object on stdout.
 		if len(args) > 0 {
-			hooks.Handle(args[0], os.Stdin, os.Environ())
-			ensureDaemon()
+			handled := hooks.Handle(args[0], os.Stdin, os.Environ())
+			if args[0] == "antigravity" {
+				fmt.Println("{}")
+			}
+			if handled {
+				ensureDaemon()
+			}
 		}
 		os.Exit(0)
 	case "run":
@@ -580,7 +586,7 @@ func cmdStatus(args []string) error {
 		if !ok {
 			state = "not installed (" + detail + ")"
 		}
-		fmt.Printf("  %-11s hooks %s\n", t.Harness+":", state)
+		fmt.Printf("  %-12s hooks %s\n", t.Harness+":", state)
 	}
 	if cfg.DryRun {
 		fmt.Println("  dry run:    on (nothing is typed or run)")
@@ -890,6 +896,8 @@ func printAgentTable(r *rules.Rules) {
 			by = append(by, "hooks", "transcripts", "session list")
 		case "codex":
 			by = append(by, "hooks", "rollout files", "process scan")
+		case "antigravity":
+			by = append(by, "hooks", "transcripts")
 		case "grok", "muse":
 			by = append(by, "hooks", "session list")
 		case "cursor":

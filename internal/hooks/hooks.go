@@ -48,33 +48,88 @@ type Input struct {
 	// Model: the model of the turn (Cursor sends it on beforeSubmitPrompt
 	// and afterAgentResponse).
 	Model string `json:"model"`
+	// Antigravity CLI: camelCase protojson fields.
+	HookEventNameCamel        string   `json:"hookEventName"`
+	ConversationIDCamel       string   `json:"conversationId"`
+	TranscriptPathCamel       string   `json:"transcriptPath"`
+	WorkspacePaths            []string `json:"workspacePaths"`
+	ModelName                 string   `json:"modelName"`
+	TerminationReason         string   `json:"terminationReason"`
+	ErrorDetailsCamel         string   `json:"errorDetails"`
+	ErrorMessageCamel         string   `json:"errorMessage"`
+	LastAssistantMessageCamel string   `json:"lastAssistantMessage"`
 }
 
 func rawString(raw json.RawMessage) string {
+	code, msg := rawErrorParts(raw)
+	if code != "" {
+		return code
+	}
+	return msg
+}
+
+func rawErrorParts(raw json.RawMessage) (code, msg string) {
+	if len(raw) == 0 {
+		return "", ""
+	}
 	var s string
 	if json.Unmarshal(raw, &s) == nil {
-		return s
+		return strings.TrimSpace(s), ""
 	}
 	var m map[string]any
 	if json.Unmarshal(raw, &m) == nil {
 		for _, k := range []string{"type", "code", "error"} {
-			if v, ok := m[k].(string); ok {
-				return v
+			if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
+				code = strings.TrimSpace(v)
+				break
+			}
+		}
+		for _, k := range []string{"message", "userErrorMessage", "user_message", "details"} {
+			if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
+				msg = strings.TrimSpace(v)
+				break
 			}
 		}
 	}
-	return ""
+	return code, msg
 }
 
 // BuildEvent turns a hook payload plus the hook's environment into an event.
 // ok is false when the hook carries nothing Continuum needs.
 func BuildEvent(r *rules.Rules, harness string, in Input, env map[string]string, now time.Time) (core.Event, bool) {
 	h := r.Harness(harness)
+	if in.HookEventName == "" {
+		in.HookEventName = in.HookEventNameCamel
+	}
 	if in.SessionID == "" {
 		in.SessionID = in.ConversationID
 	}
+	if in.SessionID == "" {
+		in.SessionID = in.ConversationIDCamel
+	}
+	if in.SessionID == "" && harness == "antigravity" && env != nil {
+		in.SessionID = env["ANTIGRAVITY_CONVERSATION_ID"]
+	}
+	if in.TranscriptPath == "" {
+		in.TranscriptPath = in.TranscriptPathCamel
+	}
 	if in.Cwd == "" && len(in.WorkspaceRoots) > 0 {
 		in.Cwd = in.WorkspaceRoots[0]
+	}
+	if in.Cwd == "" && len(in.WorkspacePaths) > 0 {
+		in.Cwd = in.WorkspacePaths[0]
+	}
+	if in.Model == "" {
+		in.Model = in.ModelName
+	}
+	if in.ErrorDetails == "" {
+		in.ErrorDetails = in.ErrorDetailsCamel
+	}
+	if in.ErrorDetails == "" {
+		in.ErrorDetails = in.ErrorMessageCamel
+	}
+	if in.LastAssistantMessage == "" {
+		in.LastAssistantMessage = in.LastAssistantMessageCamel
 	}
 	ev := core.Event{
 		Harness: harness, SessionID: in.SessionID, Cwd: in.Cwd, TranscriptPath: in.TranscriptPath,
@@ -101,7 +156,8 @@ func BuildEvent(r *rules.Rules, harness string, in Input, env map[string]string,
 	switch strings.ToLower(in.HookEventName) {
 	case "sessionstart":
 		ev.Kind = core.KindSessionStart
-	case "userpromptsubmit", "beforesubmitprompt":
+		ev.Model = in.Model
+	case "userpromptsubmit", "beforesubmitprompt", "preinvocation":
 		// A turn starts: its requests go out no earlier than now.
 		ev.Kind = core.KindActivity
 		ev.TurnStart = true
@@ -139,6 +195,68 @@ func BuildEvent(r *rules.Rules, harness string, in Input, env map[string]string,
 			}
 		}
 	case "stop", "afteragentresponse":
+		if harness == "antigravity" {
+			errCode, errMsg := rawErrorParts(in.Error)
+			var errParts []string
+			for _, p := range []string{errCode, errMsg, strings.TrimSpace(in.ErrorDetails)} {
+				if p != "" {
+					errParts = append(errParts, p)
+				}
+			}
+			errText := strings.Join(errParts, "\n")
+			if strings.EqualFold(in.TerminationReason, "ERROR") || errText != "" {
+				switch {
+				case errText != "" && h.NeverResume(errText):
+					ev.Kind = core.KindNeverResume
+				case errText != "":
+					if m := h.Classify(errText, 8); m != nil {
+						ev.Kind = m.Kind
+					} else if errCode != "" {
+						if k, ok := h.StopFailureKinds[strings.ToLower(errCode)]; ok {
+							ev.Kind = k
+						} else {
+							ev.Kind = core.KindTurnFailed
+						}
+					} else {
+						ev.Kind = core.KindTurnFailed
+					}
+				default:
+					// Stopped on an error with no details: let the transcript
+					// tailer or wrapper screen classify it.
+					return ev, false
+				}
+				ev.Message = errText
+				ev.Model = in.Model
+				if ev.Kind == core.KindUsageLimit {
+					if t, ok := resettime.Parse(errText, now, time.Local); ok {
+						ev.ResetAt = t
+					}
+				}
+				break
+			}
+			switch strings.ToUpper(strings.TrimSpace(in.TerminationReason)) {
+			case "NO_TOOL_CALL", "COMPLETED", "END_TURN", "STOP", "DONE":
+				reply := clip(in.LastAssistantMessage, 8000)
+				if reply != "" && h.Classify(reply, strings.Count(reply, "\n")+1) != nil {
+					ev.Kind = core.KindReply
+					ev.Message = reply
+					ev.Model = in.Model
+				} else {
+					ev.Kind = core.KindActivity
+					ev.Model = in.Model
+					ev.Answered = h.StopHookAnswers
+				}
+			case "USER_CANCELED":
+				ev.Kind = core.KindActivity
+				ev.Model = in.Model
+			default:
+				// Other non-normal termination reasons (MAX_INVOCATIONS,
+				// TERMINAL_CUSTOM_HOOK, unknown) neither prove a model answer
+				// nor clear a stall on their own.
+				return ev, false
+			}
+			break
+		}
 		if strings.EqualFold(in.Status, "error") {
 			// Cursor ended the turn on an error but doesn't say which: the
 			// screen tells whether it is a limit. Reporting it as activity
@@ -354,28 +472,33 @@ func findAncestor(h *rules.Harness) int {
 }
 
 // Handle is the body of `continuum hook <harness>`. It never returns an error
-// to the agent and prints nothing (some hooks feed stdout to the model).
+// to the agent and prints nothing (some hooks feed stdout to the model). It
+// reports whether an event was accepted and spooled.
 //
 // The agent waits for it, before every prompt and at the end of every turn,
 // so it starts no program: what it needs about processes (the hook's
 // ancestors, an agent's arguments and environment) is read from the kernel.
 // Running ps took over 10 seconds on a busy or monitored computer.
-func Handle(harness string, stdin io.Reader, environ []string) {
+func Handle(harness string, stdin io.Reader, environ []string) bool {
 	defer func() { _ = recover() }()
 	p := core.GetPaths()
 	if err := p.Ensure(); err != nil {
-		return
+		return false
 	}
 	ppid, at := os.Getppid(), time.Now()
 	data, _ := io.ReadAll(io.LimitReader(stdin, 4<<20))
 	var in Input
 	if json.Unmarshal(data, &in) != nil {
 		debugHook(p, harness, "payload is not JSON; ignored")
-		return
+		return false
+	}
+	eventName := in.HookEventName
+	if eventName == "" {
+		eventName = in.HookEventNameCamel
 	}
 	r, _ := rules.Cached(p.Rules)
 	if r == nil {
-		return
+		return false
 	}
 	env := mux.EnvMap(environ)
 	tree := ProcTree()
@@ -386,7 +509,7 @@ func Handle(harness string, stdin io.Reader, environ []string) {
 		if a := nearestAgent(r, tree, ppid); a == "" || a == other {
 			if hasOwnHook(other) {
 				debugHook(p, harness, "run by "+other+", which runs Continuum's own "+other+" hook too; ignored")
-				return
+				return false
 			}
 			debugHook(p, harness, "run by "+other+"; reporting it as "+other)
 			harness = other
@@ -394,8 +517,8 @@ func Handle(harness string, stdin io.Reader, environ []string) {
 	}
 	ev, ok := BuildEvent(r, harness, in, env, at)
 	if !ok {
-		debugHook(p, harness, in.HookEventName+": nothing to report")
-		return
+		debugHook(p, harness, eventName+": nothing to report")
+		return false
 	}
 	// (Claude Code's hooks normally give CLAUDE_PID; this fills in when not.)
 	if ev.PID == 0 && listsProcesses(r.Harness(harness)) {
@@ -418,37 +541,76 @@ func Handle(harness string, stdin io.Reader, environ []string) {
 			ev.Location, ev.PID = nil, 0
 		}
 	}
-	if h := r.Harness(harness); h.HookRequiresCLI && len(tree) > 0 {
-		if a, _ := NearestAgent(r, tree, ppid); a != harness {
-			// Another program read this agent's hook file (the Cursor
-			// editor reads ~/.cursor/hooks.json, as does Grok Build): its
-			// events are not this CLI's sessions.
-			debugHook(p, harness, in.HookEventName+": not run by its command-line agent; ignored")
-			return
+	if h := r.Harness(harness); h.HookRequiresCLI {
+		if harness == "antigravity" {
+			if !isAntigravityCLI(in, env, r, tree, ppid) {
+				debugHook(p, harness, eventName+": not run by Antigravity CLI; ignored")
+				return false
+			}
+		} else if len(tree) > 0 {
+			if a, _ := NearestAgent(r, tree, ppid); a != harness {
+				// Another program read this agent's hook file (the Cursor
+				// editor reads ~/.cursor/hooks.json, as does Grok Build): its
+				// events are not this CLI's sessions.
+				debugHook(p, harness, eventName+": not run by its command-line agent; ignored")
+				return false
+			}
 		}
 	}
 	if !interactive(r, harness, tree, ppid) {
 		// Print mode or a headless subcommand (`grok -p`, `muse exec`,
 		// `agent -p`): nobody types into it.
-		debugHook(p, harness, in.HookEventName+": not an interactive session; ignored")
-		return
+		debugHook(p, harness, eventName+": not an interactive session; ignored")
+		return false
 	}
 	if nested(r, tree, ppid) {
 		// An agent another agent started (a `claude -p` from a Bash tool,
 		// a script): it inherited its parent's pane or wrapper, and nobody
 		// types into it.
-		debugHook(p, harness, in.HookEventName+": started by another agent; ignored")
-		return
+		debugHook(p, harness, eventName+": started by another agent; ignored")
+		return false
 	}
-	debugHook(p, harness, fmt.Sprintf("%s: %s session=%s where=%s", in.HookEventName, ev.Kind, ev.SessionID, ev.Location.String()))
+	debugHook(p, harness, fmt.Sprintf("%s: %s session=%s where=%s", eventName, ev.Kind, ev.SessionID, ev.Location.String()))
 	if ev.Kind == core.KindActivity {
 		// Routine notes are only useful to a running daemon; never let them
 		// pile up when it is switched off.
 		if entries, err := os.ReadDir(p.Spool); err == nil && len(entries) > 500 {
-			return
+			return false
 		}
 	}
 	_ = core.SpoolEvent(p, ev)
+	return true
+}
+
+// isAntigravityCLI reports whether a hook from ~/.gemini/config/hooks.json was
+// run by the Antigravity CLI (`agy`) rather than Antigravity 2.0 or the IDE.
+func isAntigravityCLI(in Input, env map[string]string, r *rules.Rules, tree map[int]proc.Node, ppid int) bool {
+	tp := filepath.ToSlash(in.TranscriptPath)
+	if tp == "" {
+		tp = filepath.ToSlash(in.TranscriptPathCamel)
+	}
+	appDir := env["ANTIGRAVITY_APP_DATA_DIR"]
+	lsVer := env["ANTIGRAVITY_LS_VERSION"]
+	if tp != "" && !strings.Contains(tp, "/antigravity-cli/") &&
+		(strings.Contains(tp, "/antigravity/") || strings.Contains(tp, "/antigravity-ide/")) {
+		return false
+	}
+	if appDir != "" && !core.IsAntigravityCLIDataDir(appDir, lsVer) {
+		return false
+	}
+	if lv := strings.ToLower(lsVer); lv != "" && !strings.HasPrefix(lv, "cli-") {
+		return false
+	}
+	if env["CONTINUUM_WRAPPER_ID"] != "" ||
+		strings.Contains(tp, "/antigravity-cli/") ||
+		strings.HasPrefix(strings.ToLower(lsVer), "cli-") {
+		return true
+	}
+	if len(tree) == 0 {
+		return true
+	}
+	a, _ := NearestAgent(r, tree, ppid)
+	return a == "antigravity"
 }
 
 // ProcEnviron reads a process's environment. Tests replace it.
@@ -541,11 +703,23 @@ type Target struct {
 	// run on every prompt, where a line flashing by each time is noise.
 	Quiet []string
 	// Flat: each event lists hook entries directly ({"command": ...}), as
-	// Cursor's hooks.json does, instead of Claude Code's groups of hooks.
+	// Cursor's and Antigravity's hooks.json do, instead of Claude Code's
+	// groups of hooks.
 	Flat bool
+	// RootKey is the top-level JSON key holding the events map (default
+	// "hooks"; Antigravity's hooks.json keys entries by hook name, e.g.
+	// "continuum").
+	RootKey string
 	// Init: top-level keys the agent requires in the file, added when
 	// missing (Cursor's "version", Muse Code's "schema_version").
 	Init []KeyValue
+}
+
+func (t Target) rootKey() string {
+	if t.RootKey != "" {
+		return t.RootKey
+	}
+	return "hooks"
 }
 
 // KeyValue is one top-level setting.
@@ -577,6 +751,9 @@ func Targets(c core.Config) []Target {
 		// status message in its format).
 		{Harness: "cursor", Path: filepath.Join(c.CursorDir(), "hooks.json"), Events: []string{"sessionStart", "beforeSubmitPrompt", "afterAgentResponse", "stop", "sessionEnd"}, Flat: true,
 			Init: []KeyValue{{"version", json.Number("1")}}},
+		// Antigravity CLI: ~/.gemini/config/hooks.json, named hook object
+		// with flat command entries that must return a JSON object on stdout.
+		{Harness: "antigravity", Path: filepath.Join(c.AntigravityConfigDir(), "hooks.json"), RootKey: "continuum", Events: []string{"SessionStart", "PreInvocation", "Stop"}, Timeout: 10, Flat: true},
 	}
 }
 
@@ -596,9 +773,16 @@ func quote(path string) string {
 // hook error: the hook just does nothing.
 func Command(bin, harness string) string {
 	if runtime.GOOS == "windows" {
+		if harness == "antigravity" {
+			return quote(bin) + " hook " + harness + " 2>NUL || echo {}"
+		}
 		return quote(bin) + " hook " + harness
 	}
-	inner := `"` + shDoubleQuoteEscape(bin) + `" hook ` + harness + ` 2>/dev/null || true`
+	fallback := "true"
+	if harness == "antigravity" {
+		fallback = `printf "{}\n"`
+	}
+	inner := `"` + shDoubleQuoteEscape(bin) + `" hook ` + harness + ` 2>/dev/null || ` + fallback
 	return "/bin/sh -c '" + strings.ReplaceAll(inner, "'", `'\''`) + "'"
 }
 
@@ -621,11 +805,12 @@ func Install(t Target, bin string, dryRun bool) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	hooksV, _ := root.get("hooks")
+	rk := t.rootKey()
+	hooksV, _ := root.get(rk)
 	hooksObj, ok := hooksV.(*object)
 	if !ok {
 		if hooksV != nil {
-			return false, fmt.Errorf("%s: \"hooks\" is not an object; not touching it", t.Path)
+			return false, fmt.Errorf("%s: %q is not an object; not touching it", t.Path, rk)
 		}
 		hooksObj = newObject()
 		if len(strings.TrimSpace(string(original))) == 0 {
@@ -635,7 +820,7 @@ func Install(t Target, bin string, dryRun bool) (bool, error) {
 				root.set(kv.Key, kv.Value)
 			}
 		}
-		root.set("hooks", hooksObj)
+		root.set(rk, hooksObj)
 	}
 	want := Command(bin, t.Harness)
 	// Drop Continuum hooks from events this version no longer uses.
@@ -661,7 +846,13 @@ func Install(t Target, bin string, dryRun bool) (bool, error) {
 		list = removeOurs(list)
 		entry := newObject()
 		if t.Flat {
+			if t.Timeout > 0 {
+				entry.set("type", "command")
+			}
 			entry.set("command", want)
+			if t.Timeout > 0 {
+				entry.set("timeout", json.Number(strconv.Itoa(t.Timeout)))
+			}
 			list = append(list, entry)
 			hooksObj.set(event, list)
 			continue
@@ -689,11 +880,12 @@ func Uninstall(t Target, dryRun bool) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	hooksV, _ := root.get("hooks")
+	rk := t.rootKey()
+	hooksV, _ := root.get(rk)
 	if _, ok := hooksV.(*object); !ok {
 		return false, nil
 	}
-	stripOurs(root)
+	stripOurs(root, rk)
 	out, err := pretty(root)
 	if err != nil {
 		return false, err
@@ -701,7 +893,7 @@ func Uninstall(t Target, dryRun bool) (bool, error) {
 	// Give the file back exactly as it was: if what is left matches a
 	// backup Continuum took before changing it, use that backup's bytes
 	// (same formatting, key order and whitespace).
-	if b := matchingBackup(t.Path, out); b != nil {
+	if b := matchingBackup(t.Path, out, rk); b != nil {
 		out = b
 	} else if onlyInit(root, t) && onlyOursBackups(t) {
 		// Continuum created this file (any backups came only from updates to
@@ -726,7 +918,7 @@ func Uninstall(t Target, dryRun bool) (bool, error) {
 
 // matchingBackup returns the bytes of the most recent backup whose content
 // equals want (as JSON), or nil.
-func matchingBackup(path string, want []byte) []byte {
+func matchingBackup(path string, want []byte, rootKey string) []byte {
 	var w any
 	d := json.NewDecoder(strings.NewReader(string(want)))
 	d.UseNumber()
@@ -744,22 +936,22 @@ func matchingBackup(path string, want []byte) []byte {
 		bd.UseNumber()
 		// An empty "hooks" the file had is dropped with Continuum's: the
 		// same file.
-		if bd.Decode(&b) == nil && reflect.DeepEqual(withoutEmptyHooks(w), withoutEmptyHooks(b)) {
+		if bd.Decode(&b) == nil && reflect.DeepEqual(withoutEmptyHooks(w, rootKey), withoutEmptyHooks(b, rootKey)) {
 			return data
 		}
 	}
 	return nil
 }
 
-func withoutEmptyHooks(v any) any {
+func withoutEmptyHooks(v any, rootKey string) any {
 	m, ok := v.(map[string]any)
 	if !ok {
 		return v
 	}
-	if h, ok := m["hooks"].(map[string]any); ok && len(h) == 0 {
+	if h, ok := m[rootKey].(map[string]any); ok && len(h) == 0 {
 		c := make(map[string]any, len(m))
 		for k, x := range m {
-			if k != "hooks" {
+			if k != rootKey {
 				c[k] = x
 			}
 		}
@@ -805,7 +997,7 @@ func Status(t Target, bin string) (string, string) {
 	if err != nil {
 		return StateMissing, err.Error()
 	}
-	hooksObj, _ := func() (*object, bool) { v, _ := root.get("hooks"); o, ok := v.(*object); return o, ok }()
+	hooksObj, _ := func() (*object, bool) { v, _ := root.get(t.rootKey()); o, ok := v.(*object); return o, ok }()
 	if hooksObj == nil {
 		return StateMissing, "no hooks"
 	}
@@ -844,10 +1036,19 @@ func Status(t Target, bin string) (string, string) {
 	return StateOutdated, "from an older Continuum or another location"
 }
 
-// hasStatusMessage: hk carries the status message Install writes for t, so
-// installs from before Continuum named its hooks count as outdated.
+// hasStatusMessage: hk carries the expected metadata Install writes for t, so
+// installs from before Continuum named its hooks (or updated flat handler
+// fields) count as outdated.
 func hasStatusMessage(hk *object, t Target, event string) bool {
 	if t.Flat {
+		if t.Timeout > 0 {
+			tv, _ := hk.get("type")
+			ts, _ := tv.(string)
+			tmo, _ := hk.get("timeout")
+			if ts != "command" || fmt.Sprint(tmo) != strconv.Itoa(t.Timeout) {
+				return false
+			}
+		}
 		return true
 	}
 	v, _ := hk.get("statusMessage")
@@ -875,7 +1076,7 @@ func Installed(t Target) (bool, string) {
 	if err != nil {
 		return false, err.Error()
 	}
-	hooksV, _ := root.get("hooks")
+	hooksV, _ := root.get(t.rootKey())
 	hooksObj, ok := hooksV.(*object)
 	if !ok {
 		return false, "no hooks"
@@ -924,8 +1125,8 @@ func hooksOf(g any) []*object {
 	return out
 }
 
-func stripOurs(root *object) int {
-	hooksV, _ := root.get("hooks")
+func stripOurs(root *object, rootKey string) int {
+	hooksV, _ := root.get(rootKey)
 	hooksObj, ok := hooksV.(*object)
 	if !ok {
 		return 0
@@ -946,7 +1147,7 @@ func stripOurs(root *object) int {
 		}
 	}
 	if len(hooksObj.keys) == 0 {
-		root.del("hooks")
+		root.del(rootKey)
 	}
 	return removed
 }
@@ -969,12 +1170,13 @@ func onlyInit(root *object, t Target) bool {
 }
 
 func onlyOursBackups(t Target) bool {
+	rk := t.rootKey()
 	for _, b := range Backups(t.Path) {
 		root, _, err := load(b)
 		if err != nil {
 			return false
 		}
-		if stripOurs(root) == 0 || !onlyInit(root, t) {
+		if stripOurs(root, rk) == 0 || !onlyInit(root, t) {
 			return false
 		}
 	}

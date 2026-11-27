@@ -13,7 +13,7 @@
     "tail_lines": 40,
     "common_patterns": [
       {"kind": "usage_limit", "regex": "(?i)(?:usage|rate|quota|request|token)\\s+limit\\s+(?:has\\s+been\\s+|was\\s+)?(?:reached|exceeded|hit)"},
-      {"kind": "usage_limit", "regex": "(?i)\\bquota\\s+(?:has\\s+been\\s+)?(?:exceeded|exhausted)"},
+      {"kind": "usage_limit", "regex": "(?i)\\bquota\\s+(?:has\\s+been\\s+|was\\s+)?(?:reached|exceeded|exhausted)"},
       {"kind": "usage_limit", "regex": "(?i)exhausted\\s+(?:your|the)\\s+(?:daily\\s+|monthly\\s+|weekly\\s+)?(?:quota|limit|usage)"},
       {"kind": "usage_limit", "regex": "(?i)\\bRESOURCE_EXHAUSTED\\b"},
       {"kind": "usage_limit", "regex": "(?i)you[’']?ve\\s+(?:hit|reached|used\\s+up)\\s+(?:your|the)\\s+(?:[a-z0-9 -]{0,30}\\s+)?(?:limit|quota|allowance)"},
@@ -338,15 +338,30 @@
     },
 
     "antigravity": {
+      "stop_hook_answers": true,
       "display_name": "Antigravity CLI",
       "homepage": "https://antigravity.google",
       "binary": "agy",
       "process_names": ["agy"],
       "session_env": ["ANTIGRAVITY_CONVERSATION_ID"],
+      "_hook_requires_cli": "Antigravity CLI, Antigravity 2.0 and the Antigravity IDE all read ~/.gemini/config/hooks.json; only CLI runs count.",
+      "hook_requires_cli": true,
+      "stop_failure_kinds": {
+        "rate_limit": "usage_limit",
+        "rate_limited": "usage_limit",
+        "resource_exhausted": "usage_limit",
+        "quota_exhausted": "usage_limit",
+        "quota_reached": "usage_limit",
+        "model_capacity_exhausted": "transient",
+        "prefill_queue_overloaded": "transient",
+        "overloaded": "transient",
+        "server_error": "transient",
+        "unavailable": "transient"
+      },
       "use_common_patterns": true,
       "patterns": [
         {"kind": "usage_limit", "regex": "(?i)you\\s+have\\s+exhausted\\s+your\\s+quota"},
-        {"kind": "usage_limit", "regex": "(?i)individual\\s+quota\\s+reached"},
+        {"kind": "usage_limit", "regex": "(?i)\\bquota\\s+reached\\b"},
         {"kind": "usage_limit", "regex": "(?i)\\bquota\\s+exhausted\\b"},
         {"kind": "transient", "regex": "\\bMODEL_CAPACITY_EXHAUSTED\\b"},
         {"kind": "transient", "regex": "(?i)overloaded\\s+prefill\\s+queue|\\bPREFILL_QUEUE_OVERLOADED\\b"}

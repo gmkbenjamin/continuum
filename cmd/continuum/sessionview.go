@@ -89,18 +89,17 @@ func sessionRows(window time.Duration) []sessionRow {
 			rows = append(rows, cr)
 		}
 	}
-	return append(rows, wrapperRows(p, cfg, r, sc, msgs, jobs, known, now)...)
+	return append(rows, wrapperRows(p, cfg, r, sc, msgs, jobs, rows, now)...)
 }
 
-// wrapperRows lists agents running in Continuum's wrapper that no session
-// list knows of (agents without one: Antigravity, Cursor, Gemini, ...).
-func wrapperRows(p core.Paths, cfg core.Config, r *rules.Rules, sc scope.Scope, msgs *messages.Messages, jobs map[string]*core.Job, known []knownSession, now time.Time) []sessionRow {
+// wrapperRows lists agents running in Continuum's wrapper that no listed
+// session already covers (agents without one: Gemini, or sessions idle past
+// the knownSessions window).
+func wrapperRows(p core.Paths, cfg core.Config, r *rules.Rules, sc scope.Scope, msgs *messages.Messages, jobs map[string]*core.Job, listed []sessionRow, now time.Time) []sessionRow {
 	seen := map[string]bool{}
-	for _, s := range known {
-		for _, k := range append([]knownSession{s}, s.Copies...) {
-			if k.Location != nil && k.Location.Kind == "wrapper" {
-				seen[k.Location.Target] = true
-			}
+	for _, row := range listed {
+		if row.Wrapper != "" {
+			seen[row.Wrapper] = true
 		}
 	}
 	entries, _ := os.ReadDir(p.Wrappers)

@@ -13,6 +13,7 @@ import (
 
 	"github.com/continuum-dev/continuum/internal/core"
 	"github.com/continuum-dev/continuum/internal/daemon"
+	"github.com/continuum-dev/continuum/internal/hooks"
 	"github.com/continuum-dev/continuum/internal/messages"
 	"github.com/continuum-dev/continuum/internal/proc"
 	"github.com/continuum-dev/continuum/internal/rules"
@@ -200,8 +201,9 @@ func TestThisSessionEnvFillsCwdAndAntigravityWrapper(t *testing.T) {
 		t.Fatalf("got %+v err=%v", h, err)
 	}
 
-	// Antigravity inside continuum's wrapper sets ANTIGRAVITY_CONVERSATION_ID
-	// but is tracked by wrapper ID because it sends no hooks/transcripts.
+	// Antigravity inside continuum's wrapper without hooks installed falls back
+	// to its wrapper ID so `exclude this` / `message set --session this` match
+	// wrapper-only jobs.
 	wdir := filepath.Join(p.Wrappers, "w-ag")
 	os.MkdirAll(wdir, 0o700)
 	os.WriteFile(filepath.Join(wdir, "pid"), []byte(strconv.Itoa(os.Getpid())), 0o600)
@@ -213,10 +215,31 @@ func TestThisSessionEnvFillsCwdAndAntigravityWrapper(t *testing.T) {
 	}, "bash", "antigravity", "zsh")
 	h, err = thisSession()
 	if err != nil || h.Harness != "antigravity" || h.Wrapper != "w-ag" || h.ID != "" || h.Cwd != "/work/ag" {
-		t.Fatalf("wrapped antigravity got %+v err=%v", h, err)
+		t.Fatalf("wrapped antigravity without hooks got %+v err=%v", h, err)
 	}
 	if h.selector() != "antigravity@wrapper:w-ag" || h.entry().Wrapper != "w-ag" {
 		t.Fatalf("selector=%q entry=%+v", h.selector(), h.entry())
+	}
+
+	// Once Antigravity hooks are installed, both conversation ID and wrapper ID
+	// are tracked.
+	cfg, _ := core.LoadConfig(p.Config)
+	for _, tg := range hooks.Targets(cfg) {
+		if tg.Harness == "antigravity" {
+			if _, err := hooks.Install(tg, "/bin/continuum", false); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	h, err = thisSession()
+	if err != nil || h.Harness != "antigravity" || h.Wrapper != "w-ag" || h.ID != "conv-999" || h.Cwd != "/work/ag" {
+		t.Fatalf("wrapped antigravity with hooks got %+v err=%v", h, err)
+	}
+	if h.selector() != "antigravity:conv-999" || h.entry().Session != "conv-999" {
+		t.Fatalf("selector=%q entry=%+v", h.selector(), h.entry())
+	}
+	if len(h.entries()) != 2 || h.entries()[1].Wrapper != "w-ag" {
+		t.Fatalf("entries=%+v, want session and wrapper", h.entries())
 	}
 }
 

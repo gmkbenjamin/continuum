@@ -80,6 +80,14 @@ wrapper.
 
 OpenCode's terminal interface is wrapped and resumed in place by default.
 
+Antigravity CLI (`agy`) uses three layered detection sources: lifecycle hooks
+Continuum adds under `"continuum"` in `~/.gemini/config/hooks.json` (`SessionStart`,
+`PreInvocation`, `Stop`), its CLI transcripts under
+`~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript.jsonl`,
+and screen detection in Continuum's wrapper or tmux pane. Only CLI sessions count
+(Antigravity 2.0 and IDE hooks sharing `~/.gemini/config/hooks.json` are ignored).
+Antigravity sessions are resumed in place.
+
 Continuum's skill in `~/.claude/skills` is read by Grok Build, Muse Code, the Cursor
 CLI and opencode as well as Claude Code.
 

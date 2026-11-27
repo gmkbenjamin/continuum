@@ -498,7 +498,7 @@ func TestHookStartsNoProgram(t *testing.T) {
 	if _, err := os.Stat(mark); err == nil {
 		t.Fatal("claude SessionStart without CLAUDE_PID: the hook ran ps")
 	}
-	for _, h := range []string{"grok", "muse", "cursor", "codex"} {
+	for _, h := range []string{"grok", "muse", "cursor", "codex", "antigravity"} {
 		for _, ev := range []string{"SessionStart", "Stop"} {
 			Handle(h, strings.NewReader(`{"hook_event_name":"`+ev+`","session_id":"s","cwd":"/tmp"}`), nil)
 			if _, err := os.Stat(mark); err == nil {

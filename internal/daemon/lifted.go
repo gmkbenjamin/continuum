@@ -48,6 +48,9 @@ var modelLimitRe = regexp.MustCompile(`(?i)\b(fable|opus|sonnet|haiku)\b(?:\s+[\
 // limitFamily returns the model family a limit message is about, or "" for
 // a limit on every model.
 func limitFamily(msg string) string {
+	if strings.Contains(strings.ToLower(msg), "third-party") {
+		return "third-party"
+	}
 	if m := modelLimitRe.FindStringSubmatch(msg); m != nil {
 		return strings.ToLower(m[1])
 	}
@@ -60,7 +63,7 @@ func limitFamily(msg string) string {
 func accountRoot(transcript string) string {
 	p := filepath.Clean(transcript)
 	for dir, i := filepath.Dir(p), 0; i < 5; dir, i = filepath.Dir(dir), i+1 {
-		if b := filepath.Base(dir); b == "sessions" || b == "projects" {
+		if b := filepath.Base(dir); b == "sessions" || b == "projects" || b == "brain" {
 			return dir
 		}
 		if filepath.Dir(dir) == dir {
@@ -137,15 +140,23 @@ func liftedFor(j *core.Job, ev core.Event) (string, bool) {
 		if ev.SessionID == j.SessionID || !ev.RequestAt.After(j.LimitAt.Add(liftMargin)) {
 			return "", false
 		}
-		if f := limitFamily(j.Message); f != "" && !strings.Contains(strings.ToLower(ev.Model), f) {
-			return "", false
+		if f := limitFamily(j.Message); f != "" {
+			if f == "third-party" {
+				// Switching to a Gemini model (or an unknown model) does not
+				// show a third-party quota limit has lifted.
+				if ev.Model == "" || strings.Contains(strings.ToLower(ev.Model), "gemini") {
+					return "", false
+				}
+			} else if !strings.Contains(strings.ToLower(ev.Model), f) {
+				return "", false
+			}
 		}
 		if j.LimitID != "" && ev.LimitID != "" && j.LimitID != ev.LimitID {
 			return "", false // another of the account's limits
 		}
-		if ev.Answered && j.Model != "" && ev.Model != "" && !strings.EqualFold(j.Model, ev.Model) {
-			// A Stop hook's answer from another model (Cursor's Auto after
-			// a limit on the premium models) says nothing about this one.
+		if (ev.Answered || ev.Harness == "antigravity") && j.Model != "" && ev.Model != "" && !strings.EqualFold(j.Model, ev.Model) {
+			// An answer from another model (Cursor's Auto, or Antigravity
+			// switching from Claude to Gemini) says nothing about this one.
 			return "", false
 		}
 		if ev.Model != "" {

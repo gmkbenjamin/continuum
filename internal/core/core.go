@@ -8,10 +8,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
-var Version = "0.15.11"
+var Version = "0.16.0"
 
 // Location says where an agent is running so input can be delivered to it
 // without focusing any window.
@@ -253,6 +254,8 @@ type Config struct {
 	CodexHome         string            `json:"codex_home,omitempty"`
 	GrokHome          string            `json:"grok_home,omitempty"`
 	MuseHome          string            `json:"muse_home,omitempty"`
+	AntigravityHome   string            `json:"antigravity_home,omitempty"`
+	AntigravityData   string            `json:"antigravity_data_dir,omitempty"`
 	OpenCodeServer    string            `json:"opencode_server,omitempty"` // local shared v2 API
 	ResetHintsCommand []string          `json:"reset_hints_command,omitempty"`
 	Binaries          map[string]string `json:"binaries,omitempty"`
@@ -392,10 +395,54 @@ func (c Config) CursorDir() string {
 	return filepath.Join(home, ".cursor")
 }
 
+// AntigravityConfigDir is Antigravity's global customization folder
+// (~/.gemini/config), where hooks.json and skills live.
+func (c Config) AntigravityConfigDir() string {
+	if c.AntigravityHome != "" {
+		return c.AntigravityHome
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".gemini", "config")
+}
+
+// AntigravityDataDir is Antigravity CLI's app data folder
+// ($ANTIGRAVITY_APP_DATA_DIR when it belongs to the CLI, else
+// ~/.gemini/antigravity-cli), where brain/ transcripts live.
+func (c Config) AntigravityDataDir() string {
+	if c.AntigravityData != "" {
+		return c.AntigravityData
+	}
+	if v := os.Getenv("ANTIGRAVITY_APP_DATA_DIR"); v != "" && IsAntigravityCLIDataDir(v, os.Getenv("ANTIGRAVITY_LS_VERSION")) {
+		return v
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".gemini", "antigravity-cli")
+}
+
+// IsAntigravityCLIDataDir reports whether dir (from ANTIGRAVITY_APP_DATA_DIR)
+// belongs to Antigravity CLI rather than Antigravity 2.0 or Antigravity IDE.
+func IsAntigravityCLIDataDir(dir, lsVersion string) bool {
+	if lsVer := strings.ToLower(lsVersion); lsVer != "" && !strings.HasPrefix(lsVer, "cli-") {
+		return false
+	}
+	clean := strings.TrimRight(filepath.ToSlash(filepath.Clean(dir)), "/")
+	if strings.HasSuffix(clean, "/antigravity") || strings.HasSuffix(clean, "/antigravity-ide") {
+		return false
+	}
+	return true
+}
+
 // Homes are the agents' home folders, for {claude_home}-style placeholders
 // in the rules.
 func (c Config) Homes() map[string]string {
-	return map[string]string{"claude_home": c.ClaudeDir(), "codex_home": c.CodexDir(), "grok_home": c.GrokDir(), "muse_home": c.MuseDir(), "cursor_home": c.CursorDir()}
+	return map[string]string{
+		"claude_home":      c.ClaudeDir(),
+		"codex_home":       c.CodexDir(),
+		"grok_home":        c.GrokDir(),
+		"muse_home":        c.MuseDir(),
+		"cursor_home":      c.CursorDir(),
+		"antigravity_home": c.AntigravityConfigDir(),
+	}
 }
 
 // NewID returns a short random id.

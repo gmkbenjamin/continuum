@@ -92,11 +92,10 @@ type skillTarget struct {
 
 // skillTargets lists the installed agents that read skills.
 func skillTargets(cfg core.Config, r *rules.Rules) []skillTarget {
-	home, _ := os.UserHomeDir()
 	cands := []struct{ harness, dir string }{
 		{"claude", filepath.Join(cfg.ClaudeDir(), "skills")},
 		{"codex", filepath.Join(cfg.CodexDir(), "skills")},
-		{"antigravity", filepath.Join(home, ".gemini", "config", "skills")},
+		{"antigravity", filepath.Join(cfg.AntigravityConfigDir(), "skills")},
 	}
 	var out []skillTarget
 	for _, c := range cands {
@@ -121,11 +120,10 @@ func skillTargets(cfg core.Config, r *rules.Rules) []skillTarget {
 // allSkillDirs: every place Continuum may have put its skill, installed
 // agents or not (for uninstall).
 func allSkillDirs(cfg core.Config) []string {
-	home, _ := os.UserHomeDir()
 	return []string{
 		filepath.Join(cfg.ClaudeDir(), "skills", "continuum"),
 		filepath.Join(cfg.CodexDir(), "skills", "continuum"),
-		filepath.Join(home, ".gemini", "config", "skills", "continuum"),
+		filepath.Join(cfg.AntigravityConfigDir(), "skills", "continuum"),
 	}
 }
 

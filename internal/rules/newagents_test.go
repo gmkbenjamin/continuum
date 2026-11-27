@@ -13,6 +13,7 @@ func TestNewAgentsWording(t *testing.T) {
 	cases := []struct{ harness, text, want string }{
 		{"antigravity", "You have exhausted your quota on this model.", "usage_limit"},
 		{"antigravity", "Error: individual quota reached", "usage_limit"},
+		{"antigravity", "⚠ Third-party quota reached. Please switch to Gemini models or upgrade your subscription to increase your limits. Resets in 2h30m50s.", "usage_limit"},
 		{"antigravity", "MODEL_CAPACITY_EXHAUSTED: try again", "transient"},
 		{"cursor", "You've hit your usage limit", "usage_limit"},
 		{"cursor", "You've reached your monthly usage limit", "usage_limit"},
@@ -32,6 +33,9 @@ func TestNewAgentsWording(t *testing.T) {
 		if !r.Harness(c.harness).NeverResume(c.text) {
 			t.Errorf("%s %q should need the user", c.harness, c.text)
 		}
+	}
+	if r.Harness("antigravity").NeverResume("⚠ Third-party quota reached. Please switch to Gemini models or upgrade your subscription to increase your limits. Resets in 2h30m50s.") {
+		t.Error("antigravity third-party quota reached should be resumable")
 	}
 	if !r.Harness("claude").IgnoredEntrypoint("sdk-cli") || r.Harness("claude").IgnoredEntrypoint("cli") {
 		t.Error("claude print-mode entrypoints")
