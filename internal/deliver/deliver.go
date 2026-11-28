@@ -26,9 +26,10 @@ import (
 
 // Request is written into a wrapper's inbox.
 type Request struct {
-	ID   string `json:"id"`
-	Text string `json:"text"`
-	At   string `json:"at"`
+	ID        string `json:"id"`
+	Text      string `json:"text"`
+	At        string `json:"at"`
+	DraftMode string `json:"draft_mode,omitempty"` // "restore" (default) or "submit"
 }
 
 type Options struct {
@@ -97,7 +98,11 @@ func Deliver(o Options, job *core.Job) (Result, error) {
 			res, err = viaTerminalApp(o, h, job)
 		case "native", "headless":
 			if !o.Config.HeadlessAllowed() {
-				err = errors.New("disabled by allow_headless=false")
+				if h == nil || len(h.NativeCommands) == 0 {
+					err = errSkip
+				} else {
+					err = errors.New("disabled by allow_headless=false")
+				}
 			} else {
 				res, err = viaNative(o, h, job)
 			}
@@ -130,6 +135,11 @@ func Deliver(o Options, job *core.Job) (Result, error) {
 		}
 	}
 	if len(errs) == 0 {
+		if job.Location == nil && (h == nil || len(h.NativeCommands) == 0) &&
+			(o.Live == nil || !o.Live.Open) &&
+			(o.Live != nil && o.Live.Checked || job.PID > 0 && !Procs.Alive(job.PID)) {
+			return Result{}, fmt.Errorf("%w; %w", ErrNoRoute, ErrGone)
+		}
 		return Result{}, ErrNoRoute
 	}
 	if permanent && !stillOpen {
@@ -184,27 +194,42 @@ func viaWrapper(o Options, job *core.Job) (Result, error) {
 	if o.DryRun {
 		return Result{Via: "wrapper", Detail: "dry run: would type into wrapper " + id}, nil
 	}
-	req := Request{ID: core.NewID(), Text: o.Prompt, At: time.Now().Format(time.RFC3339)}
+	req := Request{ID: core.NewID(), Text: o.Prompt, At: time.Now().Format(time.RFC3339), DraftMode: o.Config.DraftMode()}
 	data, _ := json.Marshal(req)
 	inbox := filepath.Join(WrapperDir(o.Paths, id), "inbox")
 	file := filepath.Join(inbox, req.ID+".json")
 	if err := core.WriteFileAtomic(file, data, 0o600); err != nil {
 		return Result{}, err
 	}
-	// The wrapper deletes the request once typed, or leaves a .rejected note.
+	// The wrapper deletes the request after delivery, or leaves an error note.
 	rejected := filepath.Join(inbox, req.ID+".rejected")
+	unconfirmed := filepath.Join(inbox, req.ID+".unconfirmed")
+	claimed := file + ".inflight"
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(file); os.IsNotExist(err) {
+			if _, err := os.Stat(claimed); !os.IsNotExist(err) {
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			if why, err := os.ReadFile(unconfirmed); err == nil {
+				os.Remove(unconfirmed)
+				return Result{}, fmt.Errorf("%w: wrapper %s: %s", ErrUnconfirmed, id, strings.TrimSpace(string(why)))
+			}
 			if why, err := os.ReadFile(rejected); err == nil {
 				os.Remove(rejected)
 				return Result{}, fmt.Errorf("wrapper %s: %s", id, strings.TrimSpace(string(why)))
+			}
+			if _, err := os.Stat(inbox); os.IsNotExist(err) {
+				return Result{}, fmt.Errorf("%w: wrapper %s exited during delivery", ErrUnconfirmed, id)
 			}
 			return Result{Via: "wrapper", Detail: "typed into continuum run " + id}, nil
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	os.Remove(file)
+	if err := os.Remove(file); err != nil {
+		return Result{}, fmt.Errorf("%w: wrapper %s did not acknowledge delivery before the timeout", ErrUnconfirmed, id)
+	}
 	return Result{}, fmt.Errorf("wrapper %s did not pick up the request", id)
 }
 

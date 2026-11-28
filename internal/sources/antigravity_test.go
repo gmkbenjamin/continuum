@@ -110,3 +110,68 @@ func TestParseAntigravityReplyAndNeverResumeAndToolNoise(t *testing.T) {
 		t.Fatalf("expected never_resume + transient, got %+v", evs)
 	}
 }
+
+func TestParseAntigravityUserInputIsTurnStart(t *testing.T) {
+	r, err := rules.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "brain", "conv-turn", ".system_generated", "logs", "transcript.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// USER_INPUT alone (e.g. a prompt that hit a quota error, which Antigravity
+	// CLI does not write to transcript.jsonl) must emit TurnStart=true so it
+	// does not cancel a pending resume.
+	promptOnly := writeLines(t, path, []string{
+		`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-11-28T06:50:31Z","content":"try again"}`,
+	})
+	st := &AntigravityState{}
+	evs := ParseAntigravityState(r, path, promptOnly, st, time.UTC)
+	if len(evs) != 1 || evs[0].Kind != core.KindActivity || !evs[0].TurnStart {
+		t.Fatalf("expected TurnStart activity for USER_INPUT alone, got %+v", evs)
+	}
+
+	// Once PLANNER_RESPONSE DONE appears in the same scan as USER_INPUT, the
+	// emitted activity must represent the completed answer (TurnStart=false)
+	// with RequestAt set to the user prompt timestamp.
+	answeredLines := writeLines(t, path, []string{
+		`{"step_index":2,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-11-28T06:55:00Z","content":"hello"}`,
+		`{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-28T06:55:04Z","model":"gemini-4-neon-high","content":"hi"}`,
+	})
+	evs = ParseAntigravityState(r, path, answeredLines, &AntigravityState{}, time.UTC)
+	if len(evs) != 1 || evs[0].Kind != core.KindActivity || evs[0].TurnStart {
+		t.Fatalf("expected non-TurnStart answered activity, got %+v", evs)
+	}
+	wantPrompt := time.Date(2026, 11, 28, 6, 55, 0, 0, time.UTC)
+	wantAnswer := time.Date(2026, 11, 28, 6, 55, 4, 0, time.UTC)
+	if !evs[0].RequestAt.Equal(wantPrompt) || !evs[0].At.Equal(wantAnswer) {
+		t.Fatalf("got At=%v RequestAt=%v, want At=%v RequestAt=%v", evs[0].At, evs[0].RequestAt, wantAnswer, wantPrompt)
+	}
+
+	// PLANNER_RESPONSE DONE without a prior USER_INPUT in this scan (e.g.
+	// sessionActiveSince reading from mid-file) followed by another USER_INPUT
+	// must NOT lose the completed response activity.
+	midFileLines := writeLines(t, path, []string{
+		`{"step_index":4,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-28T06:56:00Z","model":"gemini-4-neon-high","content":"done"}`,
+		`{"step_index":5,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-11-28T06:56:10Z","content":"next"}`,
+	})
+	evs = ParseAntigravityState(r, path, midFileLines, &AntigravityState{}, time.UTC)
+	if len(evs) != 2 || evs[0].Kind != core.KindActivity || evs[0].TurnStart || evs[1].Kind != core.KindActivity || !evs[1].TurnStart {
+		t.Fatalf("expected [completed activity, TurnStart activity], got %+v", evs)
+	}
+
+	// USER_INPUT -> PLANNER_RESPONSE DONE -> USER_INPUT preserves both the
+	// answered event (with RequestAt) and the trailing TurnStart event.
+	twoTurnLines := writeLines(t, path, []string{
+		`{"step_index":6,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-11-28T06:57:00Z","content":"q1"}`,
+		`{"step_index":7,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-28T06:57:05Z","model":"gemini-4-neon-high","content":"a1"}`,
+		`{"step_index":8,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-11-28T06:57:10Z","content":"q2"}`,
+	})
+	evs = ParseAntigravityState(r, path, twoTurnLines, &AntigravityState{}, time.UTC)
+	if len(evs) != 2 || evs[0].Kind != core.KindActivity || evs[0].TurnStart || evs[0].RequestAt.IsZero() || evs[1].Kind != core.KindActivity || !evs[1].TurnStart {
+		t.Fatalf("expected [answered activity, TurnStart activity], got %+v", evs)
+	}
+}

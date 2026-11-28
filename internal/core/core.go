@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-var Version = "0.17.1"
+var Version = "0.17.2"
 
 // Location says where an agent is running so input can be delivered to it
 // without focusing any window.
@@ -112,30 +112,31 @@ const (
 
 // Job is a scheduled resume.
 type Job struct {
-	Key            string    `json:"key"`
-	Harness        string    `json:"harness"`
-	SessionID      string    `json:"session_id,omitempty"`
-	Cwd            string    `json:"cwd,omitempty"`
-	TranscriptPath string    `json:"transcript_path,omitempty"`
-	TranscriptSize int64     `json:"transcript_size,omitempty"`
-	Location       *Location `json:"location,omitempty"`
-	PID            int       `json:"pid,omitempty"`
-	Entrypoint     string    `json:"entrypoint,omitempty"`
-	Kind           string    `json:"kind"`
-	Message        string    `json:"message,omitempty"`
-	ResetAt        time.Time `json:"reset_at,omitempty"`
-	ResetKnown     bool      `json:"reset_known"`
-	NativeGaveUp   bool      `json:"native_gave_up,omitempty"`
-	LimitAt        time.Time `json:"limit_at"`
-	DueAt          time.Time `json:"due_at"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	Attempts       int       `json:"attempts"`
-	State          string    `json:"state"`
-	Result         string    `json:"result,omitempty"`
-	Sources        []string  `json:"sources,omitempty"`
-	DeliveredAt    time.Time `json:"delivered_at,omitempty"`
-	DeliveredVia   string    `json:"delivered_via,omitempty"`
+	Key             string    `json:"key"`
+	Harness         string    `json:"harness"`
+	SessionID       string    `json:"session_id,omitempty"`
+	Cwd             string    `json:"cwd,omitempty"`
+	TranscriptPath  string    `json:"transcript_path,omitempty"`
+	TranscriptSize  int64     `json:"transcript_size,omitempty"`
+	Location        *Location `json:"location,omitempty"`
+	PID             int       `json:"pid,omitempty"`
+	Entrypoint      string    `json:"entrypoint,omitempty"`
+	Kind            string    `json:"kind"`
+	Message         string    `json:"message,omitempty"`
+	ResetAt         time.Time `json:"reset_at,omitempty"`
+	ResetKnown      bool      `json:"reset_known"`
+	ResetFromScreen bool      `json:"reset_from_screen,omitempty"`
+	NativeGaveUp    bool      `json:"native_gave_up,omitempty"`
+	LimitAt         time.Time `json:"limit_at"`
+	DueAt           time.Time `json:"due_at"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	Attempts        int       `json:"attempts"`
+	State           string    `json:"state"`
+	Result          string    `json:"result,omitempty"`
+	Sources         []string  `json:"sources,omitempty"`
+	DeliveredAt     time.Time `json:"delivered_at,omitempty"`
+	DeliveredVia    string    `json:"delivered_via,omitempty"`
 	// DeliveringAt: when the latest delivery attempt began.
 	DeliveringAt time.Time `json:"delivering_at,omitzero"`
 	// TurnFailed: the resumed turn failed right away with this error (not a
@@ -276,6 +277,11 @@ type Config struct {
 	// terminal or process closes (default: true). When false, Continuum only
 	// tracks open sessions and drops pending resumes once a session closes.
 	TrackClosedSessions *bool `json:"track_closed_sessions,omitempty"`
+	// DraftHandling controls what Continuum does when the chat input box
+	// already has unsubmitted text at resume time: "restore" (default: clear
+	// the draft, send the resume message, then put the draft back) or "submit"
+	// (press Enter to send the existing text first, then send the resume).
+	DraftHandling string `json:"draft_handling,omitempty"`
 	// KeepAwakeHours: hold off idle sleep while a resume is due within this
 	// many hours, and while a resumed session keeps working. 0 turns it off.
 	KeepAwakeHours *int `json:"keep_awake_hours,omitempty"`
@@ -322,17 +328,35 @@ func i(p *int, def int) int {
 	return *p
 }
 
-func (c Config) IsEnabled() bool          { return b(c.Enabled, true) }
-func (c Config) HeadlessAllowed() bool    { return b(c.AllowHeadless, true) }
-func (c Config) TranscriptsWatched() bool { return b(c.WatchTranscripts, true) }
-func (c Config) PanesScanned() bool       { return b(c.ScanPanes, true) }
-func (c Config) NotifyEnabled() bool      { return b(c.Notify, true) }
+// DraftHandling modes.
+const (
+	DraftRestore = "restore"
+	DraftSubmit  = "submit"
+)
+
+// NormalizeDraftHandling maps user/config values to a canonical draft mode.
+func NormalizeDraftHandling(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "submit", "send", "enter":
+		return DraftSubmit
+	default:
+		return DraftRestore
+	}
+}
+
+func (c Config) DraftMode() string { return NormalizeDraftHandling(c.DraftHandling) }
+
+func (c Config) IsEnabled() bool             { return b(c.Enabled, true) }
+func (c Config) HeadlessAllowed() bool       { return b(c.AllowHeadless, true) }
+func (c Config) TranscriptsWatched() bool    { return b(c.WatchTranscripts, true) }
+func (c Config) PanesScanned() bool          { return b(c.ScanPanes, true) }
+func (c Config) NotifyEnabled() bool         { return b(c.Notify, true) }
 func (c Config) AutostartEnabled() bool      { return b(c.AutostartDaemon, true) }
 func (c Config) CopiesAllowed() bool         { return b(c.AllowCopies, false) }
 func (c Config) ClosedSessionsTracked() bool { return b(c.TrackClosedSessions, true) }
 func (c Config) KeepAwake() time.Duration    { return time.Duration(i(c.KeepAwakeHours, 8)) * time.Hour }
-func (c Config) MaxWait() time.Duration   { return time.Duration(i(c.MaxWaitHours, 24*8)) * time.Hour }
-func (c Config) CatchUp() time.Duration   { return time.Duration(i(c.CatchUpHours, 12)) * time.Hour }
+func (c Config) MaxWait() time.Duration      { return time.Duration(i(c.MaxWaitHours, 24*8)) * time.Hour }
+func (c Config) CatchUp() time.Duration      { return time.Duration(i(c.CatchUpHours, 12)) * time.Hour }
 func (c Config) HarnessEnabled(h string) bool {
 	if v, ok := c.Harnesses[h]; ok {
 		return v

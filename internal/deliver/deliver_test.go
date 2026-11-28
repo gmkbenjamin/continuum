@@ -331,3 +331,33 @@ func TestTrackClosedSessionsOffBlocksStoppedNativeCommands(t *testing.T) {
 		t.Fatal("claude should not have been invoked for a closed session")
 	}
 }
+
+func TestClosedNonHeadlessWithClearedLocationIsGone(t *testing.T) {
+	r, err := rules.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := Options{
+		Rules:      r,
+		Paths:      core.Paths{Wrappers: filepath.Join(t.TempDir(), "wrappers")},
+		Prompt:     "continue",
+		Strategies: []string{"wrapper", "multiplexer", "terminal-app", "native"},
+		Live:       closed,
+	}
+	_, err = Deliver(o, &core.Job{Harness: "antigravity", SessionID: "ag-closed"})
+	if !errors.Is(err, ErrNoRoute) || !errors.Is(err, ErrGone) {
+		t.Fatalf("expected ErrNoRoute+ErrGone for closed non-headless session with no route, got %v", err)
+	}
+	// allow_headless=false must not suppress ErrGone for a harness that has no native commands anyway.
+	off := false
+	o.Config.AllowHeadless = &off
+	_, err = Deliver(o, &core.Job{Harness: "antigravity", SessionID: "ag-closed"})
+	if !errors.Is(err, ErrNoRoute) || !errors.Is(err, ErrGone) {
+		t.Fatalf("expected ErrNoRoute+ErrGone with allow_headless=false on non-headless harness, got %v", err)
+	}
+	o.Live = nil
+	_, err = Deliver(o, &core.Job{Harness: "antigravity", SessionID: "ag-unchecked"})
+	if !errors.Is(err, ErrNoRoute) || errors.Is(err, ErrGone) {
+		t.Fatalf("expected a retryable missing route for unknown liveness, got %v", err)
+	}
+}

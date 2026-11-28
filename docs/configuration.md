@@ -14,6 +14,7 @@
 | `allow_copies` | `false` | Let the agent CLI continue a session that's still open elsewhere (starts a copy). |
 | `allow_headless` | `true` | Allow native delivery through agent commands and the OpenCode API. |
 | `track_closed_sessions` | `true` | Keep tracking and resuming sessions after they close. Set to `false` (or run `continuum closed off`) to track only open sessions and drop pending resumes once a session closes. |
+| `draft_handling` | `"restore"` | What Continuum does when a wrapped agent's chat input box already has unsubmitted text at resume time. `"restore"` (default) clears the draft, resumes, then puts your draft back; `"submit"` (or `continuum draft submit`) presses Enter on the existing text first, then sends the resume prompt. Applies when you start a new wrapper. If a restore is interrupted after clearing the draft, the resume status gives the path to the saved copy. |
 | `strategies` | `["wrapper","multiplexer","terminal-app","native"]` | Delivery routes, in order. |
 | `shell_hook_agents` | installed agents | Commands the shell hook wraps (replaces the default list). |
 | `max_wait_hours` | `192` | Don't schedule resets further away than this. |

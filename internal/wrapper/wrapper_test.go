@@ -49,3 +49,27 @@ func TestEmptyArgvRejected(t *testing.T) {
 		t.Fatal("start(nil, ...) = nil error, want error")
 	}
 }
+
+func TestSignatureIgnoresLeadingSpinnerNoise(t *testing.T) {
+	m1 := &rules.Match{
+		Kind: "usage_limit",
+		Line: "⚠ Individual quota reached. Resets in 46m8s.",
+		Text: "⣾\n⚠ Individual quota reached. Resets in 46m8s.\nError ID: abc-1",
+	}
+	m2 := &rules.Match{
+		Kind: "usage_limit",
+		Line: "⚠ Individual quota reached. Resets in 46m8s.",
+		Text: "⣯\n⚠ Individual quota reached. Resets in 46m8s.\nError ID: abc-1",
+	}
+	m3 := &rules.Match{
+		Kind: "usage_limit",
+		Line: "⚠ Individual quota reached. Resets in 1m31s.",
+		Text: "⣯\n⚠ Individual quota reached. Resets in 1m31s.\nError ID: abc-3",
+	}
+	if signature(m1) != signature(m2) {
+		t.Fatalf("leading spinner should not change signature: %q vs %q", signature(m1), signature(m2))
+	}
+	if signature(m1) == signature(m3) {
+		t.Fatalf("different limit messages collided: %q", signature(m1))
+	}
+}

@@ -49,7 +49,7 @@ func (d *Daemon) sessionActiveSince(j *core.Job) bool {
 		evs = sources.ParseAntigravity(d.Rules, j.TranscriptPath, lines, d.Local)
 	}
 	for _, ev := range evs {
-		if ev.Kind == core.KindActivity && ev.At.After(j.LimitAt.Add(time.Second)) {
+		if ev.Kind == core.KindActivity && !ev.TurnStart && ev.At.After(j.LimitAt.Add(time.Second)) {
 			return true
 		}
 	}
@@ -153,6 +153,23 @@ func (d *Daemon) runJob(j *core.Job) {
 	if j.Location == nil && !sessEnded && !liveClosed && !ambiguousProcess {
 		j.Location = d.findPane(j)
 	}
+	if j.Location == nil && d.sessionClosed(j, sess, st) && !d.resumesClosed(j.Harness) {
+		reason := deliver.ErrGone.Error()
+		if !d.Config.HeadlessAllowed() {
+			for _, nc := range d.Rules.Harness(j.Harness).NativeCommands {
+				if nc.UsedWhen() == "stopped" {
+					reason = "the session closed, and allow_headless is false"
+					break
+				}
+			}
+		}
+		markJobFailed(j, reason, d.Now())
+		d.history("failed", j, map[string]any{"error": reason})
+		d.notify(j, "Could not resume", reason)
+		d.warnf("%s · not resuming: %s", d.describe(j), reason)
+		return
+	}
+
 	// Compare the current route, after resolving a reopened session.
 	if j.Location != nil && j.Location.Kind != "" {
 		for _, o := range d.Jobs {

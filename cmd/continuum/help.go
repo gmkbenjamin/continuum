@@ -299,6 +299,22 @@ Sets ` + "`track_closed_sessions`" + ` in ~/.continuum/config.json and applies w
 		Examples: []string{"continuum closed", "continuum closed off", "continuum closed on"},
 	},
 	{
+		Name: "draft", Aliases: []string{"drafts"}, Group: "Tuning", Args: "[restore|submit|default]",
+		Summary: "What to do with existing text in the chat input box on resume",
+		Detail: `Controls what Continuum does when a wrapped agent's input box already has
+unsubmitted text at resume time:
+
+  restore  clear the existing text, send the resume prompt, then put your
+           draft back in the input box (the default)
+  submit   press Enter to send your existing text first, then send the resume
+           prompt
+
+Sets ` + "`draft_handling`" + ` in ~/.continuum/config.json. The setting applies
+to sessions running in wrappers started with this version.`,
+		ArgsHelp: [][2]string{{"restore", "clear draft, resume, then put draft back (the default)"}, {"submit", "press Enter on existing text first, then resume (alias: send)"}, {"default", "back to the built-in default (restore)"}},
+		Examples: []string{"continuum draft", "continuum draft restore", "continuum draft submit"},
+	},
+	{
 		Name: "message", Aliases: []string{"messages", "msg"}, Group: "Tuning", Args: "[show | set | reset | preview] [options] [TEXT]",
 		Summary: "What Continuum types to continue a session",
 		Detail: `Shows or changes the resume message. The most specific one is used:

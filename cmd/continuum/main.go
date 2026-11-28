@@ -130,6 +130,8 @@ func main() {
 		err = cmdGrace(args)
 	case "closed":
 		err = cmdClosed(args)
+	case "draft", "drafts":
+		err = cmdDraft(args)
 	case "message", "messages", "msg":
 		err = cmdMessage(args)
 	case "scope":
@@ -604,6 +606,9 @@ func cmdStatus(args []string) error {
 	}
 	if !cfg.ClosedSessionsTracked() {
 		fmt.Println("  closed:     not tracked (only open sessions are resumed)")
+	}
+	if cfg.DraftMode() == core.DraftSubmit {
+		fmt.Println("  drafts:     submit existing text first, then resume")
 	}
 	if cfg.Debug() {
 		fmt.Printf("  logging:    debug (%s)\n", tildePath(p.Log))

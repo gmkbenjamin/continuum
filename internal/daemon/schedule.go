@@ -13,6 +13,7 @@ import (
 	"github.com/continuum-dev/continuum/internal/opencode"
 	"github.com/continuum-dev/continuum/internal/proc"
 	"github.com/continuum-dev/continuum/internal/resettime"
+	"github.com/continuum-dev/continuum/internal/rules"
 	"github.com/continuum-dev/continuum/internal/store"
 )
 
@@ -377,6 +378,9 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 					}
 					if staleReset(old, ev.ResetAt) {
 						ev.ResetAt = time.Time{}
+						if onlyScreenSources(twin.Sources) && !screenSourced(ev.Source) {
+							twin.ResetAt, twin.ResetKnown = time.Time{}, false
+						}
 					}
 				}
 			}
@@ -457,7 +461,8 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 		TranscriptPath: ev.TranscriptPath, TranscriptSize: ev.TranscriptSize,
 		Location: ev.Location, PID: ev.PID, Entrypoint: ev.Entrypoint,
 		Kind: ev.Kind, Message: ev.Message, ResetAt: ev.ResetAt, ResetKnown: !ev.ResetAt.IsZero(),
-		LimitAt: ev.At, CreatedAt: now, UpdatedAt: now, Attempts: attempts,
+		ResetFromScreen: !ev.ResetAt.IsZero() && screenSourced(ev.Source),
+		LimitAt:         ev.At, CreatedAt: now, UpdatedAt: now, Attempts: attempts,
 		State: core.StatePending, Sources: []string{ev.Source}, Hit: ev.Hit, LimitID: ev.LimitID,
 	}
 	if nj.Model == "" {
@@ -471,7 +476,7 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 		// time: the one it was lifted from, if this report names none.
 		nj.LiftFailed = true
 		if nj.ResetAt.IsZero() && j.LiftedFrom.After(ev.At) {
-			nj.ResetAt, nj.ResetKnown = j.LiftedFrom, true
+			nj.ResetAt, nj.ResetKnown, nj.ResetFromScreen = j.LiftedFrom, true, j.ResetFromScreen
 			stale = false
 		}
 		d.logf("%s: the limit wasn't lifted after all; waiting for its reset", key)
@@ -481,7 +486,7 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 		// don't lift it, and it waits for that reset.
 		nj.LiftFailed = true
 		if nj.ResetAt.IsZero() {
-			nj.ResetAt, nj.ResetKnown = j.ResetAt, true
+			nj.ResetAt, nj.ResetKnown, nj.ResetFromScreen = j.ResetAt, true, j.ResetFromScreen
 		}
 	}
 	if sess != nil {
@@ -511,16 +516,16 @@ func (d *Daemon) limitEvent(ev core.Event, sess *store.Session) {
 		return
 	}
 	if stale {
-		nj.ResetAt, nj.ResetKnown = time.Time{}, false
+		nj.ResetAt, nj.ResetKnown, nj.ResetFromScreen = time.Time{}, false, false
 	}
 	if !nj.ResetKnown && ev.Kind == core.KindUsageLimit {
 		if t, ok := d.resetHint(ev.Harness); ok && t.After(now) {
-			nj.ResetAt, nj.ResetKnown = t, true
+			nj.ResetAt, nj.ResetKnown, nj.ResetFromScreen = t, true, false
 		}
 	}
 	if !nj.ResetKnown && !stale && ev.Kind == core.KindUsageLimit {
 		if o := d.sameLimit(nj); o != nil {
-			nj.ResetAt, nj.ResetKnown = o.ResetAt, true
+			nj.ResetAt, nj.ResetKnown, nj.ResetFromScreen = o.ResetAt, true, o.ResetFromScreen
 			d.debugf("%s: no reset time of its own; using %s from %s, which hit the same limit", key, o.ResetAt.Local().Format("15:04"), o.Key)
 		}
 	}
@@ -585,14 +590,28 @@ func (d *Daemon) findTwin(ev core.Event, key string) *core.Job {
 			// another conversation in that folder hit a limit.
 			continue
 		}
-		dt := ev.At.Sub(j.LimitAt)
-		if dt < -3*time.Minute || dt > 3*time.Minute {
-			continue
-		}
 		bothLoc := ev.Location != nil && j.Location != nil
 		sameLoc := bothLoc && ev.Location.String() == j.Location.String()
 		if bothLoc && !sameLoc {
 			continue // two different panes
+		}
+		dt := ev.At.Sub(j.LimitAt)
+		if dt < -3*time.Minute || dt > 3*time.Minute {
+			// A redraw on the same wrapper while its session is still waiting on
+			// an authoritative limit belongs to that pending stall, not a new one.
+			samePendingWrapper := sameLoc && ev.Location.Kind == "wrapper" &&
+				ev.SessionID == "" && screenSourced(ev.Source) &&
+				j.SessionID != "" && !onlyScreenSources(j.Sources) &&
+				ev.At.After(j.LimitAt) && j.Kind == ev.Kind &&
+				limitNotice(d.Rules.Harness(j.Harness), j.Message) == limitNotice(d.Rules.Harness(ev.Harness), ev.Message) && ev.Message != ""
+			if samePendingWrapper {
+				if inst := d.Instances[ev.Location.Target]; inst != nil && inst.ActiveSessionID != "" && inst.ActiveSessionID != j.SessionID {
+					samePendingWrapper = false
+				}
+			}
+			if !samePendingWrapper {
+				continue
+			}
 		}
 		sameDir := ev.Cwd != "" && j.Cwd != "" && filepath.Clean(ev.Cwd) == filepath.Clean(j.Cwd)
 		if sameLoc || (sameDir && sameHarness) {
@@ -602,7 +621,18 @@ func (d *Daemon) findTwin(ev core.Event, key string) *core.Job {
 	return nil
 }
 
+func limitNotice(h *rules.Harness, message string) string {
+	if m := h.Classify(message, strings.Count(message, "\n")+1); m != nil {
+		if _, after, ok := strings.Cut(message, m.Line); ok {
+			message = m.Line + after
+		}
+	}
+	return strings.Join(strings.Fields(message), " ")
+}
+
 func (d *Daemon) merge(j *core.Job, ev core.Event) {
+	wasScreenOnly := onlyScreenSources(j.Sources)
+	evAuthoritative := !screenSourced(ev.Source)
 	j.Sources = addSource(j.Sources, ev.Source)
 	if j.Harness == "generic" && ev.Harness != "generic" {
 		j.Harness = ev.Harness
@@ -628,14 +658,25 @@ func (d *Daemon) merge(j *core.Job, ev core.Event) {
 	if ev.Kind == core.KindUsageLimit && j.Kind != core.KindUsageLimit {
 		j.Kind = core.KindUsageLimit
 	}
+	// When an authoritative source (hook, transcript, rollout) adopts a
+	// screen-only twin, trust its timing and message over the screen scrape
+	// (which may have parsed a stale relative countdown from a redraw).
+	if wasScreenOnly && evAuthoritative && !ev.At.IsZero() {
+		j.LimitAt = ev.At
+	}
 	// A report of the stall read after its limit was lifted early names the
 	// reset it was lifted from: it doesn't put the resume back.
 	resetUpgraded := false
-	if !ev.ResetAt.IsZero() && (!j.ResetKnown || ev.ResetAt.After(j.ResetAt)) && (j.LiftedAt.IsZero() || ev.At.After(j.LiftedAt)) {
-		j.ResetAt, j.ResetKnown = ev.ResetAt, true
+	resetFromScreen := j.ResetFromScreen || wasScreenOnly
+	if !ev.ResetAt.IsZero() && (j.LiftedAt.IsZero() || ev.At.After(j.LiftedAt)) &&
+		(!j.ResetKnown || evAuthoritative && resetFromScreen ||
+			(evAuthoritative || resetFromScreen) && ev.ResetAt.After(j.ResetAt)) {
+		j.ResetAt, j.ResetKnown, j.ResetFromScreen = ev.ResetAt, true, !evAuthoritative
 		resetUpgraded = true
+	} else if j.ResetKnown && wasScreenOnly {
+		j.ResetFromScreen = true
 	}
-	if ev.Message != "" && (j.Message == "" || resetUpgraded) {
+	if ev.Message != "" && (j.Message == "" || resetUpgraded || (wasScreenOnly && evAuthoritative)) {
 		j.Message = ev.Message
 	}
 	if j.LimitID == "" {
@@ -649,7 +690,10 @@ func (d *Daemon) merge(j *core.Job, ev core.Event) {
 	if j.State == core.StatePending && d.stopAtMaxAttempts(j) {
 		return
 	}
-	d.reschedule(j)
+	if resetUpgraded || j.DueAt.IsZero() || (wasScreenOnly && evAuthoritative) ||
+		(j.Attempts == 0 && !j.WaitingOpen && j.StaleCopyPID == 0) {
+		d.reschedule(j)
+	}
 	d.debugf("%s: merged %s from %s (reset_known=%v due=%s)", j.Key, ev.Kind, ev.Source, j.ResetKnown, j.DueAt.Format(time.RFC3339))
 }
 
@@ -776,7 +820,7 @@ func (d *Daemon) shareReset(j *core.Job) {
 		if o.LimitAt.After(j.LimitAt.Add(2*time.Minute)) || o.LimitAt.Before(j.LimitAt.Add(-limitWindow)) || !j.ResetAt.After(o.LimitAt) {
 			continue
 		}
-		o.ResetAt, o.ResetKnown = j.ResetAt, true
+		o.ResetAt, o.ResetKnown, o.ResetFromScreen = j.ResetAt, true, j.ResetFromScreen
 		o.UpdatedAt = d.Now()
 		d.reschedule(o)
 		d.dirty = true

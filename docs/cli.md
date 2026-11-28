@@ -45,6 +45,7 @@ All or chosen sessions:
 Tuning:
   grace        How long to let an agent resume by itself first
   closed       Track and resume closed sessions, or only open ones
+  draft        What to do with existing text in the chat input box on resume
   message      What Continuum types to continue a session
   detect       Show what Continuum makes of a message
   rules        Print the effective rules
@@ -649,6 +650,40 @@ Examples:
   continuum closed
   continuum closed off
   continuum closed on
+```
+
+## draft
+
+```text
+continuum draft - What to do with existing text in the chat input box on resume
+
+Usage:
+  continuum draft [restore|submit|default]
+  (also: drafts)
+
+  Controls what Continuum does when a wrapped agent's input box already has
+  unsubmitted text at resume time:
+
+    restore  clear the existing text, send the resume prompt, then put your
+             draft back in the input box (the default)
+    submit   press Enter to send your existing text first, then send the resume
+             prompt
+
+  Sets `draft_handling` in ~/.continuum/config.json. The setting applies
+  to sessions running in wrappers started with this version.
+
+Arguments:
+  restore    clear draft, resume, then put draft back (the default)
+  submit     press Enter on existing text first, then resume (alias: send)
+  default    back to the built-in default (restore)
+
+Options:
+  -h, --help             Show this help.
+
+Examples:
+  continuum draft
+  continuum draft restore
+  continuum draft submit
 ```
 
 ## message

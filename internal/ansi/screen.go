@@ -14,15 +14,20 @@ import (
 // after it; the rendered screen holds each line once, where it is shown.
 // Colours, character sets and modes it doesn't know are ignored.
 type Screen struct {
-	cols, rows int
-	grid       [][]rune
-	x, y       int
-	wrapNext   bool // the cursor is past the last column; the next character wraps
-	top, bot   int  // scroll region, inclusive
-	savedX     int
-	savedY     int
-	main       [][]rune // the main screen while the alternate one is shown
-	pending    []byte   // an incomplete escape sequence or UTF-8 character
+	cols, rows     int
+	grid           [][]rune
+	dim            [][]bool
+	x, y           int
+	wrapNext       bool // the cursor is past the last column; the next character wraps
+	top, bot       int  // scroll region, inclusive
+	savedX         int
+	savedY         int
+	main           [][]rune // the main screen while the alternate one is shown
+	mainDim        [][]bool
+	faint          bool   // SGR 2 (dim/faint) active
+	grayFG         bool   // muted gray foreground (SGR 90, 256-color gray, muted RGB gray)
+	bracketedPaste bool   // DECSET ?2004h active
+	pending        []byte // an incomplete escape sequence or UTF-8 character
 }
 
 // NewScreen returns a blank screen of cols by rows.
@@ -38,6 +43,10 @@ func blankRow(cols int) []rune {
 		r[i] = ' '
 	}
 	return r
+}
+
+func blankDim(cols int) []bool {
+	return make([]bool, cols)
 }
 
 // Resize changes the size, keeping what fits (the bottom rows when it
@@ -68,6 +77,22 @@ func (s *Screen) Resize(cols, rows int) {
 		}
 		return out
 	}
+	fitDim := func(g [][]bool) [][]bool {
+		if g == nil {
+			return nil
+		}
+		if len(g) > rows {
+			g = g[len(g)-rows:]
+		}
+		out := make([][]bool, rows)
+		for i := range out {
+			out[i] = blankDim(cols)
+			if i < len(g) {
+				copy(out[i], g[i])
+			}
+		}
+		return out
+	}
 	shift := 0
 	if len(s.grid) > rows {
 		shift = len(s.grid) - rows
@@ -76,7 +101,12 @@ func (s *Screen) Resize(cols, rows int) {
 	if s.grid == nil {
 		s.grid = fit(make([][]rune, 0))
 	}
+	s.dim = fitDim(s.dim)
+	if s.dim == nil {
+		s.dim = fitDim(make([][]bool, 0))
+	}
 	s.main = fit(s.main)
+	s.mainDim = fitDim(s.mainDim)
 	s.cols, s.rows = cols, rows
 	s.top, s.bot = 0, rows-1
 	s.y -= shift
@@ -185,9 +215,12 @@ func (s *Screen) put(r rune) {
 		s.lineFeed()
 		s.wrapNext = false
 	}
+	isDim := s.faint || s.grayFG
 	s.grid[s.y][s.x] = r
+	s.dim[s.y][s.x] = isDim
 	if w == 2 {
 		s.grid[s.y][s.x+1] = wideTail
+		s.dim[s.y][s.x+1] = isDim
 	}
 	if s.x+w >= s.cols {
 		s.x = s.cols - 1
@@ -236,6 +269,8 @@ func (s *Screen) scrollUp(n int) {
 	for ; n > 0; n-- {
 		copy(s.grid[s.top:s.bot], s.grid[s.top+1:s.bot+1])
 		s.grid[s.bot] = blankRow(s.cols)
+		copy(s.dim[s.top:s.bot], s.dim[s.top+1:s.bot+1])
+		s.dim[s.bot] = blankDim(s.cols)
 	}
 }
 
@@ -243,6 +278,8 @@ func (s *Screen) scrollDown(n int) {
 	for ; n > 0; n-- {
 		copy(s.grid[s.top+1:s.bot+1], s.grid[s.top:s.bot])
 		s.grid[s.top] = blankRow(s.cols)
+		copy(s.dim[s.top+1:s.bot+1], s.dim[s.top:s.bot])
+		s.dim[s.top] = blankDim(s.cols)
 	}
 }
 
@@ -250,6 +287,7 @@ func (s *Screen) clearRow(y, from, to int) {
 	from, to = clamp(from, 0, s.cols), clamp(to, 0, s.cols)
 	for x := from; x < to; x++ {
 		s.grid[y][x] = ' '
+		s.dim[y][x] = false
 	}
 }
 
@@ -317,7 +355,15 @@ func (s *Screen) csi(d []byte) (int, bool) {
 	final := d[j]
 	raw := string(d[:j])
 	private := strings.HasPrefix(raw, "?")
-	raw = strings.TrimLeft(raw, "?<=>")
+	if len(raw) > 0 && strings.ContainsRune("<=>", rune(raw[0])) {
+		return j + 1, true
+	}
+	raw = strings.TrimPrefix(raw, "?")
+	if final == 'm' && !private {
+		s.applySGR(raw)
+		s.wrapNext = false
+		return j + 1, true
+	}
 	var params []int
 	for _, f := range strings.Split(raw, ";") {
 		if k := strings.IndexByte(f, ':'); k >= 0 {
@@ -337,6 +383,8 @@ func (s *Screen) csi(d []byte) (int, bool) {
 			for _, m := range params {
 				if m == 1049 || m == 1047 || m == 47 {
 					s.altScreen(final == 'h', m == 1049)
+				} else if m == 2004 {
+					s.bracketedPaste = final == 'h'
 				}
 			}
 		}
@@ -393,11 +441,15 @@ func (s *Screen) csi(d []byte) (int, bool) {
 		n := clamp(arg(0, 1), 0, s.cols-s.x)
 		row := s.grid[s.y]
 		copy(row[s.x:], row[s.x+n:])
+		drow := s.dim[s.y]
+		copy(drow[s.x:], drow[s.x+n:])
 		s.clearRow(s.y, s.cols-n, s.cols)
 	case '@': // insert blanks
 		n := clamp(arg(0, 1), 0, s.cols-s.x)
 		row := s.grid[s.y]
 		copy(row[s.x+n:], row[s.x:s.cols-n])
+		drow := s.dim[s.y]
+		copy(drow[s.x+n:], drow[s.x:s.cols-n])
 		s.clearRow(s.y, s.x, s.x+n)
 	case 'L', 'M': // insert or delete lines, within the scroll region
 		if s.y >= s.top && s.y <= s.bot {
@@ -438,15 +490,262 @@ func (s *Screen) altScreen(on, saveCursor bool) {
 			s.savedX, s.savedY = s.x, s.y
 		}
 		s.main = s.grid
+		s.mainDim = s.dim
 		s.grid = make([][]rune, s.rows)
+		s.dim = make([][]bool, s.rows)
 		for i := range s.grid {
 			s.grid[i] = blankRow(s.cols)
+			s.dim[i] = blankDim(s.cols)
 		}
 	case !on && s.main != nil:
 		s.grid, s.main = s.main, nil
+		s.dim, s.mainDim = s.mainDim, nil
 		if saveCursor {
 			s.restoreCursor()
 		}
 	}
 	s.top, s.bot = 0, s.rows-1
+}
+
+// BracketedPaste reports whether the program enabled DECSET ?2004h.
+func (s *Screen) BracketedPaste() bool { return s.bracketedPaste }
+
+func (s *Screen) applySGR(raw string) {
+	fields := strings.Split(raw, ";")
+	params := make([]int, len(fields))
+	for i, field := range fields {
+		p, _, _ := strings.Cut(field, ":")
+		params[i], _ = strconv.Atoi(p)
+	}
+	for i := 0; i < len(params); i++ {
+		p := params[i]
+		switch {
+		case p == 0:
+			s.faint, s.grayFG = false, false
+		case p == 2:
+			s.faint = true
+		case p == 22:
+			s.faint = false
+		case p == 90:
+			s.grayFG = true
+		case p == 39 || (p >= 30 && p <= 37) || (p >= 91 && p <= 97):
+			s.grayFG = false
+		case p == 38 || p == 48 || p == 58:
+			values := params[i+1:]
+			if _, subparams, ok := strings.Cut(fields[i], ":"); ok {
+				parts := strings.Split(subparams, ":")
+				values = make([]int, len(parts))
+				for j, part := range parts {
+					values[j], _ = strconv.Atoi(part)
+				}
+			}
+			colon := strings.ContainsRune(fields[i], ':')
+			n, gray := colorParameters(values, colon)
+			if !colon {
+				i += n
+			}
+			if p == 38 && n > 0 {
+				s.grayFG = gray
+			}
+		}
+	}
+}
+
+func colorParameters(values []int, colon bool) (int, bool) {
+	switch {
+	case len(values) >= 2 && values[0] == 5:
+		n := values[1]
+		return 2, n == 8 || (n >= 238 && n <= 248)
+	case len(values) >= 4 && values[0] == 2:
+		rgb := values[1:4]
+		if colon && len(values) == 5 {
+			// Colon syntax may specify a color space before RGB.
+			rgb = values[2:5]
+		}
+		return 4, isMutedGray(rgb[0], rgb[1], rgb[2])
+	}
+	return 0, false
+}
+
+func isMutedGray(r, g, b int) bool {
+	lo, hi := min(r, min(g, b)), max(r, max(g, b))
+	return hi-lo <= 40 && lo >= 75 && hi <= 170
+}
+
+// PromptDraft extracts unsubmitted, non-dim text from the active prompt box
+// near the bottom of the screen (e.g. `> ...`, `❯ ...`, `› ...`). Dim or gray
+// placeholder hints are ignored so an empty prompt with hints returns "".
+func (s *Screen) PromptDraft() (text string, found bool) {
+	last := -1
+	for y := len(s.grid) - 1; y >= 0; y-- {
+		if rowHasText(s.grid[y]) {
+			last = y
+			break
+		}
+	}
+	if last < 0 {
+		return "", false
+	}
+	minRow := max(0, last-14)
+	promptRow, textCol := -1, -1
+	for y := last; y >= minRow; y-- {
+		if col, ok := promptTextStart(s.grid[y]); ok {
+			promptRow, textCol = y, col
+			break
+		}
+	}
+	if promptRow < 0 {
+		return "", false
+	}
+	first, firstWrapped := rowNonDimText(s.grid[promptRow], s.dim[promptRow], textCol)
+	if first == "" {
+		return "", true
+	}
+	var out strings.Builder
+	out.WriteString(first)
+	prevWrapped := firstWrapped
+	for y := promptRow + 1; y <= last; y++ {
+		if !rowHasText(s.grid[y]) || isRuleRow(s.grid[y]) {
+			break
+		}
+		if _, ok := promptTextStart(s.grid[y]); ok {
+			break
+		}
+		if !rowIndentedTo(s.grid[y], textCol) {
+			break
+		}
+		cont, wrapped := rowNonDimText(s.grid[y], s.dim[y], textCol)
+		if cont == "" {
+			break
+		}
+		if prevWrapped {
+			out.WriteString(cont)
+		} else {
+			out.WriteByte('\n')
+			out.WriteString(cont)
+		}
+		prevWrapped = wrapped
+	}
+	return out.String(), true
+}
+
+func rowHasText(row []rune) bool {
+	for _, r := range row {
+		if r != ' ' && r != wideTail {
+			return true
+		}
+	}
+	return false
+}
+
+func isRuleRow(row []rune) bool {
+	run := 0
+	for _, r := range row {
+		switch r {
+		case '─', '━', '═', '╌', '┄', '-', '_':
+			run++
+			if run >= 4 {
+				return true
+			}
+		case ' ', wideTail, '╭', '╮', '╰', '╯', '┌', '┐', '└', '┘', '├', '┤', '│', '┃':
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+func isBoxBorder(r rune) bool {
+	return r == '│' || r == '┃' || r == '▏' || r == '▎'
+}
+
+// promptTextStart reports whether row starts with an interactive prompt marker
+// (`>`, `❯`, `›`, optionally after up to 2 spaces or a left box border) and
+// returns the column where user text begins.
+func promptTextStart(row []rune) (int, bool) {
+	i := 0
+	for i < len(row) && i < 2 && row[i] == ' ' {
+		i++
+	}
+	if i < len(row) && isBoxBorder(row[i]) {
+		border := row[i]
+		i++
+		for i < len(row) && row[i] == ' ' && i < 5 {
+			i++
+		}
+		if border == '┃' || border == '▎' {
+			if i < len(row) && row[i] != '>' && row[i] != '❯' && row[i] != '›' {
+				return min(i, 2), true
+			}
+		}
+	}
+	if i >= len(row) {
+		return -1, false
+	}
+	switch row[i] {
+	case '>', '❯', '›':
+	default:
+		return -1, false
+	}
+	// Must be followed by space or end of row (not `>>`, `>=`, `->`, etc.).
+	if i+1 < len(row) && row[i+1] != ' ' && row[i+1] != '\u00a0' {
+		return -1, false
+	}
+	col := i + 1
+	if col < len(row) && (row[col] == ' ' || row[col] == '\u00a0') {
+		col++
+	}
+	return col, true
+}
+
+func rowIndentedTo(row []rune, col int) bool {
+	if col <= 0 || col > len(row) {
+		return false
+	}
+	for i := 0; i < col; i++ {
+		if row[i] == ' ' || row[i] == wideTail || isBoxBorder(row[i]) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// rowNonDimText returns the non-dim text in row starting at col, and whether
+// the text reached the right edge without trailing whitespace (mid-word wrap).
+func rowNonDimText(row []rune, drow []bool, col int) (string, bool) {
+	if col < 0 || col >= len(row) {
+		return "", false
+	}
+	end := len(row)
+	// Strip an optional right-side box border (e.g. `│`) and trailing spaces.
+	for end > col && (row[end-1] == ' ' || row[end-1] == wideTail) {
+		end--
+	}
+	rightEdge := end == len(row)
+	if end > col && isBoxBorder(row[end-1]) {
+		end--
+		for end > col && (row[end-1] == ' ' || row[end-1] == wideTail) {
+			end--
+		}
+		rightEdge = false
+	}
+	var b strings.Builder
+	dimText := false
+	for i := col; i < end; i++ {
+		if row[i] == wideTail {
+			continue
+		}
+		if drow[i] {
+			dimText = dimText || row[i] != ' '
+			continue
+		}
+		b.WriteRune(row[i])
+	}
+	text := strings.TrimRight(b.String(), " ")
+	if dimText && utf8.RuneCountInString(strings.TrimSpace(text)) == 1 {
+		// Some editors draw a block cursor over the first placeholder letter.
+		return "", false
+	}
+	return text, rightEdge && text != ""
 }

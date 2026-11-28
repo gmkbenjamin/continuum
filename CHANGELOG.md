@@ -4,6 +4,35 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-11-28
+
+### Added
+
+- **Existing chat input handling (`draft_handling` / `continuum draft`).**
+  Prevents Continuum from inserting its resume prompt into the middle of
+  unsubmitted text in a wrapped agent's input box. Run `continuum draft restore`
+  (default) to clear the draft, resume, and restore it afterwards, or
+  `continuum draft submit` to press Enter on the existing text first and then
+  send the resume prompt.
+
+### Fixed
+
+- **Closed non-headless sessions no longer retry endlessly after reset.** When
+  a wrapper exits and clears a job's dead route under `track_closed_sessions`,
+  agents without headless resume commands (such as Antigravity CLI) now fail
+  cleanly with `ErrGone` at due time instead of retrying with backoff.
+- **Antigravity CLI prompt transcripts no longer cancel pending resumes.**
+  `USER_INPUT` lines in Antigravity `transcript.jsonl` now emit `TurnStart`
+  activity (matching `PreInvocation` hooks) and preserve preceding completed
+  `PLANNER_RESPONSE` answers, so sending a prompt that immediately hits quota
+  no longer marks the session as continued.
+- **Stale wrapper redraws no longer corrupt or duplicate pending resumes.**
+  Wrapper deduplication now lasts for the full turn (resetting on Enter,
+  daemon resume, or stall clearance) and ignores leading spinner lines above
+  the matched limit line; daemon twin matching and merging now ensure
+  authoritative hook/transcript reset times and limit timestamps always beat
+  screen scrapes without clobbering retry backoff.
+
 ## [0.17.1] - 2026-11-28
 
 ### Fixed

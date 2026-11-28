@@ -202,9 +202,14 @@ func ParseAntigravityState(r *rules.Rules, path string, lines []Line, st *Antigr
 			lastActivity = nil
 
 		case strings.EqualFold(al.Type, "USER_INPUT"):
+			if lastActivity != nil && !lastActivity.TurnStart {
+				flushAnswered()
+				events = append(events, *lastActivity)
+			}
 			st.RequestAt = at
 			ev := base
 			ev.Kind = core.KindActivity
+			ev.TurnStart = true
 			lastActivity = &ev
 
 		case strings.EqualFold(al.Type, "PLANNER_RESPONSE") && strings.EqualFold(al.Status, "DONE"):
@@ -237,7 +242,7 @@ func ParseAntigravityState(r *rules.Rules, path string, lines []Line, st *Antigr
 
 	if answered != nil {
 		if lastActivity != nil && !lastActivity.At.After(answered.At) {
-			lastActivity.RequestAt, lastActivity.Model = answered.RequestAt, answered.Model
+			lastActivity = answered
 		} else {
 			events = append(events, *answered)
 		}

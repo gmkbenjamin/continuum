@@ -412,13 +412,18 @@ func (t *tui) scope() {
 	fmt.Fprintln(t.out)
 	t.report(cmdScope(nil))
 	t.report(cmdClosed(nil))
+	t.report(cmdDraft(nil))
 	closedOpt := option{"3", "Stop tracking c&losed sessions"}
 	if !cfg.ClosedSessionsTracked() {
 		closedOpt = option{"3", "Track c&losed sessions"}
 	}
-	menu := []option{{"1", "Resume &every session"}, {"2", "Resume &chosen sessions only"}, closedOpt}
+	draftOpt := option{"4", "Submit existing &draft text before resuming"}
+	if cfg.DraftMode() == core.DraftSubmit {
+		draftOpt = option{"4", "Restore existing &draft text after resuming"}
+	}
+	menu := []option{{"1", "Resume &every session"}, {"2", "Resume &chosen sessions only"}, closedOpt, draftOpt}
 	fmt.Fprintln(t.out)
-	t.showMenu(menu)
+	t.showMenu(menu[:2], menu[2:])
 	fmt.Fprintln(t.out, "  (Choose or exclude sessions in Sessions, 2 or e in the main menu.)")
 	switch t.choose("Choose (Enter to go back): ", menu) {
 	case "1":
@@ -432,6 +437,13 @@ func (t *tui) scope() {
 			t.report(cmdClosed([]string{"off"}))
 		} else {
 			t.report(cmdClosed([]string{"on"}))
+		}
+		t.pause()
+	case "4":
+		if cfg.DraftMode() == core.DraftSubmit {
+			t.report(cmdDraft([]string{"restore"}))
+		} else {
+			t.report(cmdDraft([]string{"submit"}))
 		}
 		t.pause()
 	}
