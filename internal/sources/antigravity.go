@@ -1,7 +1,9 @@
 package sources
 
 import (
+	"bufio"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -31,10 +33,52 @@ type antigravityLine struct {
 type AntigravityState struct {
 	RequestAt time.Time `json:"request_at,omitzero"`
 	Model     string    `json:"model,omitempty"`
+	// Subagent: true when this transcript belongs to an Antigravity subagent
+	// spawned by another conversation rather than an interactive user session.
+	Subagent bool `json:"subagent,omitempty"`
+	// CheckedHeader: true once step 0 of the transcript has been inspected.
+	CheckedHeader bool `json:"checked_header,omitempty"`
 }
 
 // Keep reports whether there is anything to carry to the next scan.
-func (st *AntigravityState) Keep() bool { return !st.RequestAt.IsZero() || st.Model != "" }
+func (st *AntigravityState) Keep() bool {
+	return !st.RequestAt.IsZero() || st.Model != "" || st.Subagent || st.CheckedHeader
+}
+
+// isAntigravitySubagentStep reports whether step 0 is an inter-agent dispatch
+// system message rather than a user prompt.
+func isAntigravitySubagentStep(al antigravityLine, content string) bool {
+	if al.StepIndex != 0 {
+		return false
+	}
+	if !strings.EqualFold(al.Type, "SYSTEM_MESSAGE") || !strings.EqualFold(al.Source, "SYSTEM") {
+		return false
+	}
+	return strings.Contains(content, "[Message]") && strings.Contains(content, "sender=")
+}
+
+// IsAntigravitySubagent inspects the first line of an Antigravity CLI
+// transcript file and reports whether it is a subagent conversation.
+func IsAntigravitySubagent(path string) bool {
+	if path == "" {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	if !sc.Scan() {
+		return false
+	}
+	var al antigravityLine
+	if json.Unmarshal(sc.Bytes(), &al) != nil {
+		return false
+	}
+	return isAntigravitySubagentStep(al, ContentText(al.Content))
+}
 
 // antigravitySessionID extracts the conversation id from
 // .../brain/<conversation-id>/.system_generated/logs/transcript.jsonl.
@@ -61,6 +105,32 @@ func ParseAntigravity(r *rules.Rules, path string, lines []Line, local *time.Loc
 func ParseAntigravityState(r *rules.Rules, path string, lines []Line, st *AntigravityState, local *time.Location) []core.Event {
 	if st == nil {
 		st = &AntigravityState{}
+	}
+	if st.Subagent {
+		return nil
+	}
+	if !st.CheckedHeader {
+		// Inspect step 0 either from the incoming lines or the start of path
+		// (when tailing mid-file).
+		if len(lines) > 0 {
+			var first antigravityLine
+			if json.Unmarshal(lines[0].Data, &first) == nil && first.StepIndex == 0 {
+				st.CheckedHeader = true
+				if isAntigravitySubagentStep(first, ContentText(first.Content)) {
+					st.Subagent = true
+					return nil
+				}
+			}
+		}
+		if !st.CheckedHeader && path != "" {
+			if _, err := os.Stat(path); err == nil {
+				st.CheckedHeader = true
+				if IsAntigravitySubagent(path) {
+					st.Subagent = true
+					return nil
+				}
+			}
+		}
 	}
 	h := r.Harness("antigravity")
 	sid := antigravitySessionID(path)

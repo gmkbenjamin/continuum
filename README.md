@@ -70,6 +70,8 @@ continuum status            # every session: what it's doing, where, whether it'
 continuum list              # scheduled and recent resumes
 continuum resume-now <id>   # don't wait for the reset (`all`: every waiting session)
 continuum cancel <id>       # leave a session stalled
+continuum closed off        # track and resume open sessions only (`on` restores default)
+continuum cleanup scan      # find and review known leftover test processes
 continuum doctor            # check everything
 ```
 

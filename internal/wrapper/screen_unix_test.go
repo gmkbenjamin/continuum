@@ -131,8 +131,16 @@ func TestScreenDetectionIsPerAgent(t *testing.T) {
 	if _, err := Run(Options{Harness: "aider", Argv: []string{"/bin/sh", "-c", script}, Stdin: in, Stdout: devnull}); err != nil {
 		t.Fatal(err)
 	}
-	if files, _ := filepath.Glob(filepath.Join(home, "spool", "*.json")); len(files) != 0 {
-		t.Fatalf("aider reported from the rendered screen: %v", files)
+	files, _ := filepath.Glob(filepath.Join(home, "spool", "*.json"))
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		var ev core.Event
+		if json.Unmarshal(data, &ev) == nil && ev.Kind != core.KindWrapperStart && ev.Kind != core.KindWrapperExit {
+			t.Fatalf("aider reported from the rendered screen: %+v", ev)
+		}
 	}
 }
 

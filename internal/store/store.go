@@ -33,6 +33,22 @@ type Session struct {
 	Model  string    `json:"model,omitempty"`
 }
 
+// Instance represents a running terminal/wrapper hosting an agent process,
+// distinct from a Conversation (Session). One Instance may host multiple
+// conversations over its lifetime (/clear, /resume), and one conversation may
+// be attached to 0, 1, or N instances.
+type Instance struct {
+	ID              string         `json:"id"`
+	Harness         string         `json:"harness"`
+	Location        *core.Location `json:"location,omitempty"`
+	Cwd             string         `json:"cwd,omitempty"`
+	Argv            []string       `json:"argv,omitempty"`
+	PID             int            `json:"pid,omitempty"`
+	StartedAt       time.Time      `json:"started_at,omitzero"`
+	ActiveSessionID string         `json:"active_session_id,omitempty"`
+	UpdatedAt       time.Time      `json:"updated_at,omitzero"`
+}
+
 func SessionKey(harness, id string) string { return harness + ":" + id }
 
 func LoadJSON(path string, v any) error {

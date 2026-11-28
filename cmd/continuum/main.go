@@ -122,10 +122,14 @@ func main() {
 		err = cmdDiagnose(args)
 	case "doctor":
 		code = cmdDoctor()
+	case "cleanup":
+		err = cmdCleanup(args)
 	case "detect":
 		err = cmdDetect(args)
 	case "grace":
 		err = cmdGrace(args)
+	case "closed":
+		err = cmdClosed(args)
 	case "message", "messages", "msg":
 		err = cmdMessage(args)
 	case "scope":
@@ -390,6 +394,7 @@ func cmdList(args []string) error {
 		return err
 	}
 	p := core.GetPaths()
+	cfg, _ := core.LoadConfig(p.Config)
 	jobs, err := store.LoadJobs(p.Jobs)
 	if err != nil {
 		return err
@@ -404,8 +409,14 @@ func cmdList(args []string) error {
 		}
 		var keep []*core.Job
 		for _, j := range list {
+			if daemon.DriverFor(j.Harness).IgnoreTranscript(j.TranscriptPath) {
+				continue
+			}
 			if j.State == core.StatePending || j.State == core.StateNeedsUser {
-				keep = append(keep, j)
+				if cfg.ClosedSessionsTracked() || jobSessionOpen(p, j, openSessions) ||
+					(j.SessionID == "" && j.Location != nil && j.Location.Kind != "wrapper") {
+					keep = append(keep, j)
+				}
 				continue
 			}
 			if time.Since(j.UpdatedAt) < 24*time.Hour && jobSessionOpen(p, j, openSessions) {
@@ -591,6 +602,9 @@ func cmdStatus(args []string) error {
 	if cfg.DryRun {
 		fmt.Println("  dry run:    on (nothing is typed or run)")
 	}
+	if !cfg.ClosedSessionsTracked() {
+		fmt.Println("  closed:     not tracked (only open sessions are resumed)")
+	}
 	if cfg.Debug() {
 		fmt.Printf("  logging:    debug (%s)\n", tildePath(p.Log))
 	}
@@ -618,10 +632,16 @@ func cmdStatus(args []string) error {
 		if j.State != core.StatePending && j.State != core.StateNeedsUser {
 			continue
 		}
+		if daemon.DriverFor(j.Harness).IgnoreTranscript(j.TranscriptPath) {
+			continue
+		}
 		if j.SessionID != "" && listed[j.SessionID] {
 			continue
 		}
 		if j.Location != nil && j.Location.Kind == "wrapper" && listedWrappers[j.Location.Target] {
+			continue
+		}
+		if !cfg.ClosedSessionsTracked() && (j.SessionID != "" || (j.Location != nil && j.Location.Kind == "wrapper" && !deliver.WrapperAlive(p, j.Location.Target))) {
 			continue
 		}
 		extra = append(extra, j)
@@ -851,6 +871,8 @@ func helpFor(name string) {
 			err = cmdLogs([]string{"-h"})
 		case "diagnose":
 			err = cmdDiagnose([]string{"-h"})
+		case "cleanup":
+			err = cmdCleanup([]string{"-h"})
 		case "status":
 			err = cmdStatus([]string{"-h"})
 		case "sessions":

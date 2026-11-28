@@ -367,15 +367,13 @@ func (f *Finder) fromProcesses(h *rules.Harness, q Query) (Session, bool, bool) 
 		}
 		if strings.Contains(p.Line, q.SessionID) {
 			s := Session{SessionID: q.SessionID, PID: p.PID, Cwd: q.Cwd, Kind: "interactive"}
-			if h.Name == "codex" {
-				args := p.Args
-				if f.Args != nil {
-					args = f.Args(p.PID)
-				}
-				if resumesSession(args, q.SessionID) {
-					ambiguous = matched.PID > 0
-					matched = s
-				}
+			args := p.Args
+			if f.Args != nil {
+				args = f.Args(p.PID)
+			}
+			if explicitResumeArg(h.Name, args, q.SessionID) {
+				ambiguous = matched.PID > 0
+				matched = s
 			}
 			if possible.PID == 0 {
 				possible = s
@@ -410,6 +408,26 @@ func (f *Finder) fromProcesses(h *rules.Harness, q Query) (Session, bool, bool) 
 		return Session{SessionID: q.SessionID, PID: inDir[0].PID, Cwd: q.Cwd, Kind: "interactive"}, false, true
 	}
 	return Session{}, false, true
+}
+
+// explicitResumeArg recognizes an explicit CLI resume invocation for id.
+// An id elsewhere in argv may be part of a prompt.
+func explicitResumeArg(harness string, args []string, id string) bool {
+	if id == "" || len(args) < 2 {
+		return false
+	}
+	if harness == "codex" {
+		return resumesSession(args, id)
+	}
+	for i := 1; i < len(args); i++ {
+		if (args[i] == "--resume" || args[i] == "-r") && i+1 < len(args) && args[i+1] == id {
+			return true
+		}
+		if v, ok := strings.CutPrefix(args[i], "--resume="); ok && v == id {
+			return true
+		}
+	}
+	return false
 }
 
 // resumesSession recognizes an explicit `codex resume SESSION_ID`, including

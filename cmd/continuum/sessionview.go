@@ -10,16 +10,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/continuum-dev/continuum/internal/core"
-	"github.com/continuum-dev/continuum/internal/deliver"
+	"github.com/continuum-dev/continuum/internal/daemon"
 	"github.com/continuum-dev/continuum/internal/messages"
-	"github.com/continuum-dev/continuum/internal/mux"
-	"github.com/continuum-dev/continuum/internal/proc"
 	"github.com/continuum-dev/continuum/internal/rules"
 	"github.com/continuum-dev/continuum/internal/scope"
 	"github.com/continuum-dev/continuum/internal/store"
@@ -55,10 +52,11 @@ func sessionRows(window time.Duration) []sessionRow {
 	jobs, _ := store.LoadJobs(p.Jobs)
 	now := time.Now()
 	var rows []sessionRow
-	known := knownSessions()
+	snap := daemon.LoadOrBuildSnapshot(p, cfg, r, daemonRunning(p))
+	known := knownSessionsFromSnapshot(snap)
 	for _, s := range known {
 		j := jobs[s.Harness+":"+s.ID]
-		pendingish := j != nil && (j.State == core.StatePending || j.State == core.StateNeedsUser)
+		pendingish := cfg.ClosedSessionsTracked() && j != nil && (j.State == core.StatePending || j.State == core.StateNeedsUser)
 		if !s.Open && !pendingish && (window <= 0 || now.Sub(s.LastSeen) > window) {
 			continue
 		}
@@ -89,60 +87,48 @@ func sessionRows(window time.Duration) []sessionRow {
 			rows = append(rows, cr)
 		}
 	}
-	return append(rows, wrapperRows(p, cfg, r, sc, msgs, jobs, rows, now)...)
+	return append(rows, wrapperRows(snap.Wrappers, cfg, r, sc, msgs, jobs, rows, now)...)
 }
 
 // wrapperRows lists agents running in Continuum's wrapper that no listed
 // session already covers (agents without one: Gemini, or sessions idle past
 // the knownSessions window).
-func wrapperRows(p core.Paths, cfg core.Config, r *rules.Rules, sc scope.Scope, msgs *messages.Messages, jobs map[string]*core.Job, listed []sessionRow, now time.Time) []sessionRow {
+func wrapperRows(wrappers []daemon.SnapshotWrapper, cfg core.Config, r *rules.Rules, sc scope.Scope, msgs *messages.Messages, jobs map[string]*core.Job, listed []sessionRow, now time.Time) []sessionRow {
 	seen := map[string]bool{}
 	for _, row := range listed {
 		if row.Wrapper != "" {
 			seen[row.Wrapper] = true
 		}
 	}
-	entries, _ := os.ReadDir(p.Wrappers)
 	var rows []sessionRow
-	for _, e := range entries {
-		id := e.Name()
-		if !e.IsDir() || seen[id] || !deliver.WrapperAlive(p, id) {
+	for _, w := range wrappers {
+		if seen[w.ID] {
 			continue
 		}
-		var meta struct {
-			Harness string    `json:"harness"`
-			Cwd     string    `json:"cwd"`
-			Started time.Time `json:"started"`
-		}
-		data, _ := os.ReadFile(filepath.Join(p.Wrappers, id, "meta.json"))
-		if json.Unmarshal(data, &meta) != nil || meta.Harness == "" {
-			continue
-		}
-		loc := &core.Location{Kind: "wrapper", Target: id}
-		probe := &core.Job{Harness: meta.Harness, Cwd: meta.Cwd, Location: loc}
+		loc := &core.Location{Kind: "wrapper", Target: w.ID}
+		probe := &core.Job{Harness: w.Harness, Cwd: w.Cwd, Location: loc}
 		covered, _ := sc.Covers(probe)
-		row := sessionRow{Agent: meta.Harness, Folder: meta.Cwd, Open: true, Covered: covered,
-			Message: msgs.Resolve(probe, false, cfg, r).Source, LastSeen: meta.Started, Wrapper: id,
+		row := sessionRow{Agent: w.Harness, Folder: w.Cwd, Open: true, Covered: covered,
+			Message: msgs.Resolve(probe, false, cfg, r).Source, LastSeen: w.Started, Wrapper: w.ID,
 			State: "active", Detail: "open (in Continuum's wrapper)"}
-		if h := r.Harness(meta.Harness); h != nil && h.DisplayName != "" {
+		if h := r.Harness(w.Harness); h != nil && h.DisplayName != "" {
 			row.Agent = h.DisplayName
 		}
-		if j := jobs[meta.Harness+"@"+loc.String()]; j != nil {
+		if j := jobs[w.Harness+"@"+loc.String()]; j != nil {
 			if st, detail := sessionState(knownSession{Open: true}, j, covered, now); st != "active" {
 				row.State, row.Detail = st, detail
 			}
 		}
-		pid, _ := strconv.Atoi(strings.TrimSpace(readSmall(filepath.Join(p.Wrappers, id, "pid"))))
-		row.Where = sessionWhere(knownSession{Open: true, Location: loc, Host: hostFromEnv(r, proc.Environ(pid))}, r)
+		row.Where = sessionWhere(knownSession{Open: true, Location: loc, Host: w.Host}, r)
 		rows = append(rows, row)
 	}
 	return rows
 }
 
 // resumesClosed: the agent has its own command to continue a closed session,
-// and headless continuing is allowed.
+// headless continuing is allowed, and closed sessions are tracked.
 func resumesClosed(r *rules.Rules, cfg core.Config, harness string) bool {
-	if r == nil || !cfg.HeadlessAllowed() {
+	if r == nil || !cfg.HeadlessAllowed() || !cfg.ClosedSessionsTracked() {
 		return false
 	}
 	h := r.Harness(harness)
@@ -157,102 +143,70 @@ func resumesClosed(r *rules.Rules, cfg core.Config, harness string) bool {
 	return false
 }
 
-func readSmall(path string) string {
-	data, _ := os.ReadFile(path)
-	return string(data)
-}
-
-// terminalApps names terminal apps from TERM_PROGRAM.
-var terminalApps = map[string]string{
-	"apple_terminal": "Terminal", "iterm.app": "iTerm2", "ghostty": "Ghostty", "wezterm": "WezTerm",
-	"vscode": "VS Code", "warpterminal": "Warp", "hyper": "Hyper", "tabby": "Tabby", "zed": "Zed",
-	"rio": "Rio", "kitty": "kitty", "alacritty": "Alacritty", "tmux": "tmux", "rex": "Rex",
-}
-
-// hostFromEnv names where a process runs from its environment: the
-// multiplexer pane it is in, else the terminal app.
+// hostFromEnv forwards to daemon.HostFromEnv so the CLI and daemon resolve
+// terminal hosts identically.
 func hostFromEnv(r *rules.Rules, env map[string]string) string {
-	if len(env) == 0 {
-		return ""
-	}
-	if r != nil {
-		if loc := mux.LocateFromEnv(r, env); loc != nil {
-			if name, ok := muxNames[loc.Kind]; ok {
-				return name
-			}
-			return loc.Kind
-		}
-	}
-	switch {
-	case env["CURSOR_TRACE_ID"] != "" && strings.EqualFold(env["TERM_PROGRAM"], "vscode"):
-		return "Cursor"
-	case env["KITTY_WINDOW_ID"] != "":
-		return "kitty"
-	case env["ALACRITTY_WINDOW_ID"] != "":
-		return "Alacritty"
-	}
-	if name, ok := terminalApps[strings.ToLower(env["TERM_PROGRAM"])]; ok {
-		return name
-	}
-	return ""
+	return daemon.HostFromEnv(r, env)
 }
 
 // sessionState says what a session is doing, most important first: what
 // Continuum is about to do, then what the agent reports, then recency.
 func sessionState(s knownSession, j *core.Job, covered bool, now time.Time) (string, string) {
-	if s.StaleCopy || j != nil && j.State == core.StatePending && j.StaleCopyPID > 0 {
+	phase := daemon.JobPhaseOf(j)
+	if s.StaleCopy || phase == daemon.PhaseWaitingStaleCopy {
 		// Only an out-of-date copy is open: Continuum won't type into it.
 		closeIt := "close it and Continuum continues the conversation"
 		if !s.ResumesClosed {
 			closeIt = "close it and continue the conversation yourself"
 		}
-		switch {
-		case j != nil && j.State == core.StatePending && j.StaleCopyPID > 0:
+		switch phase {
+		case daemon.PhaseWaitingStaleCopy:
 			return "stale_copy", "limit reset · only an out-of-date copy is open, not typing into it · " + closeIt
-		case j != nil && j.State == core.StatePending:
+		case daemon.PhaseScheduled, daemon.PhaseWaitingOpen:
 			if s.ResumesClosed {
 				closeIt += " after " + whenShort(j.DueAt, now)
 			}
 			return "stale_copy", "usage limit · only an out-of-date copy is open, won't type into it · " + closeIt
-		case j != nil && j.State == core.StateNeedsUser:
+		case daemon.PhaseNeedsUser:
 			return "needs_you", "needs you: " + clip(firstLineOf(j.Result), 60)
 		}
 		return "stale_copy", "out-of-date copy of this conversation (the process that continued it has closed or moved on)"
 	}
-	if j != nil {
-		switch j.State {
-		case core.StatePending:
-			if j.Kind == core.KindTransient {
-				return "outage", "API error · retrying " + whenShort(j.DueAt, now)
+	switch phase {
+	case daemon.PhaseScheduled:
+		if j.Kind == core.KindTransient {
+			return "outage", "API error · retrying " + whenShort(j.DueAt, now)
+		}
+		if !s.Open && s.Checked && !(s.Live && s.Kind == "background") {
+			// Checked and closed: no pane to type into.
+			if s.ResumesClosed {
+				return "limit", "closed · usage limit · continues it in the background " + whenShort(j.DueAt, now)
 			}
-			if j.WaitingOpen {
-				return "limit", "limit reset · waiting until Continuum can type into it"
-			}
-			if !s.Open && s.Checked && !(s.Live && s.Kind == "background") {
-				// Checked and closed: no pane to type into.
-				if s.ResumesClosed {
-					return "limit", "closed · usage limit · continues it in the background " + whenShort(j.DueAt, now)
-				}
-				return "limit", "closed · usage limit · reopen it to continue"
-			}
-			return "limit", "usage limit · resumes " + whenShort(j.DueAt, now)
-		case core.StateNeedsUser:
-			return "needs_you", "needs you: " + clip(firstLineOf(j.Result), 60)
-		case core.StateIgnored:
-			if now.Sub(j.UpdatedAt) < 24*time.Hour && !(s.Live && strings.EqualFold(s.Status, "busy")) {
-				return "not_resuming", "usage limit · not resuming (" + map[bool]string{true: "excluded", false: "not chosen"}[strings.HasPrefix(j.Result, "excluded")] + ")"
-			}
-		case core.StateDelivered:
-			if j.TurnFailed != "" && now.Sub(j.DeliveredAt) < 24*time.Hour && !(s.Live && strings.EqualFold(s.Status, "busy")) {
-				return "needs_you", "resumed " + j.DeliveredAt.Local().Format("15:04") + ", but its turn failed: " + clip(j.TurnFailed, 50)
-			}
-			if now.Sub(j.DeliveredAt) < 2*time.Hour && !(s.Live && strings.EqualFold(s.Status, "busy")) {
-				return "resumed", "resumed " + j.DeliveredAt.Local().Format("15:04") + " by Continuum"
-			}
-		case core.StateFailed:
-			if now.Sub(j.UpdatedAt) < 24*time.Hour {
-				return "needs_you", "couldn't resume: " + clip(firstLineOf(j.Result), 50)
-			}
+			return "limit", "closed · usage limit · reopen it to continue"
+		}
+		return "limit", "usage limit · resumes " + whenShort(j.DueAt, now)
+	case daemon.PhaseWaitingOpen:
+		if j.Kind == core.KindTransient {
+			return "outage", "API error · retrying " + whenShort(j.DueAt, now)
+		}
+		return "limit", "limit reset · waiting until Continuum can type into it"
+	case daemon.PhaseNeedsUser:
+		return "needs_you", "needs you: " + clip(firstLineOf(j.Result), 60)
+	case daemon.PhaseIgnored:
+		if now.Sub(j.UpdatedAt) < 24*time.Hour && !(s.Live && strings.EqualFold(s.Status, "busy")) {
+			return "not_resuming", "usage limit · not resuming (" + map[bool]string{true: "excluded", false: "not chosen"}[strings.HasPrefix(j.Result, "excluded")] + ")"
+		}
+	case daemon.PhaseTurnFailed:
+		if now.Sub(j.DeliveredAt) < 24*time.Hour && !(s.Live && strings.EqualFold(s.Status, "busy")) {
+			return "needs_you", "resumed " + j.DeliveredAt.Local().Format("15:04") + ", but its turn failed: " + clip(j.TurnFailed, 50)
+		}
+	case daemon.PhaseDelivered:
+		if now.Sub(j.DeliveredAt) < 2*time.Hour && !(s.Live && strings.EqualFold(s.Status, "busy")) {
+			return "resumed", "resumed " + j.DeliveredAt.Local().Format("15:04") + " by Continuum"
+		}
+	case daemon.PhaseFailed:
+		if now.Sub(j.UpdatedAt) < 24*time.Hour {
+			return "needs_you", "couldn't resume: " + clip(firstLineOf(j.Result), 50)
 		}
 	}
 	if s.Live {

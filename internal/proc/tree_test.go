@@ -27,7 +27,11 @@ func TestTreeKnowsThisProcess(t *testing.T) {
 // Australian locale); the start time must be read whatever the locale.
 func TestStartTimeInAnyLocale(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("no start times on Windows")
+		at, ok := StartTime(os.Getpid())
+		if !ok || time.Since(at) > 10*time.Minute || time.Since(at) < -time.Minute {
+			t.Errorf("windows start time %v ok=%v", at, ok)
+		}
+		return
 	}
 	for _, loc := range []string{"en_AU.UTF-8", "de_DE.UTF-8", "C"} {
 		t.Setenv("LC_ALL", loc)

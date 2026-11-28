@@ -154,7 +154,7 @@ func liftedFor(j *core.Job, ev core.Event) (string, bool) {
 		if j.LimitID != "" && ev.LimitID != "" && j.LimitID != ev.LimitID {
 			return "", false // another of the account's limits
 		}
-		if (ev.Answered || ev.Harness == "antigravity") && j.Model != "" && ev.Model != "" && !strings.EqualFold(j.Model, ev.Model) {
+		if (ev.Answered || DriverFor(ev.Harness).ModelSpecificLimits()) && j.Model != "" && ev.Model != "" && !strings.EqualFold(j.Model, ev.Model) {
 			// An answer from another model (Cursor's Auto, or Antigravity
 			// switching from Claude to Gemini) says nothing about this one.
 			return "", false

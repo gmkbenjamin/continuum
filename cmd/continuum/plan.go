@@ -235,7 +235,7 @@ func installPlanItems(o installOptions, p core.Paths, cfg core.Config, r *rules.
 		items = append(items, it)
 	}
 
-	if o.Shell && runtime.GOOS != "windows" {
+	if o.Shell {
 		for _, rc := range shellRCs() {
 			snip, err := shellBlock(rc.Shell, bin)
 			if err != nil {

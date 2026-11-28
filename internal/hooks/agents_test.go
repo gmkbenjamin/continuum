@@ -504,3 +504,76 @@ func TestAntigravityNamedHooksFile(t *testing.T) {
 		t.Fatalf("not restored:\n%s", s)
 	}
 }
+
+func TestAntigravitySubagentHookIgnored(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CONTINUUM_HOME", filepath.Join(home, "continuum"))
+	subPath := filepath.Join(home, ".gemini", "antigravity-cli", "brain", "sub-1", ".system_generated", "logs", "transcript_full.jsonl")
+	if err := os.MkdirAll(filepath.Dir(subPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	step0 := `{"step_index":0,"source":"SYSTEM","type":"SYSTEM_MESSAGE","status":"DONE","created_at":"2026-11-28T09:08:46Z","content":"<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-28T09:08:46Z sender=parent-1 priority=HIGH content=audit\n</SYSTEM_MESSAGE>"}`
+	if err := os.WriteFile(subPath, []byte(step0+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payload := `{"hookEventName":"Stop","conversationId":"sub-1","transcriptPath":` + mustJSON(subPath) + `,"workspacePaths":["/work/app"],"terminationReason":"ERROR","errorDetails":"Third-party quota reached. Resets in 122h."}`
+	env := []string{"CONTINUUM_WRAPPER_ID=w1", "ANTIGRAVITY_LS_VERSION=cli-1.5.18"}
+	if Handle("antigravity", strings.NewReader(payload), env) {
+		t.Fatal("subagent hook should be ignored")
+	}
+
+	// Normal user conversation hook passes.
+	userPath := filepath.Join(home, ".gemini", "antigravity-cli", "brain", "user-1", ".system_generated", "logs", "transcript_full.jsonl")
+	if err := os.MkdirAll(filepath.Dir(userPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	user0 := `{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-11-28T09:00:00Z","content":"<USER_REQUEST>\nhi\n</USER_REQUEST>"}`
+	if err := os.WriteFile(userPath, []byte(user0+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	userPayload := `{"hookEventName":"Stop","conversationId":"user-1","transcriptPath":` + mustJSON(userPath) + `,"workspacePaths":["/work/app"],"terminationReason":"ERROR","errorDetails":"Individual quota reached. Resets in 3h."}`
+	if !Handle("antigravity", strings.NewReader(userPayload), env) {
+		t.Fatal("user conversation hook should be accepted")
+	}
+}
+
+func mustJSON(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+func TestCodexHooksTrustNote(t *testing.T) {
+	codexDir := t.TempDir()
+	hooksPath := filepath.Join(codexDir, "hooks.json")
+	cfg := core.Config{CodexHome: codexDir}
+	var tg Target
+	for _, cand := range Targets(cfg) {
+		if cand.Harness == "codex" {
+			tg = cand
+			break
+		}
+	}
+	if _, err := Install(tg, "/usr/local/bin/continuum", false); err != nil {
+		t.Fatal(err)
+	}
+	// No config.toml yet -> no warning.
+	if note := CodexHooksTrustNote(cfg); note != "" {
+		t.Fatalf("expected empty note without config.toml, got %q", note)
+	}
+	// [hooks.state] entry present without enabled = true -> warns.
+	untrusted := "[hooks.state.\"" + hooksPath + ":session_start:0:0\"]\ntrusted_hash = \"abc\"\n"
+	if err := os.WriteFile(filepath.Join(codexDir, "config.toml"), []byte(untrusted), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if note := CodexHooksTrustNote(cfg); !strings.Contains(note, "enabled = true") {
+		t.Fatalf("expected trust warning mentioning enabled = true, got %q", note)
+	}
+	// With enabled = true -> clean.
+	trusted := "[hooks.state.\"" + hooksPath + ":session_start:0:0\"]\ntrusted_hash = \"abc\"\nenabled = true\n"
+	if err := os.WriteFile(filepath.Join(codexDir, "config.toml"), []byte(trusted), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if note := CodexHooksTrustNote(cfg); note != "" {
+		t.Fatalf("expected empty note once enabled = true, got %q", note)
+	}
+}

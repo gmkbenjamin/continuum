@@ -75,11 +75,24 @@ func TestInstallPlanListsEverything(t *testing.T) {
 	r, _ := rules.Load("")
 	items := installPlanItems(installOptions{Copy: true, Shell: true, Service: true}, p, cfg, r)
 	m := whats(items)
-	if runtime.GOOS != "windows" { // Windows gets continuum.exe, and no command link or shell hook
+	if runtime.GOOS != "windows" { // Windows gets continuum.exe and PowerShell profile hook (no ~/.local/bin symlink)
 		for _, key := range []string{"Continuum program|~/.continuum/bin/continuum", "command link|~/.local/bin/continuum", "zsh shell hook|~/.zshrc"} {
 			if _, ok := m[key]; !ok {
 				t.Errorf("plan is missing %s; has %v", key, keys(m))
 			}
+		}
+	} else {
+		if _, ok := m["Continuum program|~/.continuum/bin/continuum.exe"]; !ok {
+			t.Errorf("windows plan missing continuum.exe; has %v", keys(m))
+		}
+		foundPS := false
+		for k := range m {
+			if strings.HasPrefix(k, "pwsh shell hook|") || strings.HasPrefix(k, "powershell shell hook|") {
+				foundPS = true
+			}
+		}
+		if !foundPS {
+			t.Errorf("windows plan missing PowerShell shell hook; has %v", keys(m))
 		}
 	}
 	for _, key := range []string{
@@ -123,7 +136,11 @@ func TestUninstallPlan(t *testing.T) {
 	os.WriteFile(filepath.Join(p.Home, "jobs.json"), []byte("{}"), 0o600)
 
 	m := whats(uninstallPlanItems(p, cfg, false))
-	for _, key := range []string{"Claude Code hooks|~/.claude/settings.json", "Codex hooks|~/.codex/hooks.json", "zsh shell hook|~/.zshrc"} {
+	wantUninstall := []string{"Claude Code hooks|~/.claude/settings.json", "Codex hooks|~/.codex/hooks.json"}
+	if runtime.GOOS != "windows" {
+		wantUninstall = append(wantUninstall, "zsh shell hook|~/.zshrc")
+	}
+	for _, key := range wantUninstall {
 		if _, ok := m[key]; !ok {
 			t.Errorf("uninstall plan is missing %s; has %v", key, keys(m))
 		}
@@ -131,14 +148,16 @@ func TestUninstallPlan(t *testing.T) {
 	if m["Continuum folder|~/.continuum"].Action != "keep" {
 		t.Errorf("folder should be kept without --purge")
 	}
-	n := 0
-	for k := range m {
-		if strings.HasPrefix(k, "zsh shell hook") {
-			n++
+	if runtime.GOOS != "windows" {
+		n := 0
+		for k := range m {
+			if strings.HasPrefix(k, "zsh shell hook") {
+				n++
+			}
 		}
-	}
-	if n != 1 {
-		t.Errorf(".zshrc listed %d times", n)
+		if n != 1 {
+			t.Errorf(".zshrc listed %d times", n)
+		}
 	}
 	purge := whats(uninstallPlanItems(p, cfg, true))
 	if purge["Continuum folder|~/.continuum"].Action != "remove" {
@@ -150,7 +169,11 @@ func TestUninstallPlan(t *testing.T) {
 			backups++
 		}
 	}
-	if backups != 2 { // settings.json and .zshrc (hooks.json was created, not changed)
+	wantBackups := 2 // settings.json and .zshrc (hooks.json was created, not changed)
+	if runtime.GOOS == "windows" {
+		wantBackups = 1 // PowerShell profile was created fresh, not changed
+	}
+	if backups != wantBackups {
 		t.Errorf("backups listed: %d (%v)", backups, keys(purge))
 	}
 	_ = home

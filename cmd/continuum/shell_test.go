@@ -41,22 +41,30 @@ func TestInstallShellFiles(t *testing.T) {
 	t.Setenv("ZDOTDIR", "")
 	t.Setenv("SHELL", "/bin/zsh")
 	rc := filepath.Join(home, ".zshrc")
-	os.WriteFile(rc, []byte("alias ll='ls -l'\n"), 0o600)
+	orig := "alias ll='ls -l'\n"
+	if runtime.GOOS == "windows" {
+		rc = filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+		_ = os.MkdirAll(filepath.Dir(rc), 0o700)
+		orig = "Set-Alias ll Get-ChildItem\n"
+	}
+	os.WriteFile(rc, []byte(orig), 0o600)
 	installShell("/x/continuum", false)
 	installShell("/x/continuum", false)
 	data, _ := os.ReadFile(rc)
-	if strings.Count(string(data), blockStart) != 1 || !strings.HasPrefix(string(data), "alias ll='ls -l'\n") {
-		t.Fatalf("zshrc:\n%s", data)
+	if strings.Count(string(data), blockStart) != 1 || !strings.HasPrefix(string(data), orig) {
+		t.Fatalf("rc:\n%s", data)
 	}
 	if st, _ := os.Stat(rc); runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 		t.Fatalf("permissions changed: %v", st.Mode())
 	}
-	if _, err := os.Stat(filepath.Join(home, ".bashrc")); err == nil {
-		t.Fatal("created a .bashrc that did not exist")
+	if runtime.GOOS != "windows" {
+		if _, err := os.Stat(filepath.Join(home, ".bashrc")); err == nil {
+			t.Fatal("created a .bashrc that did not exist")
+		}
 	}
 	uninstallShell(false)
 	data, _ = os.ReadFile(rc)
-	if string(data) != "alias ll='ls -l'\n" {
+	if string(data) != orig {
 		t.Fatalf("after uninstall: %q", data)
 	}
 }
@@ -73,6 +81,37 @@ func TestShellFunctions(t *testing.T) {
 	}
 	if _, err := shellFunctions("fish", "/x", []hookAgent{{"gemini", "gemini"}}); err != nil {
 		t.Fatal(err)
+	}
+	psBlock, err := shellBlock("pwsh", `C:\Users\O'Neil`+"\u2019"+`s\.continuum\bin\continuum.exe`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(psBlock, `'C:\Users\O''Neil`+"\u2019\u2019"+`s\.continuum\bin\continuum.exe'`) || !strings.Contains(psBlock, "shell-init pwsh") {
+		t.Fatalf("unexpected pwsh block:\n%s", psBlock)
+	}
+	if got := replaceBlock(replaceBlock("Set-Alias ll dir\n", psBlock), ""); got != "Set-Alias ll dir\n" {
+		t.Fatalf("pwsh LF roundtrip failed: %q", got)
+	}
+	if got := replaceBlock(replaceBlock("Set-Alias ll dir\r\n", psBlock), ""); got != "Set-Alias ll dir\r\n" {
+		t.Fatalf("pwsh CRLF roundtrip failed: %q", got)
+	}
+	psFns, err := shellFunctions("powershell", `C:\continuum.exe`, []hookAgent{{"claude", "claude"}, {"codex", "codex"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"$global:__continuum_bin",
+		"function global:__continuum_run",
+		"Application,ExternalScript",
+		"function global:claude { __continuum_run 'claude' 'claude' $args }",
+		"function global:codex { __continuum_run 'codex' 'codex' $args }",
+	} {
+		if !strings.Contains(psFns, want) {
+			t.Fatalf("missing %q in:\n%s", want, psFns)
+		}
+	}
+	if strings.Contains(psFns, "& $Command @Rest") {
+		t.Fatalf("recursive fallback still present in:\n%s", psFns)
 	}
 }
 

@@ -184,7 +184,7 @@ func doInstall(o installOptions) error {
 		fmt.Printf("%-10s %s %s\n", t.Harness+":", verb, tildePath(t.Path))
 	}
 
-	if o.Shell && runtime.GOOS != "windows" {
+	if o.Shell {
 		for _, line := range installShell(bin, o.Dry) {
 			fmt.Println(line)
 		}
@@ -514,6 +514,7 @@ var ownFiles = []string{
 	"jobs.json", "sessions.json", "offsets.json", "history.jsonl", "history.jsonl.1",
 	"daemon.log", "daemon.log.1", "daemon.stderr.log", "daemon.lock", "daemon.pid",
 	"hooks.log", "hooks.log.1", "stopped",
+	cleanupScanFile, cleanupLockFile,
 }
 
 // purgeHome deletes Continuum's files in dir, then dir if it is empty.

@@ -310,3 +310,24 @@ func TestGoneWrapperWithNothingElseIsPermanent(t *testing.T) {
 		t.Fatalf("with a session id: %v", err)
 	}
 }
+
+func TestTrackClosedSessionsOffBlocksStoppedNativeCommands(t *testing.T) {
+	r, _ := rules.Load("")
+	dir := t.TempDir()
+	claude, calls := fakeAgent(t, dir, "claude", "--resume --print")
+	off := false
+	o := Options{
+		Rules:      r,
+		Config:     core.Config{Binaries: map[string]string{"claude": claude}, TrackClosedSessions: &off},
+		Prompt:     "go on",
+		Strategies: []string{"native"},
+		Live:       closed,
+	}
+	_, err := Deliver(o, &core.Job{Harness: "claude", SessionID: "s1", Cwd: dir})
+	if err == nil || !strings.Contains(err.Error(), "track_closed_sessions=false") {
+		t.Fatalf("expected stopped native command to be blocked, got %v", err)
+	}
+	if _, err := os.Stat(calls); err == nil {
+		t.Fatal("claude should not have been invoked for a closed session")
+	}
+}

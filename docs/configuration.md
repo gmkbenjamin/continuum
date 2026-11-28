@@ -13,6 +13,7 @@
 | `keep_awake_hours` | `8` | Hold off idle sleep while a resume is due this soon; `0` turns it off. |
 | `allow_copies` | `false` | Let the agent CLI continue a session that's still open elsewhere (starts a copy). |
 | `allow_headless` | `true` | Allow native delivery through agent commands and the OpenCode API. |
+| `track_closed_sessions` | `true` | Keep tracking and resuming sessions after they close. Set to `false` (or run `continuum closed off`) to track only open sessions and drop pending resumes once a session closes. |
 | `strategies` | `["wrapper","multiplexer","terminal-app","native"]` | Delivery routes, in order. |
 | `shell_hook_agents` | installed agents | Commands the shell hook wraps (replaces the default list). |
 | `max_wait_hours` | `192` | Don't schedule resets further away than this. |
@@ -42,7 +43,9 @@ Everything is in `~/.continuum`; set `CONTINUUM_HOME` to move it.
 | `messages.json` | Resume messages you set with `continuum message`: default, per agent, folder and session |
 | `scope.json` | All or chosen sessions, chosen and excluded entries |
 | `rules.json` | Your rules overrides (optional) |
-| `jobs.json`, `sessions.json`, `offsets.json` | Scheduler state |
+| `jobs.json`, `sessions.json`, `instances.json`, `offsets.json` | Scheduler state (scheduled resumes, known conversations, running wrapper instances, transcript offsets) |
+| `state.json` | Live session/wrapper snapshot published by the daemon for `status` and `sessions` |
+| `cleanup-scan.json` | Findings saved by the latest `continuum cleanup scan` for review and `terminate` |
 | `history.jsonl` | Every scheduled, delivered, skipped and failed resume |
 | `daemon.log`, `daemon.log.1` | Daemon log (rotates at 5 MB); `continuum logs -f` follows it |
 | `hooks.log`, `hooks.log.1` | One line per hook call, when debug logging is on (rotates at 2 MB) |

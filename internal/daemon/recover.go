@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/continuum-dev/continuum/internal/core"
 	"github.com/continuum-dev/continuum/internal/sources"
@@ -71,8 +70,7 @@ func (d *Daemon) requeueCodexRecovery(j *core.Job) error {
 		return errors.New(why)
 	}
 	now := d.Now()
-	j.State, j.Result, j.DueAt, j.UpdatedAt = core.StatePending, "", now, now
-	j.DeliveredVia, j.DeliveredAt, j.WaitingOpen = "", time.Time{}, false
+	markJobRequeued(j, now)
 	d.history("recover", j, nil)
 	d.dirty = true
 	return nil

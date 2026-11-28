@@ -79,6 +79,7 @@ func runDaemon(o daemonOptions) error {
 	}
 	d.Log = logx.New(sinks...)
 	d.Compat = daemon.LoadCompat(p)
+	d.PublishSnapshot = true
 	if o.Once {
 		d.Tick()
 		return nil

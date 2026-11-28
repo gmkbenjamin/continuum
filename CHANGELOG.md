@@ -4,6 +4,67 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-28
+
+### Added
+
+- **Cross-platform stale process cleanup (`continuum cleanup`).** On-demand
+  scanner and terminator for macOS, Linux, and Windows:
+  - `continuum cleanup scan` saves confirmed leftover findings to
+    `~/.continuum/cleanup-scan.json` for review; `continuum cleanup terminate SCAN_ID PID...`
+    (or `--all SCAN_ID`) revalidates boot session, start time, ownership,
+    process-group membership, and live evidence before sending `SIGTERM` (Unix)
+    or handle-verified termination (Windows).
+  - `continuum cleanup scan --auto` scans and stops confirmed findings in one
+    run without overwriting a saved review scan.
+  - Excludes the running Continuum daemon, current shell ancestry, launchd
+    services (macOS), systemd service units (Linux), and other users' processes.
+- **Closed-session tracking option (`track_closed_sessions` / `continuum closed`).**
+  Run `continuum closed off` to track and resume only open sessions: pending
+  resumes drop as soon as their session closes, closed transcripts are not
+  scheduled, and `status`, `list`, and `sessions` omit closed sessions unless
+  `--all` is passed.
+- **Windows feature parity with macOS and Linux.**
+  - Native Windows process inspection in `internal/proc`: `StartTime`
+    (`GetProcessTimes`), `Args`, `Cwd`, `Environ` (`NtQueryInformationProcess` +
+    PEB `RTL_USER_PROCESS_PARAMETERS` / `ProcessCommandLineInformation`), and
+    full command lines in `List()`.
+  - Windows ConPTY attached-terminal delivery (`internal/deliver/pty_windows.go`)
+    so interactive `use_pty` resume commands (such as `claude-attach`) work on
+    Windows.
+  - PowerShell shell hook integration (`continuum shell-init pwsh|powershell`,
+    installed into PowerShell 7 / Windows PowerShell profiles on Windows).
+- **Codex hooks trust check in `continuum doctor`.** Flags `~/.codex/config.toml`
+  `[hooks.state]` entries that lack `enabled = true` so users know why Codex is
+  relying on rollout tailing.
+
+### Changed
+
+- **First-class wrapper instance model (`instances.json`) and daemon snapshot (`state.json`).**
+  Separates running terminal/wrapper instances (`store.Instance`) from
+  conversations (`store.Session`), emits explicit `wrapper_start` / `wrapper_exit`
+  lifecycle events, recovers cleanly from crashed wrappers, and publishes one
+  canonical live `Snapshot` from the daemon for CLI commands (`status`,
+  `sessions`, `choose`) to eliminate daemon/CLI split-brain.
+- **Per-agent drivers, explicit `JobPhase` state machine, and modular daemon.**
+  Isolated agent-specific logic into dedicated drivers across `daemon`, `hooks`,
+  and `deliver`, replaced overlapping job status booleans with `JobPhase` and
+  atomic transitions (`internal/daemon/jobstate.go`), and split the monolithic
+  `internal/daemon/daemon.go` into focused modules (`daemon.go`, `ingest.go`,
+  `schedule.go`, `delivery.go`, `maintenance.go`, `snapshot.go`).
+
+### Fixed
+
+- **Codex open sessions no longer duplicated or falsely marked `closed`.**
+  Unambiguous live Codex wrappers now bind to their rollout-discovered
+  conversation (by argv resume, tracked `Instance.ActiveSessionID`, or unique
+  directory wrapper), and ambiguous non-wrapped process scans leave `Checked`
+  unset instead of reporting an active session as `closed`.
+- **Antigravity CLI subagent conversations ignored.** Filters internal subagent
+  transcripts (step 0 `SYSTEM`/`SYSTEM_MESSAGE` with `sender=`) across tailing,
+  hooks, startup job reconciliation, and status views, and stops keep-awake from
+  holding sleep open for closed non-headless jobs.
+
 ## [0.16.0] - 2026-11-27
 
 ### Added

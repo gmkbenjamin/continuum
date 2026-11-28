@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -110,6 +109,11 @@ func cmdDoctor() int {
 		ok("%s %s (%s)", h.DisplayName, strings.TrimSpace(firstLineOf(ver)), bin)
 		if inst, detail := hooks.Installed(t); inst {
 			ok("  hooks installed in %s", t.Path)
+			if t.Harness == "codex" {
+				if note := hooks.CodexHooksTrustNote(cfg); note != "" {
+					warn("  %s", note)
+				}
+			}
 		} else {
 			warn("  hooks not installed (%s): `continuum install`", detail)
 		}
@@ -271,7 +275,7 @@ func cmdDoctor() int {
 			ok("any terminal: shell hook in %s wraps installed agents", rc.Path)
 		}
 	}
-	if !hooked && runtime.GOOS != "windows" {
+	if !hooked {
 		warn("any other terminal: no shell hook yet (`continuum install`), or start agents with `continuum run -- <agent>`")
 	}
 

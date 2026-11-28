@@ -58,7 +58,7 @@ type AgentCompat struct {
 // once that was seen to hold here, for its current build. Only then can a
 // second process holding a conversation be told to be an out-of-date copy.
 func (c *Compat) ExactPIDs(harness string) bool {
-	if harness == "claude" {
+	if DriverFor(harness).AlwaysExactPIDs() {
 		return true
 	}
 	if c == nil {

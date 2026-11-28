@@ -11,9 +11,6 @@ import (
 
 	"github.com/continuum-dev/continuum/internal/core"
 	"github.com/continuum-dev/continuum/internal/daemon"
-	"github.com/continuum-dev/continuum/internal/deliver"
-	"github.com/continuum-dev/continuum/internal/live"
-	"github.com/continuum-dev/continuum/internal/proc"
 	"github.com/continuum-dev/continuum/internal/rules"
 	"github.com/continuum-dev/continuum/internal/scope"
 	"github.com/continuum-dev/continuum/internal/store"
@@ -50,186 +47,70 @@ type knownSession struct {
 	Copies []knownSession
 }
 
-// knownSessions lists open sessions (from the agents) and recently seen ones
-// (from Continuum's own records), newest first.
-func knownSessions() []knownSession {
+func currentSnapshot() daemon.Snapshot {
 	p := core.GetPaths()
 	cfg, _ := core.LoadConfig(p.Config)
 	r, _ := rules.Cached(p.Rules)
-	var out []knownSession
-	seen := map[string]bool{}
-	sessions := map[string]*store.Session{}
-	_ = store.LoadJSON(p.Sessions, &sessions)
-	jobs, _ := store.LoadJobs(p.Jobs)
-	compat := daemon.LoadCompat(p)
-	index := map[string]int{}
-	for _, name := range r.HarnessNames() {
-		h := r.Harness(name)
-		if h.LiveSessions == nil || !cfg.HarnessEnabled(name) {
-			continue
-		}
-		bin, _ := deliver.Binary(cfg, h)
-		list, _ := live.Default().List(h, live.Query{Bin: bin, Homes: cfg.Homes()})
-		for _, s := range list {
-			if s.SessionID == "" {
-				continue
-			}
-			where := s.Kind
-			switch {
-			case s.PID <= 0 && s.Kind == "background":
-				where += ", not running"
-			case s.WaitingFor != "":
-				where += ", waiting: " + s.WaitingFor
-			case s.Status != "":
-				where += ", " + s.Status
-			}
-			open := s.PID > 0
-			lastSeen := s.StatusSince
-			if open {
-				lastSeen = time.Now()
-			}
-			ks := knownSession{Harness: name, ID: s.SessionID, Short: s.ShortID, Name: s.Name, Cwd: s.Cwd, Where: where,
-				Open: open, LastSeen: lastSeen, Live: true, Checked: true,
-				Status: s.Status, StatusSince: s.StatusSince, Kind: s.Kind, WaitingFor: s.WaitingFor, Tmux: s.Tmux, Entrypoint: s.Entrypoint, PID: s.PID}
-			if seen[name+s.SessionID] {
-				// The same conversation in a second process: the one the
-				// hooks last heard from holds it, the other is a copy.
-				first := &out[index[name+s.SessionID]]
-				if st := sessions[store.SessionKey(name, s.SessionID)]; st != nil && st.PID > 0 && st.PID == s.PID && first.PID != s.PID {
-					ks.Copies = append(first.Copies, *first)
-					first.Copies = nil
-					*first = ks
-				} else {
-					first.Copies = append(first.Copies, ks)
-				}
-				continue
-			}
-			seen[name+s.SessionID] = true
-			index[name+s.SessionID] = len(out)
-			out = append(out, ks)
+	return daemon.LoadOrBuildSnapshot(p, cfg, r, daemonRunning(p))
+}
+
+func fromSnapshotSession(s daemon.SnapshotSession) knownSession {
+	where := s.Where
+	if where == "" && !s.LastSeen.IsZero() {
+		where = "seen " + ago(s.LastSeen)
+	}
+	ks := knownSession{
+		Harness: s.Harness, ID: s.ID, Short: s.Short, Name: s.Name, Cwd: s.Cwd, Where: where,
+		Open: s.Open, LastSeen: s.LastSeen, Status: s.Status, StatusSince: s.StatusSince,
+		Kind: s.Kind, WaitingFor: s.WaitingFor, Tmux: s.Tmux, Entrypoint: s.Entrypoint,
+		PID: s.PID, Location: s.Location, Live: s.Live, Checked: s.Checked,
+		StaleCopy: s.StaleCopy, Host: s.Host,
+	}
+	if len(s.Copies) > 0 {
+		ks.Copies = make([]knownSession, len(s.Copies))
+		for i, c := range s.Copies {
+			ks.Copies[i] = fromSnapshotSession(c)
 		}
 	}
-	// Fill in what hooks recorded (where it runs, where it started) for the
-	// sessions the agent listed itself.
-	for i := range out {
-		if st := sessions[store.SessionKey(out[i].Harness, out[i].ID)]; st != nil {
-			out[i].StaleCopy = staleCopy(r, compat, out[i], st)
-			// The pane the hooks recorded belongs to the process they heard
-			// from: not to another copy listed in its place.
-			samePID := st.PID <= 0 || out[i].PID <= 0 || st.PID == out[i].PID
-			if out[i].Location == nil && samePID && (st.Location == nil || st.Location.Kind != "wrapper" || deliver.WrapperAlive(p, st.Location.Target)) {
-				out[i].Location = st.Location
-			}
-			if out[i].Entrypoint == "" {
-				out[i].Entrypoint = st.Entrypoint
-			}
-			if !out[i].Open && st.LastSeen.After(out[i].LastSeen) {
-				out[i].LastSeen = st.LastSeen
-			}
+	return ks
+}
+
+func toSnapshotSession(k knownSession) daemon.SnapshotSession {
+	s := daemon.SnapshotSession{
+		Harness: k.Harness, ID: k.ID, Short: k.Short, Name: k.Name, Cwd: k.Cwd, Where: k.Where,
+		Open: k.Open, LastSeen: k.LastSeen, Status: k.Status, StatusSince: k.StatusSince,
+		Kind: k.Kind, WaitingFor: k.WaitingFor, Tmux: k.Tmux, Entrypoint: k.Entrypoint,
+		PID: k.PID, Location: k.Location, Live: k.Live, Checked: k.Checked,
+		StaleCopy: k.StaleCopy, Host: k.Host,
+	}
+	if len(k.Copies) > 0 {
+		s.Copies = make([]daemon.SnapshotSession, len(k.Copies))
+		for i, c := range k.Copies {
+			s.Copies[i] = toSnapshotSession(c)
 		}
 	}
-	for _, s := range sessions {
-		// A session with a resume pending is listed however it ended and
-		// however long ago it was seen: status says how that resume goes.
-		j := jobs[store.SessionKey(s.Harness, s.SessionID)]
-		pending := j != nil && (j.State == core.StatePending || j.State == core.StateNeedsUser)
-		if s.SessionID == "" || seen[s.Harness+s.SessionID] || !pending && (time.Since(s.LastSeen) > 3*24*time.Hour || s.Ended) {
-			continue
-		}
-		seen[s.Harness+s.SessionID] = true
-		ks := knownSession{Harness: s.Harness, ID: s.SessionID, Cwd: s.Cwd, Where: "seen " + ago(s.LastSeen), LastSeen: s.LastSeen,
-			Location: s.Location, Entrypoint: s.Entrypoint, PID: s.PID}
-		if s.Harness == "codex" && s.PID > 0 && live.CodexAppServer(proc.Args(s.PID)) {
-			ks.Location, ks.PID = nil, 0
-		}
-		// Agents without a session list (Codex, ...): ask the process table
-		// whether a recent session is still open.
-		// One with a resume pending is checked however long ago it was seen.
-		if h := r.Harness(s.Harness); h != nil && (pending || time.Since(s.LastSeen) < 12*time.Hour) && (h.LiveSessions != nil || len(h.DesktopApps) > 0) {
-			pid := ks.PID
-			wrapperAlive := false
-			if ks.Location != nil && ks.Location.Kind == "wrapper" {
-				if deliver.WrapperAlive(p, ks.Location.Target) {
-					wrapperAlive = true
-				} else {
-					pid = 0
-					ks.PID = 0
-					ks.Location = nil
-				}
-			}
-			if !wrapperAlive && pid > 0 {
-				if _, name, ok := proc.Info(pid); !ok || !h.IsHarnessProcess(name) {
-					pid = 0
-				}
-			}
-			bin, _ := deliver.Binary(cfg, h)
-			st := live.Default().Lookup(h, live.Query{SessionID: s.SessionID, Cwd: s.Cwd, PID: pid, Bin: bin, Entrypoint: s.Entrypoint,
-				Homes: cfg.Homes()})
-			ks.Open, ks.Checked = st.Open, st.Checked
-			if st.Source == "processes" && !st.ProcessMatch {
-				ks.Open = wrapperAlive || (pid > 0 && st.Session != nil && st.Session.PID == pid)
-			}
-			if st.ProcessMatch {
-				ks.PID = st.Session.PID
-				ks.Location = nil // use the matched process's current route below
-			}
-		}
-		out = append(out, ks)
-	}
-	// Sessions started before Continuum's hooks (or without them): their
-	// process's environment still says which pane they run in.
-	locate := func(k *knownSession) {
-		if k.PID <= 0 || !k.Open {
-			return
-		}
-		env := proc.Environ(k.PID)
-		if loc := deliver.LocationFromEnv(p, r, env); loc != nil && (loc.Kind == "wrapper" || k.Location == nil) {
-			k.Location = loc
-		}
-		k.Host = hostFromEnv(r, env)
-	}
-	for i := range out {
-		locate(&out[i])
-		for c := range out[i].Copies {
-			locate(&out[i].Copies[c])
-		}
-	}
-	// Open sessions first, then by recency.
-	for i := 1; i < len(out); i++ {
-		for k := i; k > 0 && less(out[k], out[k-1]); k-- {
-			out[k], out[k-1] = out[k-1], out[k]
-		}
+	return s
+}
+
+func knownSessionsFromSnapshot(snap daemon.Snapshot) []knownSession {
+	out := make([]knownSession, len(snap.Sessions))
+	for i, s := range snap.Sessions {
+		out[i] = fromSnapshotSession(s)
 	}
 	return out
 }
 
-// staleCopy: k (listed by the agent) is not the process its hooks last heard
-// from, which isn't listed holding the session, and k hasn't done anything
-// since: k is an out-of-date copy. Mirrors the daemon's check, for agents
-// whose hooks name the exact process (Compat.ExactPIDs).
-func staleCopy(r *rules.Rules, c *daemon.Compat, k knownSession, st *store.Session) bool {
-	if !c.ExactPIDs(k.Harness) || !k.Open || k.PID <= 0 || st.PID <= 0 || k.PID == st.PID {
-		return false
-	}
-	for _, cp := range k.Copies {
-		if cp.PID == st.PID {
-			return false
-		}
-	}
-	// The recorded process isn't listed holding it: it quit or moved on to
-	// another conversation. k is out of date unless it did something since.
-	if r == nil {
-		return false
-	}
-	h := r.Harness(k.Harness)
-	return h.LiveSessions == nil || !live.ActiveSince(&live.Session{Status: k.Status, StatusSince: k.StatusSince}, h.LiveSessions.BusyStates, st.LastSeen)
+// knownSessions lists open sessions (from the agents) and recently seen ones
+// (from Continuum's own records), newest first, using the daemon's canonical
+// snapshot when running or the shared BuildSnapshot resolver otherwise.
+func knownSessions() []knownSession {
+	return knownSessionsFromSnapshot(currentSnapshot())
 }
 
-func less(a, b knownSession) bool {
-	if a.Open != b.Open {
-		return a.Open
-	}
-	return a.LastSeen.After(b.LastSeen)
+// staleCopy forwards to daemon.SnapshotStaleCopy so the CLI and daemon share
+// one implementation of stale-copy detection.
+func staleCopy(r *rules.Rules, c *daemon.Compat, k knownSession, st *store.Session) bool {
+	return daemon.SnapshotStaleCopy(r, c, toSnapshotSession(k), st)
 }
 
 func ago(t time.Time) string {
@@ -511,11 +392,18 @@ func cmdUnchoose(list string, args []string) error {
 
 func cmdSessions(args []string) error {
 	fs := newFlagSet("sessions")
+	all := fs.Bool("all", false, "Include sessions closed in the last 3 days even when closed-session tracking is off.")
 	asJSON := fs.Bool("json", false, "Print JSON (for scripts and other apps).")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
-	rows := sessionRows(3 * 24 * time.Hour)
+	p := core.GetPaths()
+	cfg, _ := core.LoadConfig(p.Config)
+	window := 3 * 24 * time.Hour
+	if !cfg.ClosedSessionsTracked() && !*all {
+		window = 0
+	}
+	rows := sessionRows(window)
 	if *asJSON {
 		return printRowsJSON(rows)
 	}
@@ -524,7 +412,7 @@ func cmdSessions(args []string) error {
 		return nil
 	}
 	printSessionTable(os.Stdout, rows, true)
-	sc, _ := scope.Load(core.GetPaths())
+	sc, _ := scope.Load(p)
 	fmt.Printf("\nScope: %s. Change with `continuum scope all|chosen`, `continuum choose ID`, `continuum exclude ID`.\n", sc.Mode)
 	return nil
 }

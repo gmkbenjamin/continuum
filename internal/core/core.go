@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-var Version = "0.16.0"
+var Version = "0.17.0"
 
 // Location says where an agent is running so input can be delivered to it
 // without focusing any window.
@@ -40,6 +40,10 @@ const (
 	KindTransient    = "transient"
 	KindSessionStart = "session_start"
 	KindSessionEnd   = "session_end"
+	// KindWrapperStart: a `continuum run` wrapper process started.
+	KindWrapperStart = "wrapper_start"
+	// KindWrapperExit: a `continuum run` wrapper process exited.
+	KindWrapperExit  = "wrapper_exit"
 	KindActivity     = "activity"      // the session did something after a limit
 	KindNativeGaveUp = "native_gaveup" // the agent says it will not resume by itself
 	KindNeverResume  = "never_resume"  // needs a human (billing, auth, spend cap)
@@ -181,6 +185,8 @@ type Paths struct {
 	Spool     string
 	Jobs      string
 	Sessions  string
+	Instances string
+	State     string
 	Offsets   string
 	History   string
 	Log       string
@@ -211,6 +217,8 @@ func GetPaths() Paths {
 		Spool:     filepath.Join(h, "spool"),
 		Jobs:      filepath.Join(h, "jobs.json"),
 		Sessions:  filepath.Join(h, "sessions.json"),
+		Instances: filepath.Join(h, "instances.json"),
+		State:     filepath.Join(h, "state.json"),
 		Offsets:   filepath.Join(h, "offsets.json"),
 		History:   filepath.Join(h, "history.jsonl"),
 		Log:       filepath.Join(h, "daemon.log"),
@@ -264,6 +272,10 @@ type Config struct {
 	// while the session is still open elsewhere (which starts a second copy).
 	// Off by default: Continuum only ever continues the original session.
 	AllowCopies *bool `json:"allow_copies,omitempty"`
+	// TrackClosedSessions keeps tracking and resuming sessions after their
+	// terminal or process closes (default: true). When false, Continuum only
+	// tracks open sessions and drops pending resumes once a session closes.
+	TrackClosedSessions *bool `json:"track_closed_sessions,omitempty"`
 	// KeepAwakeHours: hold off idle sleep while a resume is due within this
 	// many hours, and while a resumed session keeps working. 0 turns it off.
 	KeepAwakeHours *int `json:"keep_awake_hours,omitempty"`
@@ -315,9 +327,10 @@ func (c Config) HeadlessAllowed() bool    { return b(c.AllowHeadless, true) }
 func (c Config) TranscriptsWatched() bool { return b(c.WatchTranscripts, true) }
 func (c Config) PanesScanned() bool       { return b(c.ScanPanes, true) }
 func (c Config) NotifyEnabled() bool      { return b(c.Notify, true) }
-func (c Config) AutostartEnabled() bool   { return b(c.AutostartDaemon, true) }
-func (c Config) CopiesAllowed() bool      { return b(c.AllowCopies, false) }
-func (c Config) KeepAwake() time.Duration { return time.Duration(i(c.KeepAwakeHours, 8)) * time.Hour }
+func (c Config) AutostartEnabled() bool      { return b(c.AutostartDaemon, true) }
+func (c Config) CopiesAllowed() bool         { return b(c.AllowCopies, false) }
+func (c Config) ClosedSessionsTracked() bool { return b(c.TrackClosedSessions, true) }
+func (c Config) KeepAwake() time.Duration    { return time.Duration(i(c.KeepAwakeHours, 8)) * time.Hour }
 func (c Config) MaxWait() time.Duration   { return time.Duration(i(c.MaxWaitHours, 24*8)) * time.Hour }
 func (c Config) CatchUp() time.Duration   { return time.Duration(i(c.CatchUpHours, 12)) * time.Hour }
 func (c Config) HarnessEnabled(h string) bool {

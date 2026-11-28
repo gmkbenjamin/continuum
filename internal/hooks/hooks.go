@@ -19,7 +19,6 @@ import (
 	"unicode"
 
 	"github.com/continuum-dev/continuum/internal/core"
-	"github.com/continuum-dev/continuum/internal/live"
 	"github.com/continuum-dev/continuum/internal/mux"
 	"github.com/continuum-dev/continuum/internal/proc"
 	"github.com/continuum-dev/continuum/internal/resettime"
@@ -107,9 +106,6 @@ func BuildEvent(r *rules.Rules, harness string, in Input, env map[string]string,
 	if in.SessionID == "" {
 		in.SessionID = in.ConversationIDCamel
 	}
-	if in.SessionID == "" && harness == "antigravity" && env != nil {
-		in.SessionID = env["ANTIGRAVITY_CONVERSATION_ID"]
-	}
 	if in.TranscriptPath == "" {
 		in.TranscriptPath = in.TranscriptPathCamel
 	}
@@ -140,14 +136,10 @@ func BuildEvent(r *rules.Rules, harness string, in Input, env map[string]string,
 	} else {
 		ev.Location = mux.LocateFromEnv(r, env)
 	}
-	if v := env["CLAUDE_CODE_ENTRYPOINT"]; v != "" && harness == "claude" {
-		ev.Entrypoint = v
-	}
+	drv := hookDriverFor(harness)
+	drv.EnrichEvent(in, env, &ev)
 	if h.IgnoredEntrypoint(ev.Entrypoint) {
 		return ev, false // print mode or an SDK script: nobody types into it
-	}
-	if pid, err := strconv.Atoi(env["CLAUDE_PID"]); err == nil && harness == "claude" {
-		ev.PID = pid
 	}
 	if st, err := os.Stat(in.TranscriptPath); err == nil {
 		ev.TranscriptSize = st.Size()
@@ -195,64 +187,8 @@ func BuildEvent(r *rules.Rules, harness string, in Input, env map[string]string,
 			}
 		}
 	case "stop", "afteragentresponse":
-		if harness == "antigravity" {
-			errCode, errMsg := rawErrorParts(in.Error)
-			var errParts []string
-			for _, p := range []string{errCode, errMsg, strings.TrimSpace(in.ErrorDetails)} {
-				if p != "" {
-					errParts = append(errParts, p)
-				}
-			}
-			errText := strings.Join(errParts, "\n")
-			if strings.EqualFold(in.TerminationReason, "ERROR") || errText != "" {
-				switch {
-				case errText != "" && h.NeverResume(errText):
-					ev.Kind = core.KindNeverResume
-				case errText != "":
-					if m := h.Classify(errText, 8); m != nil {
-						ev.Kind = m.Kind
-					} else if errCode != "" {
-						if k, ok := h.StopFailureKinds[strings.ToLower(errCode)]; ok {
-							ev.Kind = k
-						} else {
-							ev.Kind = core.KindTurnFailed
-						}
-					} else {
-						ev.Kind = core.KindTurnFailed
-					}
-				default:
-					// Stopped on an error with no details: let the transcript
-					// tailer or wrapper screen classify it.
-					return ev, false
-				}
-				ev.Message = errText
-				ev.Model = in.Model
-				if ev.Kind == core.KindUsageLimit {
-					if t, ok := resettime.Parse(errText, now, time.Local); ok {
-						ev.ResetAt = t
-					}
-				}
-				break
-			}
-			switch strings.ToUpper(strings.TrimSpace(in.TerminationReason)) {
-			case "NO_TOOL_CALL", "COMPLETED", "END_TURN", "STOP", "DONE":
-				reply := clip(in.LastAssistantMessage, 8000)
-				if reply != "" && h.Classify(reply, strings.Count(reply, "\n")+1) != nil {
-					ev.Kind = core.KindReply
-					ev.Message = reply
-					ev.Model = in.Model
-				} else {
-					ev.Kind = core.KindActivity
-					ev.Model = in.Model
-					ev.Answered = h.StopHookAnswers
-				}
-			case "USER_CANCELED":
-				ev.Kind = core.KindActivity
-				ev.Model = in.Model
-			default:
-				// Other non-normal termination reasons (MAX_INVOCATIONS,
-				// TERMINAL_CUSTOM_HOOK, unknown) neither prove a model answer
-				// nor clear a stall on their own.
+		if handled, keep := drv.HandleStop(h, in, now, &ev); handled {
+			if !keep {
 				return ev, false
 			}
 			break
@@ -530,31 +466,12 @@ func Handle(harness string, stdin io.Reader, environ []string) bool {
 			ev.PID = pid
 		}
 	}
-	if harness == "codex" {
-		_, pid := NearestAgent(r, tree, ppid)
-		if ev.PID > 0 {
-			pid = ev.PID
-		}
-		if pid > 0 && live.CodexAppServer(ProcArgs(pid)) {
-			// The server inherited its launcher's terminal, which may
-			// belong to an entirely different conversation.
-			ev.Location, ev.PID = nil, 0
-		}
-	}
+	drv := hookDriverFor(harness)
+	drv.SanitizeProcess(r, tree, ppid, &ev)
 	if h := r.Harness(harness); h.HookRequiresCLI {
-		if harness == "antigravity" {
-			if !isAntigravityCLI(in, env, r, tree, ppid) {
-				debugHook(p, harness, eventName+": not run by Antigravity CLI; ignored")
-				return false
-			}
-		} else if len(tree) > 0 {
-			if a, _ := NearestAgent(r, tree, ppid); a != harness {
-				// Another program read this agent's hook file (the Cursor
-				// editor reads ~/.cursor/hooks.json, as does Grok Build): its
-				// events are not this CLI's sessions.
-				debugHook(p, harness, eventName+": not run by its command-line agent; ignored")
-				return false
-			}
+		if ok, reason := drv.ValidateCLI(in, env, r, tree, ppid, ev); !ok {
+			debugHook(p, harness, eventName+": "+reason)
+			return false
 		}
 	}
 	if !interactive(r, harness, tree, ppid) {
@@ -652,7 +569,7 @@ var ProcArgs = proc.Args
 // originator), so they are not checked here; when the agent's process or its
 // arguments can't be found, it counts as interactive.
 func interactive(r *rules.Rules, harness string, tree map[int]proc.Node, ppid int) bool {
-	if harness == "claude" || harness == "codex" {
+	if hookDriverFor(harness).SelfReportsInteractive() {
 		return true
 	}
 	h := r.Harness(harness)
@@ -772,17 +689,14 @@ func quote(path string) string {
 // Continuum is deleted without `continuum uninstall`, the agent never shows a
 // hook error: the hook just does nothing.
 func Command(bin, harness string) string {
+	drv := hookDriverFor(harness)
 	if runtime.GOOS == "windows" {
-		if harness == "antigravity" {
-			return quote(bin) + " hook " + harness + " 2>NUL || echo {}"
+		if fb := drv.WindowsFallback(); fb != "" {
+			return quote(bin) + " hook " + harness + " " + fb
 		}
 		return quote(bin) + " hook " + harness
 	}
-	fallback := "true"
-	if harness == "antigravity" {
-		fallback = `printf "{}\n"`
-	}
-	inner := `"` + shDoubleQuoteEscape(bin) + `" hook ` + harness + ` 2>/dev/null || ` + fallback
+	inner := `"` + shDoubleQuoteEscape(bin) + `" hook ` + harness + ` 2>/dev/null || ` + drv.ShellFallback()
 	return "/bin/sh -c '" + strings.ReplaceAll(inner, "'", `'\''`) + "'"
 }
 

@@ -110,8 +110,18 @@ func Run(o Options) (int, error) {
 	defer os.RemoveAll(dir)
 	_ = os.WriteFile(filepath.Join(dir, "pid"), []byte(strconv.Itoa(os.Getpid())), 0o600)
 	cwd, _ := os.Getwd()
-	meta, _ := json.Marshal(map[string]any{"harness": harness, "argv": o.Argv, "cwd": cwd, "started": time.Now()})
+	started := time.Now()
+	meta, _ := json.Marshal(map[string]any{"harness": harness, "argv": o.Argv, "cwd": cwd, "started": started})
 	_ = os.WriteFile(filepath.Join(dir, "meta.json"), meta, 0o600)
+	_ = core.SpoolEvent(p, core.Event{
+		Harness:  harness,
+		Kind:     core.KindWrapperStart,
+		At:       started,
+		Source:   "wrapper",
+		Location: &core.Location{Kind: "wrapper", Target: id},
+		Cwd:      cwd,
+		PID:      os.Getpid(),
+	})
 	msg := o.Message
 	if msg == "" {
 		msg = os.Getenv("CONTINUUM_MESSAGE")
@@ -434,6 +444,15 @@ func Run(o Options) (int, error) {
 	}
 	close(stop)
 	wg.Wait()
+	_ = core.SpoolEvent(p, core.Event{
+		Harness:  harness,
+		Kind:     core.KindWrapperExit,
+		At:       time.Now(),
+		Source:   "wrapper",
+		Location: &core.Location{Kind: "wrapper", Target: id},
+		Cwd:      cwd,
+		PID:      os.Getpid(),
+	})
 	return code, werr
 }
 

@@ -133,6 +133,26 @@ the letter shown in brackets ([s]tatus, s[c]ope, ...). Running ` + "`continuum`"
 with no arguments in a terminal opens it too.`,
 	},
 	{
+		Name: "cleanup", Group: "Set up", Args: "scan [options] | terminate [options] SCAN_ID [PID...]",
+		Summary: "Find and stop known leftover processes (macOS, Linux, Windows)",
+		Detail: `Run scan to review recognized detached test jobs (and disconnected macOS log
+streams). The scan saves its findings in ~/.continuum/cleanup-scan.json
+(or under CONTINUUM_HOME). Each review scan replaces the previous one.
+
+Run terminate with that scan's ID and the PIDs you approved, or with --all
+before the scan ID. Use scan --auto to scan and stop confirmed findings in
+one run. The automatic run leaves the saved review available.
+
+Both modes check the process start time, ownership, and current evidence
+before stopping the process (SIGTERM on macOS/Linux, handle-verified
+termination on Windows). Processes that changed or exited are skipped.
+Only recognized signatures are eligible, including neo-launcher test
+shells, isolated Continuum test jobs, and macOS log streams with revoked
+terminals. The active Continuum daemon and your own shell ancestry are
+always excluded. The command runs on demand and requires no Continuum daemon.`,
+		Examples: []string{"continuum cleanup scan", "continuum cleanup terminate 0123456789abcdef 1234", "continuum cleanup terminate --all 0123456789abcdef", "continuum cleanup scan --auto --json"},
+	},
+	{
 		Name: "status", Group: "Set up", Args: "[options]",
 		Summary: "Show the daemon, hooks, and every session and its state",
 		Detail: `Shows whether Continuum is running and its mode, the hooks, and every open
@@ -265,6 +285,20 @@ also to sessions already waiting.`,
 		Examples: []string{"continuum grace", "continuum grace claude 10", "continuum grace claude off"},
 	},
 	{
+		Name: "closed", Group: "Tuning", Args: "[on|off|default]",
+		Summary: "Track and resume closed sessions, or only open ones",
+		Detail: `By default, Continuum keeps stalled sessions queued after their terminal
+closes (continuing them in the background if the agent supports it, or waiting
+for you to reopen them).
+
+Turn this off to track only open sessions: pending resumes are dropped as soon
+as their session closes, closed sessions are not scheduled from transcripts,
+and ` + "`continuum status`" + `, ` + "`list`" + ` and ` + "`sessions`" + ` omit closed sessions unless ` + "`--all`" + ` is given.
+Sets ` + "`track_closed_sessions`" + ` in ~/.continuum/config.json and applies within seconds.`,
+		ArgsHelp: [][2]string{{"on", "track and resume closed sessions (the default)"}, {"off", "only track open sessions; drop resumes once a session closes"}, {"default", "back to the built-in default (on)"}},
+		Examples: []string{"continuum closed", "continuum closed off", "continuum closed on"},
+	},
+	{
 		Name: "message", Aliases: []string{"messages", "msg"}, Group: "Tuning", Args: "[show | set | reset | preview] [options] [TEXT]",
 		Summary: "What Continuum types to continue a session",
 		Detail: `Shows or changes the resume message. The most specific one is used:
@@ -320,16 +354,17 @@ focused or not. The shell hook from ` + "`install`" + ` does this for you automa
 		Examples: []string{"continuum run -- claude", "continuum run --harness generic -- my-agent --model x", "continuum run --choose -- codex"},
 	},
 	{
-		Name: "shell-init", Group: "Running agents", Args: "[zsh|bash|fish]",
+		Name: "shell-init", Group: "Running agents", Args: "[zsh|bash|fish|pwsh|powershell]",
 		Summary: "Print the shell functions that wrap installed agents",
 		Detail: `Prints one function per installed agent (claude, codex, gemini, opencode,
 grok, ...) that runs interactive sessions under ` + "`continuum run --auto`" + `. Print
 mode, --version, subcommands, pipes and redirects run the agent directly.
 The block ` + "`install`" + ` adds to your shell startup file evaluates this at each shell
 start, so newly installed agents are picked up automatically. Skip it once
-with CONTINUUM_NO_WRAP=1 <agent> or ` + "`command <agent>`" + `. Choose the commands
-with "shell_hook_agents" in config.json.`,
-		Examples: []string{`eval "$(continuum shell-init zsh)"`, "continuum shell-init fish | source"},
+with CONTINUUM_NO_WRAP=1 <agent> or ` + "`command <agent>`" + ` (PowerShell:
+$env:CONTINUUM_NO_WRAP=1). Choose the commands with "shell_hook_agents" in
+config.json.`,
+		Examples: []string{`eval "$(continuum shell-init zsh)"`, "continuum shell-init fish | source", "continuum shell-init pwsh | Out-String | Invoke-Expression"},
 	},
 	{
 		Name: "watch", Group: "Background daemon", Args: "[options]",
@@ -587,7 +622,7 @@ func parseFlags(fs *flag.FlagSet, args []string) error {
 }
 
 // flagCommands lists the commands that parse options; their help shows them.
-var flagCommands = map[string]bool{"this": true, "agent-guide": true, "disable": true, "enable": true, "status": true, "sessions": true, "diagnose": true, "watch": true, "logs": true, "install": true, "update": true, "uninstall": true, "run": true, "list": true, "detect": true, "rules": true, "daemon": true}
+var flagCommands = map[string]bool{"this": true, "agent-guide": true, "disable": true, "enable": true, "status": true, "sessions": true, "diagnose": true, "cleanup": true, "watch": true, "logs": true, "install": true, "update": true, "uninstall": true, "run": true, "list": true, "detect": true, "rules": true, "daemon": true}
 
 // subcommandCommands have subcommands with their own options; their help
 // text documents every option.

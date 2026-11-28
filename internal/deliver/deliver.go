@@ -467,19 +467,15 @@ func sessionStopped(o Options, job *core.Job) (bool, string) {
 }
 
 func viaNative(o Options, h *rules.Harness, job *core.Job) (Result, error) {
-	if h.Name == "opencode" && job.Location != nil && job.Location.Kind == opencode.LocationKind {
-		return viaOpenCode(o, job)
+	drv := nativeDriverFor(h.Name)
+	if res, handled, err := drv.PreCommand(o, job); handled {
+		return res, err
 	}
 	if len(h.NativeCommands) == 0 {
 		return Result{}, errSkip
 	}
 	if job.SessionID == "" {
 		return Result{}, fmt.Errorf("session id unknown%w", quiet(errPermanent))
-	}
-	if h.Name == "codex" {
-		if res, err := resumeCodexServer(o, job); !errors.Is(err, errSkip) {
-			return res, err
-		}
 	}
 	bin, err := Binary(o.Config, h)
 	if err != nil {
@@ -495,6 +491,10 @@ func viaNative(o Options, h *rules.Harness, job *core.Job) (Result, error) {
 			// A command that delivers through the desktop app's own backend
 			// reaches the session the app holds: that is not a copy.
 			viaApp := nc.ReachesDesktop && o.Live != nil && o.Live.DesktopApp != ""
+			if !o.Config.ClosedSessionsTracked() && !viaApp {
+				reasons = append(reasons, nc.Name+": disabled by track_closed_sessions=false")
+				continue
+			}
 			if !stopped && !viaApp && !o.Config.CopiesAllowed() {
 				reasons = append(reasons, nc.Name+": "+openWhy)
 				blockedByOpen = true
@@ -548,8 +548,7 @@ func viaNative(o Options, h *rules.Harness, job *core.Job) (Result, error) {
 		}
 		logPath := filepath.Join(logDir, "native-"+nc.Name+".log")
 		if nc.Detach {
-			if h.Name == "codex" && nc.Name == "codex-exec-resume" {
-				detail, err := startCodexExec(argv, dir, env, logDir, job.SessionID, 10*time.Second)
+			if detail, handled, err := drv.StartDetached(nc, argv, dir, env, logDir, job); handled {
 				return Result{Via: nc.Name, Detail: detail}, err
 			}
 			pid, err := proc.StartDetached(argv, dir, env, logPath)

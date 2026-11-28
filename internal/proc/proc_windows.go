@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -92,8 +93,8 @@ type Process struct {
 	Line string
 }
 
-// List returns every process. Windows does not expose other processes'
-// command lines cheaply, so Args holds only the executable name.
+// List returns every process, reading full command lines for processes
+// readable by the current user and falling back to the executable name.
 func List() ([]Process, error) {
 	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
@@ -104,14 +105,19 @@ func List() ([]Process, error) {
 	e.Size = uint32(unsafe.Sizeof(e))
 	var ps []Process
 	for err = windows.Process32First(snap, &e); err == nil; err = windows.Process32Next(snap, &e) {
+		pid := int(e.ProcessID)
 		name := windows.UTF16ToString(e.ExeFile[:])
-		ps = append(ps, Process{PID: int(e.ProcessID), Args: []string{name}, Line: name})
+		if args := Args(pid); len(args) > 0 {
+			ps = append(ps, Process{PID: pid, Args: args, Line: strings.Join(args, " ")})
+		} else {
+			ps = append(ps, Process{PID: pid, Args: []string{name}, Line: name})
+		}
 	}
 	return ps, nil
 }
 
-// Cwd is not available for other processes on Windows.
-func Cwd(pid int) string { return "" }
+// Cwd returns the working directory of pid on Windows when readable.
+func Cwd(pid int) string { return winCwd(pid) }
 
 // TTY is not meaningful on Windows.
 func TTY(pid int) string { return "" }
@@ -122,8 +128,22 @@ func ForegroundCommand(tty string) string { return "" }
 // State is not available on Windows.
 func State(pid int) string { return "" }
 
-// StartTime is not available on Windows.
-func StartTime(pid int) (time.Time, bool) { return time.Time{}, false }
+// StartTime returns when pid started on Windows.
+func StartTime(pid int) (time.Time, bool) {
+	if pid <= 0 {
+		return time.Time{}, false
+	}
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return time.Time{}, false
+	}
+	defer windows.CloseHandle(h)
+	var create, exit, kernel, user windows.Filetime
+	if err := windows.GetProcessTimes(h, &create, &exit, &kernel, &user); err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(0, create.Nanoseconds()), true
+}
 
 // Node is one process in Tree.
 type Node struct {

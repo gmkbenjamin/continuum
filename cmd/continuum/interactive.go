@@ -213,6 +213,15 @@ func (t *tui) sessions() {
 		m, _ := messages.Load(p)
 		jobs, _ := store.LoadJobs(p.Jobs)
 		list := knownSessions()
+		if !cfg.ClosedSessionsTracked() {
+			var open []knownSession
+			for _, s := range list {
+				if s.Open {
+					open = append(open, s)
+				}
+			}
+			list = open
+		}
 		if len(list) == 0 {
 			fmt.Fprintln(t.out, "\nNo open or recent agent sessions found.")
 			t.pause()
@@ -398,9 +407,16 @@ func (t *tui) pickAgent() string {
 }
 
 func (t *tui) scope() {
+	p := core.GetPaths()
+	cfg, _ := core.LoadConfig(p.Config)
 	fmt.Fprintln(t.out)
 	t.report(cmdScope(nil))
-	menu := []option{{"1", "Resume &every session"}, {"2", "Resume &chosen sessions only"}}
+	t.report(cmdClosed(nil))
+	closedOpt := option{"3", "Stop tracking c&losed sessions"}
+	if !cfg.ClosedSessionsTracked() {
+		closedOpt = option{"3", "Track c&losed sessions"}
+	}
+	menu := []option{{"1", "Resume &every session"}, {"2", "Resume &chosen sessions only"}, closedOpt}
 	fmt.Fprintln(t.out)
 	t.showMenu(menu)
 	fmt.Fprintln(t.out, "  (Choose or exclude sessions in Sessions, 2 or e in the main menu.)")
@@ -410,6 +426,13 @@ func (t *tui) scope() {
 		t.pause()
 	case "2":
 		t.report(cmdScope([]string{"chosen"}))
+		t.pause()
+	case "3":
+		if cfg.ClosedSessionsTracked() {
+			t.report(cmdClosed([]string{"off"}))
+		} else {
+			t.report(cmdClosed([]string{"on"}))
+		}
 		t.pause()
 	}
 }
