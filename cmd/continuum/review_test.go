@@ -13,12 +13,21 @@ import (
 	"github.com/continuum-dev/continuum/internal/rules"
 )
 
+func testShellRCPath(home string) string {
+	if runtime.GOOS == "windows" {
+		p := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+		_ = os.MkdirAll(filepath.Dir(p), 0o700)
+		return p
+	}
+	return filepath.Join(home, ".zshrc")
+}
+
 // Install then uninstall gives a shell startup file back byte for byte, even
 // one without a final newline.
 func TestShellHookRoundTripIsExact(t *testing.T) {
 	for _, orig := range []string{"export A=1", "export A=1\n\n", "a\n\n\n"} {
 		home := sandboxHome(t)
-		rc := filepath.Join(home, ".zshrc")
+		rc := testShellRCPath(home)
 		os.WriteFile(rc, []byte(orig), 0o600)
 		installShell("/x/continuum", false)
 		if data, _ := os.ReadFile(rc); !strings.Contains(string(data), blockStart) {
@@ -35,7 +44,7 @@ func TestShellHookRoundTripIsExact(t *testing.T) {
 // ends, so it leaves the file alone rather than delete the user's lines.
 func TestDamagedShellBlockIsLeftAlone(t *testing.T) {
 	home := sandboxHome(t)
-	rc := filepath.Join(home, ".zshrc")
+	rc := testShellRCPath(home)
 	content := "a\n" + blockStart + "\nalias ll='ls -l'\n# more of mine\n"
 	os.WriteFile(rc, []byte(content), 0o600)
 	out := strings.Join(installShell("/x/continuum", false), "\n")

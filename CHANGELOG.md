@@ -4,6 +4,16 @@ All notable changes to Continuum. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-11-28
+
+### Fixed
+
+- **Windows PowerShell profile directory resolution.** Scoped
+  `FOLDERID_Documents` lookups to the active user home directory so overridden
+  `USERPROFILE` environments cleanly resolve `<USERPROFILE>\Documents` while
+  still supporting OneDrive Known Folder Move under the user's home folder, and
+  updated shell round-trip tests for Windows PowerShell profiles.
+
 ## [0.17.0] - 2026-11-28
 
 ### Added
